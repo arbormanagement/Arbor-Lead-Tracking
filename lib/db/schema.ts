@@ -1,0 +1,561 @@
+import {
+  pgTable,
+  pgEnum,
+  text,
+  integer,
+  boolean,
+  timestamp,
+  date,
+  jsonb,
+  numeric,
+  uniqueIndex,
+  index,
+  primaryKey,
+} from "drizzle-orm/pg-core";
+import { relations, sql } from "drizzle-orm";
+import { ulid } from "ulid";
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Conventions
+//   • Primary keys: ULID strings (sortable, URL-safe) via $defaultFn.
+//   • Money: integer CENTS everywhere (never floats).
+//   • Phones: E.164 strings (+16188368004).
+//   • Timestamps: timestamptz; created_at/updated_at on every table.
+//   • `raw` jsonb columns retain the upstream API payload for debugging/backfill.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const id = () => text("id").primaryKey().$defaultFn(() => ulid());
+const createdAt = () => timestamp("created_at", { withTimezone: true }).notNull().defaultNow();
+const updatedAt = () =>
+  timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow()
+    .$onUpdate(() => new Date());
+
+// ── Enums ────────────────────────────────────────────────────────────────────
+export const locationEnum = pgEnum("location", ["edwardsville", "ofallon", "unknown"]);
+export const poolEnum = pgEnum("number_pool", [
+  "google",
+  "facebook",
+  "organic",
+  "lsa",
+  "direct",
+  "print",
+  "reserved",
+]);
+export const numberStatusEnum = pgEnum("number_status", ["active", "disabled"]);
+export const platformEnum = pgEnum("platform", ["google", "google_lsa", "facebook", "other"]);
+export const leadTypeEnum = pgEnum("lead_type", [
+  "call",
+  "web_form",
+  "facebook_leadgen",
+  "lsa",
+  "manual",
+]);
+export const leadStatusEnum = pgEnum("lead_status", [
+  "new",
+  "working",
+  "qualified",
+  "quoted",
+  "won",
+  "lost",
+  "spam",
+  "duplicate",
+]);
+export const touchTypeEnum = pgEnum("touch_type", ["first", "last", "linear"]);
+export const syncStatusEnum = pgEnum("sync_status", ["running", "success", "error"]);
+
+// ── Identity & web tracking ──────────────────────────────────────────────────
+export const visitors = pgTable("visitors", {
+  id: id(),
+  firstSeenAt: timestamp("first_seen_at", { withTimezone: true }).notNull().defaultNow(),
+  lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).notNull().defaultNow(),
+  gaClientId: text("ga_client_id"),
+  userAgent: text("user_agent"),
+  ipHash: text("ip_hash"),
+  // First-touch snapshot (never overwritten after first pageview)
+  ftSource: text("ft_source"),
+  ftMedium: text("ft_medium"),
+  ftCampaign: text("ft_campaign"),
+  ftContent: text("ft_content"),
+  ftTerm: text("ft_term"),
+  ftGclid: text("ft_gclid"),
+  ftFbclid: text("ft_fbclid"),
+  ftReferrer: text("ft_referrer"),
+  ftLandingPage: text("ft_landing_page"),
+  ftAt: timestamp("ft_at", { withTimezone: true }),
+  createdAt: createdAt(),
+  updatedAt: updatedAt(),
+});
+
+export const webSessions = pgTable(
+  "web_sessions",
+  {
+    id: id(),
+    visitorId: text("visitor_id").references(() => visitors.id),
+    startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
+    lastActivityAt: timestamp("last_activity_at", { withTimezone: true }).notNull().defaultNow(),
+    endedAt: timestamp("ended_at", { withTimezone: true }),
+    // Last-touch attribution for this visit
+    source: text("source"),
+    medium: text("medium"),
+    campaign: text("campaign"),
+    content: text("content"),
+    term: text("term"),
+    gclid: text("gclid"),
+    fbclid: text("fbclid"),
+    gbraid: text("gbraid"),
+    wbraid: text("wbraid"),
+    msclkid: text("msclkid"),
+    referrer: text("referrer"),
+    landingPage: text("landing_page"),
+    ipHash: text("ip_hash"),
+    userAgent: text("user_agent"),
+    location: locationEnum("location").default("unknown"),
+    derivedSourceId: text("derived_source_id").references(() => sources.id),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [index("web_sessions_visitor_idx").on(t.visitorId)],
+);
+
+// ── Sources / campaigns / spend ──────────────────────────────────────────────
+export const sources = pgTable(
+  "sources",
+  {
+    id: id(),
+    key: text("key").notNull(), // e.g. "google/cpc", "facebook/paid", "organic/seo"
+    displayName: text("display_name").notNull(),
+    platform: platformEnum("platform").default("other"),
+    defaultCostModel: text("default_cost_model"), // cpc | cpl | fixed | none
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [uniqueIndex("sources_key_uq").on(t.key)],
+);
+
+export const campaigns = pgTable(
+  "campaigns",
+  {
+    id: id(),
+    sourceId: text("source_id").references(() => sources.id),
+    platform: platformEnum("platform").notNull(),
+    externalCampaignId: text("external_campaign_id").notNull(),
+    name: text("name"),
+    status: text("status"),
+    location: locationEnum("location").default("unknown"),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [uniqueIndex("campaigns_platform_extid_uq").on(t.platform, t.externalCampaignId)],
+);
+
+export const adSpend = pgTable(
+  "ad_spend",
+  {
+    id: id(),
+    date: date("date").notNull(),
+    platform: platformEnum("platform").notNull(),
+    campaignId: text("campaign_id").references(() => campaigns.id),
+    externalCampaignId: text("external_campaign_id"),
+    impressions: integer("impressions").default(0),
+    clicks: integer("clicks").default(0),
+    spendCents: integer("spend_cents").notNull().default(0),
+    conversions: numeric("conversions", { precision: 12, scale: 2 }).default("0"),
+    source: text("source"), // provenance, e.g. "mcp:googleads"
+    raw: jsonb("raw"),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    uniqueIndex("ad_spend_platform_extid_date_uq").on(t.platform, t.externalCampaignId, t.date),
+    index("ad_spend_date_idx").on(t.date),
+  ],
+);
+
+// ── Tracking numbers / DNI ───────────────────────────────────────────────────
+export const trackingNumbers = pgTable(
+  "tracking_numbers",
+  {
+    id: id(),
+    twilioSid: text("twilio_sid").notNull(),
+    phoneNumber: text("phone_number").notNull(), // E.164
+    friendlyName: text("friendly_name"),
+    pool: poolEnum("pool").notNull().default("reserved"),
+    status: numberStatusEnum("status").notNull().default("active"),
+    capabilities: jsonb("capabilities"),
+    // Static (source-level) numbers — flyers, GBP, call extensions — never pooled/recycled.
+    isStatic: boolean("is_static").notNull().default(false),
+    staticSourceId: text("static_source_id").references(() => sources.id),
+    location: locationEnum("location").default("unknown"),
+    provisionedAt: timestamp("provisioned_at", { withTimezone: true }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    uniqueIndex("tracking_numbers_twilio_sid_uq").on(t.twilioSid),
+    uniqueIndex("tracking_numbers_phone_uq").on(t.phoneNumber),
+    index("tracking_numbers_pool_idx").on(t.pool, t.status),
+  ],
+);
+
+export const numberAssignments = pgTable(
+  "number_assignments",
+  {
+    id: id(),
+    trackingNumberId: text("tracking_number_id")
+      .notNull()
+      .references(() => trackingNumbers.id),
+    webSessionId: text("web_session_id").references(() => webSessions.id),
+    visitorId: text("visitor_id").references(() => visitors.id),
+    assignedAt: timestamp("assigned_at", { withTimezone: true }).notNull().defaultNow(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    releasedAt: timestamp("released_at", { withTimezone: true }),
+    // Attribution snapshot frozen at lease time
+    source: text("source"),
+    medium: text("medium"),
+    campaign: text("campaign"),
+    keyword: text("keyword"),
+    gclid: text("gclid"),
+    fbclid: text("fbclid"),
+    landingPage: text("landing_page"),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    // Fast "who currently holds this number" — only one active lease per number.
+    index("number_assignments_active_idx")
+      .on(t.trackingNumberId)
+      .where(sql`released_at IS NULL`),
+    index("number_assignments_session_idx").on(t.webSessionId),
+  ],
+);
+
+// ── Revenue (HousecallPro) ───────────────────────────────────────────────────
+export const hcpCustomers = pgTable(
+  "hcp_customers",
+  {
+    id: id(),
+    hcpCustomerId: text("hcp_customer_id").notNull(),
+    firstName: text("first_name"),
+    lastName: text("last_name"),
+    email: text("email"),
+    emailLc: text("email_lc"), // normalized for matching
+    phone: text("phone"),
+    mobile: text("mobile"),
+    phoneE164: text("phone_e164"), // normalized for matching
+    addresses: jsonb("addresses"),
+    raw: jsonb("raw"),
+    syncedAt: timestamp("synced_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    uniqueIndex("hcp_customers_hcp_id_uq").on(t.hcpCustomerId),
+    index("hcp_customers_phone_idx").on(t.phoneE164),
+    index("hcp_customers_email_idx").on(t.emailLc),
+  ],
+);
+
+export const hcpJobs = pgTable(
+  "hcp_jobs",
+  {
+    id: id(),
+    hcpJobId: text("hcp_job_id").notNull(),
+    hcpCustomerId: text("hcp_customer_id").references(() => hcpCustomers.id),
+    workStatus: text("work_status"),
+    scheduledStart: timestamp("scheduled_start", { withTimezone: true }),
+    totalAmountCents: integer("total_amount_cents").default(0),
+    outstandingBalanceCents: integer("outstanding_balance_cents").default(0),
+    invoiceTotalCents: integer("invoice_total_cents").default(0),
+    address: jsonb("address"),
+    location: locationEnum("location").default("unknown"),
+    createdAtHcp: timestamp("created_at_hcp", { withTimezone: true }),
+    raw: jsonb("raw"),
+    syncedAt: timestamp("synced_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    uniqueIndex("hcp_jobs_hcp_id_uq").on(t.hcpJobId),
+    index("hcp_jobs_customer_idx").on(t.hcpCustomerId),
+  ],
+);
+
+// ── Leads (unified) ──────────────────────────────────────────────────────────
+export const leads = pgTable(
+  "leads",
+  {
+    id: id(),
+    type: leadTypeEnum("type").notNull(),
+    status: leadStatusEnum("status").notNull().default("new"),
+    // Contact
+    name: text("name"),
+    phoneE164: text("phone_e164"),
+    emailLc: text("email_lc"),
+    message: text("message"),
+    // Last-touch attribution (denormalized for fast dashboard filtering)
+    sourceId: text("source_id").references(() => sources.id),
+    medium: text("medium"),
+    campaignId: text("campaign_id").references(() => campaigns.id),
+    keyword: text("keyword"),
+    gclid: text("gclid"),
+    fbclid: text("fbclid"),
+    landingPage: text("landing_page"),
+    referrer: text("referrer"),
+    location: locationEnum("location").default("unknown"),
+    // Linkage
+    visitorId: text("visitor_id").references(() => visitors.id),
+    webSessionId: text("web_session_id").references(() => webSessions.id),
+    hcpCustomerId: text("hcp_customer_id").references(() => hcpCustomers.id),
+    hcpJobId: text("hcp_job_id").references(() => hcpJobs.id),
+    // Value (set when matched to an HCP job/invoice)
+    quoteValueCents: integer("quote_value_cents"),
+    salesValueCents: integer("sales_value_cents"),
+    // Flags
+    isSpam: boolean("is_spam").notNull().default(false),
+    isFirstTime: boolean("is_first_time"),
+    isDuplicate: boolean("is_duplicate").notNull().default(false),
+    duplicateOfLeadId: text("duplicate_of_lead_id"),
+    occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    index("leads_occurred_idx").on(t.occurredAt),
+    index("leads_phone_idx").on(t.phoneE164),
+    index("leads_email_idx").on(t.emailLc),
+    index("leads_source_idx").on(t.sourceId),
+    index("leads_status_idx").on(t.status),
+  ],
+);
+
+export const calls = pgTable(
+  "calls",
+  {
+    id: id(),
+    leadId: text("lead_id").references(() => leads.id),
+    twilioCallSid: text("twilio_call_sid").notNull(),
+    trackingNumberId: text("tracking_number_id").references(() => trackingNumbers.id),
+    numberAssignmentId: text("number_assignment_id").references(() => numberAssignments.id),
+    fromNumber: text("from_number"),
+    toDestination: text("to_destination"),
+    direction: text("direction").default("inbound"),
+    answered: boolean("answered"),
+    durationSec: integer("duration_sec"),
+    status: text("status"),
+    recordingUrl: text("recording_url"),
+    recordingSid: text("recording_sid"),
+    recordingDurationSec: integer("recording_duration_sec"),
+    transcript: text("transcript"),
+    transcriptProvider: text("transcript_provider"),
+    transcriptConfidence: numeric("transcript_confidence", { precision: 4, scale: 3 }),
+    intentLabel: text("intent_label"),
+    spamScore: numeric("spam_score", { precision: 4, scale: 3 }),
+    voicemail: boolean("voicemail").default(false),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    uniqueIndex("calls_twilio_sid_uq").on(t.twilioCallSid),
+    index("calls_lead_idx").on(t.leadId),
+    index("calls_from_idx").on(t.fromNumber),
+  ],
+);
+
+export const formSubmissions = pgTable(
+  "form_submissions",
+  {
+    id: id(),
+    leadId: text("lead_id").references(() => leads.id),
+    webSessionId: text("web_session_id").references(() => webSessions.id),
+    formId: text("form_id"),
+    pageUrl: text("page_url"),
+    fields: jsonb("fields"),
+    submittedAt: timestamp("submitted_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: createdAt(),
+  },
+  (t) => [index("form_submissions_lead_idx").on(t.leadId)],
+);
+
+export const facebookLeads = pgTable(
+  "facebook_leads",
+  {
+    id: id(),
+    leadId: text("lead_id").references(() => leads.id),
+    fbLeadgenId: text("fb_leadgen_id").notNull(),
+    fbFormId: text("fb_form_id"),
+    fbAdId: text("fb_ad_id"),
+    fbCampaignId: text("fb_campaign_id"),
+    fields: jsonb("fields"),
+    createdTime: timestamp("created_time", { withTimezone: true }),
+    createdAt: createdAt(),
+  },
+  (t) => [uniqueIndex("facebook_leads_leadgen_id_uq").on(t.fbLeadgenId)],
+);
+
+// ── Attribution & rollups ────────────────────────────────────────────────────
+export const attributions = pgTable(
+  "attributions",
+  {
+    id: id(),
+    leadId: text("lead_id")
+      .notNull()
+      .references(() => leads.id),
+    touchType: touchTypeEnum("touch_type").notNull(),
+    sourceId: text("source_id").references(() => sources.id),
+    campaignId: text("campaign_id").references(() => campaigns.id),
+    gclid: text("gclid"),
+    fbclid: text("fbclid"),
+    keyword: text("keyword"),
+    landingPage: text("landing_page"),
+    weight: numeric("weight", { precision: 5, scale: 4 }).default("1"),
+    occurredAt: timestamp("occurred_at", { withTimezone: true }),
+    createdAt: createdAt(),
+  },
+  (t) => [index("attributions_lead_idx").on(t.leadId)],
+);
+
+export const roiDaily = pgTable(
+  "roi_daily",
+  {
+    id: id(),
+    date: date("date").notNull(),
+    sourceId: text("source_id").references(() => sources.id),
+    campaignId: text("campaign_id").references(() => campaigns.id),
+    location: locationEnum("location").default("unknown"),
+    leadsCount: integer("leads_count").notNull().default(0),
+    callsCount: integer("calls_count").notNull().default(0),
+    formsCount: integer("forms_count").notNull().default(0),
+    wonCount: integer("won_count").notNull().default(0),
+    spendCents: integer("spend_cents").notNull().default(0),
+    revenueCents: integer("revenue_cents").notNull().default(0),
+    quoteValueCents: integer("quote_value_cents").notNull().default(0),
+    costPerLeadCents: integer("cost_per_lead_cents"),
+    costPerAcquisitionCents: integer("cost_per_acquisition_cents"),
+    roiRatio: numeric("roi_ratio", { precision: 12, scale: 4 }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    uniqueIndex("roi_daily_key_uq").on(t.date, t.sourceId, t.campaignId, t.location),
+    index("roi_daily_date_idx").on(t.date),
+  ],
+);
+
+// ── Auth & ops ───────────────────────────────────────────────────────────────
+export const users = pgTable(
+  "users",
+  {
+    id: id(),
+    email: text("email").notNull(),
+    name: text("name"),
+    passwordHash: text("password_hash"),
+    role: text("role").notNull().default("admin"),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [uniqueIndex("users_email_uq").on(t.email)],
+);
+
+export const authSessions = pgTable("auth_sessions", {
+  id: id(),
+  userId: text("user_id")
+    .notNull()
+    .references(() => users.id),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  createdAt: createdAt(),
+});
+
+export const spamRules = pgTable("spam_rules", {
+  id: id(),
+  field: text("field").notNull(), // from_number | transcript | name | email
+  pattern: text("pattern").notNull(),
+  action: text("action").notNull().default("flag"), // flag | reject
+  enabled: boolean("enabled").notNull().default(true),
+  createdAt: createdAt(),
+  updatedAt: updatedAt(),
+});
+
+export const syncRuns = pgTable(
+  "sync_runs",
+  {
+    id: id(),
+    job: text("job").notNull(), // spend.sync.daily | hcp.sync.jobs | attribution.run | ...
+    status: syncStatusEnum("status").notNull().default("running"),
+    startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
+    finishedAt: timestamp("finished_at", { withTimezone: true }),
+    stats: jsonb("stats"),
+    error: text("error"),
+  },
+  (t) => [index("sync_runs_job_idx").on(t.job, t.startedAt)],
+);
+
+// ── Settings (singleton key/value) ───────────────────────────────────────────
+export const settings = pgTable("settings", {
+  key: text("key").primaryKey(),
+  value: jsonb("value").notNull(),
+  updatedAt: updatedAt(),
+});
+
+// ── Relations ────────────────────────────────────────────────────────────────
+export const visitorsRelations = relations(visitors, ({ many }) => ({
+  sessions: many(webSessions),
+  leads: many(leads),
+}));
+
+export const webSessionsRelations = relations(webSessions, ({ one, many }) => ({
+  visitor: one(visitors, { fields: [webSessions.visitorId], references: [visitors.id] }),
+  derivedSource: one(sources, {
+    fields: [webSessions.derivedSourceId],
+    references: [sources.id],
+  }),
+  assignments: many(numberAssignments),
+  leads: many(leads),
+}));
+
+export const trackingNumbersRelations = relations(trackingNumbers, ({ one, many }) => ({
+  staticSource: one(sources, {
+    fields: [trackingNumbers.staticSourceId],
+    references: [sources.id],
+  }),
+  assignments: many(numberAssignments),
+}));
+
+export const numberAssignmentsRelations = relations(numberAssignments, ({ one }) => ({
+  trackingNumber: one(trackingNumbers, {
+    fields: [numberAssignments.trackingNumberId],
+    references: [trackingNumbers.id],
+  }),
+  webSession: one(webSessions, {
+    fields: [numberAssignments.webSessionId],
+    references: [webSessions.id],
+  }),
+}));
+
+export const leadsRelations = relations(leads, ({ one, many }) => ({
+  source: one(sources, { fields: [leads.sourceId], references: [sources.id] }),
+  campaign: one(campaigns, { fields: [leads.campaignId], references: [campaigns.id] }),
+  visitor: one(visitors, { fields: [leads.visitorId], references: [visitors.id] }),
+  hcpJob: one(hcpJobs, { fields: [leads.hcpJobId], references: [hcpJobs.id] }),
+  call: one(calls, { fields: [leads.id], references: [calls.leadId] }),
+  formSubmission: one(formSubmissions, {
+    fields: [leads.id],
+    references: [formSubmissions.leadId],
+  }),
+  attributions: many(attributions),
+}));
+
+export const callsRelations = relations(calls, ({ one }) => ({
+  lead: one(leads, { fields: [calls.leadId], references: [leads.id] }),
+  trackingNumber: one(trackingNumbers, {
+    fields: [calls.trackingNumberId],
+    references: [trackingNumbers.id],
+  }),
+}));
+
+export const hcpJobsRelations = relations(hcpJobs, ({ one }) => ({
+  customer: one(hcpCustomers, {
+    fields: [hcpJobs.hcpCustomerId],
+    references: [hcpCustomers.id],
+  }),
+}));
