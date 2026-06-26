@@ -2,6 +2,7 @@ import { desc } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { syncRuns } from "@/lib/db/schema";
 import { dateTime } from "@/lib/format";
+import { SyncButton } from "./sync-button";
 
 export const dynamic = "force-dynamic";
 
@@ -11,12 +12,14 @@ export default async function SpendPage() {
   return (
     <>
       <h1 className="page-title">Spend &amp; sync status</h1>
-      <p className="page-sub">Ad spend pulled from Google &amp; Facebook via the Arbor MCP server</p>
+      <p className="page-sub">Direct sync: HousecallPro revenue + Google/Facebook spend → ROI</p>
+
+      <SyncButton />
 
       <div className="empty" style={{ marginBottom: 24 }}>
-        Spend ingestion lands in Phase 2 — the <code>spend.sync.daily</code> Inngest job
-        upserts <code>ad_spend</code> from <code>googleads_get_campaign_performance</code> and{" "}
-        <code>facebook_ads_get_campaign_insights</code>.
+        Runs HCP → spend → attribution directly against each platform API (only providers
+        with configured credentials run). Add <code>HCP_API_KEY</code> first to light up
+        revenue, then Google/Facebook tokens for spend &amp; ROI. Inngest cron is wired at deploy.
       </div>
 
       <h2 className="page-title" style={{ fontSize: 16 }}>
