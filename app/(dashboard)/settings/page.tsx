@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { getSession } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
@@ -9,6 +10,16 @@ export default async function SettingsPage() {
     <>
       <h1 className="page-title">Settings</h1>
       <p className="page-sub">Routing, whisper text, spam rules, attribution window</p>
+
+      <Link href="/settings/integrations" className="card" style={{ display: "block", marginBottom: 20 }}>
+        <div className="label">Integrations</div>
+        <div className="value" style={{ fontSize: 16 }}>
+          Manage API credentials →
+        </div>
+        <div style={{ color: "var(--muted)", fontSize: 12 }}>
+          HousecallPro, Google Ads, Facebook, Deepgram — encrypted at rest
+        </div>
+      </Link>
 
       <div className="cards">
         <div className="card">

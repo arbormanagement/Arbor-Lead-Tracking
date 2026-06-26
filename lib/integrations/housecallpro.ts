@@ -1,45 +1,47 @@
-import { env } from "@/lib/env";
+import { getPlatformCreds } from "@/lib/credentials";
 import type { HcpCustomerDTO, HcpJobDTO, RevenueProvider } from "./types";
 
 /**
  * Direct HousecallPro REST client. HCP is the ROI revenue source of truth, so it
  * gets the most reliable path: a plain API-key call, no gateway in between.
  *
- * Auth: HCP API keys use the `Token` scheme. If you get 401s, confirm the header
- * scheme for your key type in the HCP API docs and adjust `authHeader()`.
- * Money: HCP amounts are already in integer cents (per the Arbor playbook).
- *
- * Field mappings are defensive (multiple known key spellings + raw retained) so a
- * minor upstream shape change degrades to nulls rather than throwing mid-sync.
+ * Credentials come from the in-app resolver (`getPlatformCreds`) — DB-stored values
+ * override env fallback. Auth: HCP API keys use the `Token` scheme. Money: HCP
+ * amounts are already in integer cents. Field mappings are defensive (raw retained)
+ * so a minor upstream shape change degrades to nulls rather than throwing mid-sync.
  */
+interface HcpConfig {
+  apiKey: string;
+  base: string;
+}
+
 class HousecallProProvider implements RevenueProvider {
   readonly name = "housecallpro:direct";
 
-  private authHeader(): string {
-    if (!env.HCP_API_KEY) throw new Error("HCP_API_KEY is not set");
-    return `Token ${env.HCP_API_KEY}`;
+  private async config(): Promise<HcpConfig> {
+    const c = await getPlatformCreds("housecallpro");
+    if (!c.api_key) throw new Error("HousecallPro API key is not configured");
+    return { apiKey: c.api_key, base: c.api_base || "https://api.housecallpro.com" };
   }
 
-  private async get<T = unknown>(path: string, query: Record<string, string | number> = {}): Promise<T> {
-    const url = new URL(path, env.HCP_API_BASE);
+  private async get<T = unknown>(cfg: HcpConfig, path: string, query: Record<string, string | number> = {}): Promise<T> {
+    const url = new URL(path, cfg.base);
     for (const [k, v] of Object.entries(query)) url.searchParams.set(k, String(v));
 
     const res = await fetch(url, {
       headers: {
-        Authorization: this.authHeader(),
+        Authorization: `Token ${cfg.apiKey}`,
         Accept: "application/json",
         "Content-Type": "application/json",
       },
       signal: AbortSignal.timeout(60_000),
     });
-    if (!res.ok) {
-      throw new Error(`HCP ${res.status} ${path}: ${await res.text()}`);
-    }
+    if (!res.ok) throw new Error(`HCP ${res.status} ${path}: ${await res.text()}`);
     return (await res.json()) as T;
   }
 
-  /** Page through a list endpoint until exhausted or a sane cap is hit. */
   private async paginate(
+    cfg: HcpConfig,
     path: string,
     listKey: string,
     query: Record<string, string | number> = {},
@@ -47,11 +49,7 @@ class HousecallProProvider implements RevenueProvider {
     const out: Array<Record<string, unknown>> = [];
     const pageSize = 100;
     for (let page = 1; page <= 100; page++) {
-      const body = await this.get<Record<string, unknown>>(path, {
-        ...query,
-        page,
-        page_size: pageSize,
-      });
+      const body = await this.get<Record<string, unknown>>(cfg, path, { ...query, page, page_size: pageSize });
       const items =
         (body[listKey] as Array<Record<string, unknown>>) ??
         (body.data as Array<Record<string, unknown>>) ??
@@ -63,8 +61,8 @@ class HousecallProProvider implements RevenueProvider {
   }
 
   async listCustomers({ sinceDays }: { sinceDays: number }): Promise<HcpCustomerDTO[]> {
-    // Pull recently-updated first; we re-sync a rolling window each run.
-    const rows = await this.paginate("/customers", "customers", {
+    const cfg = await this.config();
+    const rows = await this.paginate(cfg, "/customers", "customers", {
       sort_by: "updated_at",
       sort_direction: "desc",
     });
@@ -78,8 +76,9 @@ class HousecallProProvider implements RevenueProvider {
   }
 
   async listJobs({ sinceDays }: { sinceDays: number }): Promise<HcpJobDTO[]> {
+    const cfg = await this.config();
     const min = new Date(Date.now() - sinceDays * 86_400_000).toISOString();
-    const rows = await this.paginate("/jobs", "jobs", {
+    const rows = await this.paginate(cfg, "/jobs", "jobs", {
       sort_by: "updated_at",
       sort_direction: "desc",
       scheduled_start_min: min,

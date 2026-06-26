@@ -497,6 +497,21 @@ export const settings = pgTable("settings", {
   updatedAt: updatedAt(),
 });
 
+// ── Integration credentials (envelope-encrypted; tenant_id reserved for MT) ───
+export const integrationCredentials = pgTable(
+  "integration_credentials",
+  {
+    id: id(),
+    tenantId: text("tenant_id").notNull().default("default"),
+    platform: text("platform").notNull(), // housecallpro | google_ads | facebook | deepgram
+    key: text("key").notNull(), // api_key | refresh_token | ...
+    valueEncrypted: text("value_encrypted").notNull(), // base64(iv|tag|ciphertext)
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [uniqueIndex("integration_credentials_uq").on(t.tenantId, t.platform, t.key)],
+);
+
 // ── Relations ────────────────────────────────────────────────────────────────
 export const visitorsRelations = relations(visitors, ({ many }) => ({
   sessions: many(webSessions),

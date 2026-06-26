@@ -12,7 +12,7 @@ import { withSyncRun } from "./run";
  */
 export async function syncSpend({ sinceDays = 7 }: { sinceDays?: number } = {}) {
   return withSyncRun("spend.sync.daily", async () => {
-    const providers = activeSpendProviders();
+    const providers = await activeSpendProviders();
     let upserted = 0;
     const byProvider: Record<string, number> = {};
 

@@ -2,8 +2,8 @@ import { and, eq } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { leads, sources } from "@/lib/db/schema";
 import { googleAds } from "@/lib/integrations";
+import { getPlatformCreds } from "@/lib/credentials";
 import { normalizeEmail, normalizePhone } from "@/lib/phone";
-import { env } from "@/lib/env";
 import { withSyncRun } from "./run";
 
 /**
@@ -13,7 +13,8 @@ import { withSyncRun } from "./run";
  */
 export async function syncLsaLeads({ sinceDays = 30 }: { sinceDays?: number } = {}) {
   return withSyncRun("lsa.sync.leads", async () => {
-    if (!env.GOOGLE_ADS_REFRESH_TOKEN || !env.GOOGLE_ADS_DEVELOPER_TOKEN) {
+    const g = await getPlatformCreds("google_ads");
+    if (!g.refresh_token || !g.developer_token) {
       return { skipped: "Google Ads creds not set", inserted: 0 };
     }
 

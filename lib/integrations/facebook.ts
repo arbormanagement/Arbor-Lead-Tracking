@@ -1,41 +1,46 @@
-import { env } from "@/lib/env";
+import { getPlatformCreds } from "@/lib/credentials";
 import type { SpendProvider, SpendRow } from "./types";
 
 /**
- * Direct Facebook/Instagram Marketing API client. Pulls per-day, per-campaign
- * insights for a rolling window. `spend` comes back as a decimal string in the
- * account currency → cents = round(spend * 100). Lead conversions are summed
- * from the `actions` breakdown.
+ * Direct Facebook/Instagram Marketing API client. Credentials come from the in-app
+ * resolver (DB over env). Pulls per-day, per-campaign insights for a rolling window;
+ * `spend` is a decimal string in account currency → cents = round(spend * 100).
  */
+interface FbConfig {
+  accessToken: string;
+  adAccountId: string;
+  apiVersion: string;
+}
+
+async function fbConfig(): Promise<FbConfig> {
+  const c = await getPlatformCreds("facebook");
+  if (!c.access_token) throw new Error("Facebook access token is not configured");
+  if (!c.ad_account_id) throw new Error("Facebook ad account id is not configured");
+  return { accessToken: c.access_token, adAccountId: c.ad_account_id, apiVersion: c.api_version || "v21.0" };
+}
+
 class FacebookProvider implements SpendProvider {
   readonly name = "facebook:direct";
 
   async getDailySpend({ sinceDays }: { sinceDays: number }): Promise<SpendRow[]> {
-    if (!env.FACEBOOK_ACCESS_TOKEN) throw new Error("FACEBOOK_ACCESS_TOKEN is not set");
-    if (!env.FB_AD_ACCOUNT_ID) throw new Error("FB_AD_ACCOUNT_ID is not set");
-
+    const cfg = await fbConfig();
     const since = new Date(Date.now() - sinceDays * 86_400_000).toISOString().slice(0, 10);
     const until = new Date().toISOString().slice(0, 10);
 
-    const url = new URL(
-      `https://graph.facebook.com/${env.FACEBOOK_API_VERSION}/${env.FB_AD_ACCOUNT_ID}/insights`,
-    );
+    const url = new URL(`https://graph.facebook.com/${cfg.apiVersion}/${cfg.adAccountId}/insights`);
     url.searchParams.set("level", "campaign");
     url.searchParams.set("time_increment", "1");
     url.searchParams.set("fields", "campaign_id,campaign_name,impressions,clicks,spend,actions");
     url.searchParams.set("time_range", JSON.stringify({ since, until }));
     url.searchParams.set("limit", "500");
-    url.searchParams.set("access_token", env.FACEBOOK_ACCESS_TOKEN);
+    url.searchParams.set("access_token", cfg.accessToken);
 
     const rows: SpendRow[] = [];
     let next: string | null = url.toString();
     for (let guard = 0; next && guard < 50; guard++) {
       const res = await fetch(next, { signal: AbortSignal.timeout(60_000) });
       if (!res.ok) throw new Error(`Facebook ${res.status}: ${await res.text()}`);
-      const body = (await res.json()) as {
-        data?: Array<Record<string, any>>;
-        paging?: { next?: string };
-      };
+      const body = (await res.json()) as { data?: Array<Record<string, any>>; paging?: { next?: string } };
       for (const r of body.data ?? []) {
         rows.push({
           platform: "facebook",
@@ -65,16 +70,14 @@ export interface FbLeadDetail {
 }
 
 /**
- * Fetch a lead-gen submission's full field data. The webhook only carries the
- * leadgen_id, so we read the fields directly from the Graph API. Also resolves the
- * ad's campaign so the lead attributes to a campaign for ROI.
+ * Fetch a lead-gen submission's full field data (the webhook carries only the
+ * leadgen_id). Resolves the ad's campaign so the lead attributes to a campaign.
  */
 export async function getFacebookLead(leadgenId: string): Promise<FbLeadDetail> {
-  if (!env.FACEBOOK_ACCESS_TOKEN) throw new Error("FACEBOOK_ACCESS_TOKEN is not set");
-  const v = env.FACEBOOK_API_VERSION;
-  const url = new URL(`https://graph.facebook.com/${v}/${leadgenId}`);
+  const cfg = await fbConfig();
+  const url = new URL(`https://graph.facebook.com/${cfg.apiVersion}/${leadgenId}`);
   url.searchParams.set("fields", "id,created_time,ad_id,form_id,campaign_id,field_data");
-  url.searchParams.set("access_token", env.FACEBOOK_ACCESS_TOKEN);
+  url.searchParams.set("access_token", cfg.accessToken);
 
   const res = await fetch(url, { signal: AbortSignal.timeout(30_000) });
   if (!res.ok) throw new Error(`Facebook lead ${res.status}: ${await res.text()}`);
@@ -82,11 +85,10 @@ export async function getFacebookLead(leadgenId: string): Promise<FbLeadDetail> 
 
   let campaignId: string | undefined = j.campaign_id;
   if (!campaignId && j.ad_id) {
-    // Some payloads omit campaign_id on the lead — resolve via the ad.
     try {
-      const adUrl = new URL(`https://graph.facebook.com/${v}/${j.ad_id}`);
+      const adUrl = new URL(`https://graph.facebook.com/${cfg.apiVersion}/${j.ad_id}`);
       adUrl.searchParams.set("fields", "campaign_id");
-      adUrl.searchParams.set("access_token", env.FACEBOOK_ACCESS_TOKEN);
+      adUrl.searchParams.set("access_token", cfg.accessToken);
       const adRes = await fetch(adUrl, { signal: AbortSignal.timeout(30_000) });
       if (adRes.ok) campaignId = ((await adRes.json()) as { campaign_id?: string }).campaign_id;
     } catch {

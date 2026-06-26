@@ -13,8 +13,8 @@ import { withSyncRun } from "./run";
  */
 export async function syncHcp({ sinceDays = 30 }: { sinceDays?: number } = {}) {
   return withSyncRun("hcp.sync.jobs", async () => {
-    const provider = revenueProvider();
-    if (!provider) return { skipped: "HCP_API_KEY not set", customers: 0, jobs: 0 };
+    const provider = await revenueProvider();
+    if (!provider) return { skipped: "HousecallPro credentials not set", customers: 0, jobs: 0 };
 
     const customers = await provider.listCustomers({ sinceDays });
     for (const c of customers) {

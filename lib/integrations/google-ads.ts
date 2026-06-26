@@ -1,31 +1,52 @@
-import { env } from "@/lib/env";
+import { getPlatformCreds } from "@/lib/credentials";
 import type { SpendProvider, SpendRow } from "./types";
 
 /**
- * Direct Google Ads client over REST (no heavy SDK). Flow:
- *   1. Exchange the offline refresh token for a short-lived access token.
- *   2. POST a GAQL query to googleAds:searchStream for campaign-level daily spend.
+ * Direct Google Ads client over REST (no heavy SDK). Credentials come from the
+ * in-app resolver (DB over env). Flow: exchange the offline refresh token for an
+ * access token, then POST GAQL to googleAds:searchStream.
  *
  * cost_micros are millionths of the account currency → cents = micros / 10_000.
  * Bump GOOGLE_ADS_API_VERSION as Google deprecates versions (~yearly).
  */
 const GOOGLE_ADS_API_VERSION = "v18";
 
+interface GoogleAdsConfig {
+  developerToken: string;
+  clientId: string;
+  clientSecret: string;
+  refreshToken: string;
+  loginCustomerId?: string;
+  customerId: string;
+}
+
 class GoogleAdsProvider implements SpendProvider {
   readonly name = "google_ads:direct";
 
-  private async accessToken(): Promise<string> {
-    const { GOOGLE_ADS_CLIENT_ID, GOOGLE_ADS_CLIENT_SECRET, GOOGLE_ADS_REFRESH_TOKEN } = env;
-    if (!GOOGLE_ADS_CLIENT_ID || !GOOGLE_ADS_CLIENT_SECRET || !GOOGLE_ADS_REFRESH_TOKEN) {
-      throw new Error("Google Ads OAuth env (client id/secret/refresh token) is incomplete");
+  private async config(): Promise<GoogleAdsConfig> {
+    const c = await getPlatformCreds("google_ads");
+    if (!c.developer_token || !c.refresh_token || !c.client_id || !c.client_secret) {
+      throw new Error("Google Ads credentials are incomplete");
     }
+    if (!c.customer_id) throw new Error("Google Ads customer_id is not configured");
+    return {
+      developerToken: c.developer_token,
+      clientId: c.client_id,
+      clientSecret: c.client_secret,
+      refreshToken: c.refresh_token,
+      loginCustomerId: c.login_customer_id || undefined,
+      customerId: c.customer_id.replace(/-/g, ""),
+    };
+  }
+
+  private async accessToken(cfg: GoogleAdsConfig): Promise<string> {
     const res = await fetch("https://oauth2.googleapis.com/token", {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({
-        client_id: GOOGLE_ADS_CLIENT_ID,
-        client_secret: GOOGLE_ADS_CLIENT_SECRET,
-        refresh_token: GOOGLE_ADS_REFRESH_TOKEN,
+        client_id: cfg.clientId,
+        client_secret: cfg.clientSecret,
+        refresh_token: cfg.refreshToken,
         grant_type: "refresh_token",
       }),
       signal: AbortSignal.timeout(30_000),
@@ -36,11 +57,26 @@ class GoogleAdsProvider implements SpendProvider {
     return json.access_token;
   }
 
-  async getDailySpend({ sinceDays }: { sinceDays: number }): Promise<SpendRow[]> {
-    const customerId = (env.GOOGLE_ADS_CUSTOMER_ID ?? "").replace(/-/g, "");
-    if (!customerId) throw new Error("GOOGLE_ADS_CUSTOMER_ID is not set");
-    if (!env.GOOGLE_ADS_DEVELOPER_TOKEN) throw new Error("GOOGLE_ADS_DEVELOPER_TOKEN is not set");
+  private async searchStream(cfg: GoogleAdsConfig, gaql: string): Promise<Array<Record<string, any>>> {
+    const token = await this.accessToken(cfg);
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${token}`,
+      "developer-token": cfg.developerToken,
+      "Content-Type": "application/json",
+    };
+    if (cfg.loginCustomerId) headers["login-customer-id"] = cfg.loginCustomerId.replace(/-/g, "");
 
+    const res = await fetch(
+      `https://googleads.googleapis.com/${GOOGLE_ADS_API_VERSION}/customers/${cfg.customerId}/googleAds:searchStream`,
+      { method: "POST", headers, body: JSON.stringify({ query: gaql }), signal: AbortSignal.timeout(90_000) },
+    );
+    if (!res.ok) throw new Error(`Google Ads ${res.status}: ${await res.text()}`);
+    const batches = (await res.json()) as Array<{ results?: Array<Record<string, any>> }>;
+    return batches.flatMap((b) => b.results ?? []);
+  }
+
+  async getDailySpend({ sinceDays }: { sinceDays: number }): Promise<SpendRow[]> {
+    const cfg = await this.config();
     const since = new Date(Date.now() - sinceDays * 86_400_000).toISOString().slice(0, 10);
     const today = new Date().toISOString().slice(0, 10);
     const gaql = `
@@ -49,93 +85,50 @@ class GoogleAdsProvider implements SpendProvider {
       FROM campaign
       WHERE segments.date BETWEEN '${since}' AND '${today}'`;
 
-    const token = await this.accessToken();
-    const headers: Record<string, string> = {
-      Authorization: `Bearer ${token}`,
-      "developer-token": env.GOOGLE_ADS_DEVELOPER_TOKEN,
-      "Content-Type": "application/json",
-    };
-    if (env.GOOGLE_ADS_LOGIN_CUSTOMER_ID) {
-      headers["login-customer-id"] = env.GOOGLE_ADS_LOGIN_CUSTOMER_ID.replace(/-/g, "");
-    }
-
-    const res = await fetch(
-      `https://googleads.googleapis.com/${GOOGLE_ADS_API_VERSION}/customers/${customerId}/googleAds:searchStream`,
-      { method: "POST", headers, body: JSON.stringify({ query: gaql }), signal: AbortSignal.timeout(90_000) },
-    );
-    if (!res.ok) throw new Error(`Google Ads ${res.status}: ${await res.text()}`);
-
-    // searchStream returns an array of { results: [...] } batches.
-    const batches = (await res.json()) as Array<{ results?: Array<Record<string, any>> }>;
-    const rows: SpendRow[] = [];
-    for (const batch of batches) {
-      for (const r of batch.results ?? []) {
-        rows.push({
-          platform: "google",
-          externalCampaignId: String(r.campaign?.id),
-          campaignName: r.campaign?.name,
-          date: r.segments?.date,
-          impressions: Number(r.metrics?.impressions ?? 0),
-          clicks: Number(r.metrics?.clicks ?? 0),
-          spendCents: Math.round(Number(r.metrics?.costMicros ?? 0) / 10_000),
-          conversions: Number(r.metrics?.conversions ?? 0),
-          raw: r,
-        });
-      }
-    }
-    return rows;
+    const results = await this.searchStream(cfg, gaql);
+    return results.map((r) => ({
+      platform: "google" as const,
+      externalCampaignId: String(r.campaign?.id),
+      campaignName: r.campaign?.name,
+      date: r.segments?.date,
+      impressions: Number(r.metrics?.impressions ?? 0),
+      clicks: Number(r.metrics?.clicks ?? 0),
+      spendCents: Math.round(Number(r.metrics?.costMicros ?? 0) / 10_000),
+      conversions: Number(r.metrics?.conversions ?? 0),
+      raw: r,
+    }));
   }
 
   /**
-   * Local Services Ads leads (calls/messages from the LSA unit). Best-effort field
-   * mapping — the local_services_lead resource shape can vary; raw is retained.
+   * Local Services Ads leads. Best-effort field mapping — the local_services_lead
+   * resource shape can vary; raw is retained.
    */
   async getLsaLeads({ sinceDays }: { sinceDays: number }): Promise<LsaLead[]> {
-    const customerId = (env.GOOGLE_ADS_CUSTOMER_ID ?? "").replace(/-/g, "");
-    if (!customerId || !env.GOOGLE_ADS_DEVELOPER_TOKEN) return [];
-
+    const cfg = await this.config();
     const gaql = `
       SELECT local_services_lead.id, local_services_lead.contact_details,
              local_services_lead.lead_type, local_services_lead.lead_status,
              local_services_lead.creation_date_time
       FROM local_services_lead`;
-
-    const token = await this.accessToken();
-    const headers: Record<string, string> = {
-      Authorization: `Bearer ${token}`,
-      "developer-token": env.GOOGLE_ADS_DEVELOPER_TOKEN,
-      "Content-Type": "application/json",
-    };
-    if (env.GOOGLE_ADS_LOGIN_CUSTOMER_ID) {
-      headers["login-customer-id"] = env.GOOGLE_ADS_LOGIN_CUSTOMER_ID.replace(/-/g, "");
-    }
-
-    const res = await fetch(
-      `https://googleads.googleapis.com/${GOOGLE_ADS_API_VERSION}/customers/${customerId}/googleAds:searchStream`,
-      { method: "POST", headers, body: JSON.stringify({ query: gaql }), signal: AbortSignal.timeout(90_000) },
-    );
-    if (!res.ok) throw new Error(`Google LSA ${res.status}: ${await res.text()}`);
+    const results = await this.searchStream(cfg, gaql);
 
     const cutoff = Date.now() - sinceDays * 86_400_000;
-    const batches = (await res.json()) as Array<{ results?: Array<Record<string, any>> }>;
     const out: LsaLead[] = [];
-    for (const batch of batches) {
-      for (const r of batch.results ?? []) {
-        const l = r.localServicesLead ?? {};
-        const cd = l.contactDetails ?? {};
-        const created = l.creationDateTime ? new Date(l.creationDateTime) : null;
-        if (created && created.getTime() < cutoff) continue;
-        out.push({
-          id: String(l.id ?? ""),
-          name: cd.consumerName ?? null,
-          phone: cd.phoneNumber ?? null,
-          email: cd.email ?? null,
-          leadType: l.leadType ?? null,
-          status: l.leadStatus ?? null,
-          createdTime: created,
-          raw: r,
-        });
-      }
+    for (const r of results) {
+      const l = r.localServicesLead ?? {};
+      const cd = l.contactDetails ?? {};
+      const created = l.creationDateTime ? new Date(l.creationDateTime) : null;
+      if (created && created.getTime() < cutoff) continue;
+      out.push({
+        id: String(l.id ?? ""),
+        name: cd.consumerName ?? null,
+        phone: cd.phoneNumber ?? null,
+        email: cd.email ?? null,
+        leadType: l.leadType ?? null,
+        status: l.leadStatus ?? null,
+        createdTime: created,
+        raw: r,
+      });
     }
     return out;
   }

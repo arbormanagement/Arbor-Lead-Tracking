@@ -1,4 +1,5 @@
 import { env } from "@/lib/env";
+import { getCredential } from "@/lib/credentials";
 
 export interface Transcription {
   transcript: string;
@@ -9,11 +10,12 @@ export interface Transcription {
 /**
  * Transcribe a Twilio call recording with Deepgram (Nova-2 phonecall: dual-channel,
  * accurate on noisy mobile/field calls). We fetch the recording bytes from Twilio
- * (which require account auth) and post them to Deepgram's prerecorded API — no
- * public hosting or Blob step needed for the transcript itself.
+ * (which require account auth — kept in env) and post them to Deepgram's prerecorded
+ * API. The Deepgram key comes from the in-app resolver (DB over env).
  */
 export async function transcribeRecording(recordingUrl: string): Promise<Transcription> {
-  if (!env.DEEPGRAM_API_KEY) throw new Error("DEEPGRAM_API_KEY is not set");
+  const deepgramKey = await getCredential("deepgram", "api_key");
+  if (!deepgramKey) throw new Error("Deepgram API key is not configured");
   if (!env.TWILIO_ACCOUNT_SID || !env.TWILIO_AUTH_TOKEN) {
     throw new Error("Twilio credentials required to fetch the recording");
   }
@@ -34,7 +36,7 @@ export async function transcribeRecording(recordingUrl: string): Promise<Transcr
 
   const dgRes = await fetch(dgUrl, {
     method: "POST",
-    headers: { Authorization: `Token ${env.DEEPGRAM_API_KEY}`, "Content-Type": "audio/mpeg" },
+    headers: { Authorization: `Token ${deepgramKey}`, "Content-Type": "audio/mpeg" },
     body: audio,
     signal: AbortSignal.timeout(120_000),
   });

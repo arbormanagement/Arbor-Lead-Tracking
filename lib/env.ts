@@ -23,6 +23,9 @@ export const env = createEnv({
     ADMIN_PASSWORD_HASH: z.string().optional(),
 
     COOKIE_SIGNING_SECRET: z.string().min(16),
+    // Root key for envelope-encrypting integration credentials at rest (32 bytes,
+    // hex or base64). Required only to save/read DB-stored creds; absent → env fallback.
+    CREDENTIALS_ENCRYPTION_KEY: z.string().optional(),
 
     TWILIO_ACCOUNT_SID: z.string().startsWith("AC").optional(),
     TWILIO_AUTH_TOKEN: z.string().optional(),
@@ -75,6 +78,7 @@ export const env = createEnv({
     ADMIN_EMAIL: process.env.ADMIN_EMAIL,
     ADMIN_PASSWORD_HASH: process.env.ADMIN_PASSWORD_HASH,
     COOKIE_SIGNING_SECRET: process.env.COOKIE_SIGNING_SECRET,
+    CREDENTIALS_ENCRYPTION_KEY: process.env.CREDENTIALS_ENCRYPTION_KEY,
     TWILIO_ACCOUNT_SID: process.env.TWILIO_ACCOUNT_SID,
     TWILIO_AUTH_TOKEN: process.env.TWILIO_AUTH_TOKEN,
     TWILIO_API_KEY_SID: process.env.TWILIO_API_KEY_SID,

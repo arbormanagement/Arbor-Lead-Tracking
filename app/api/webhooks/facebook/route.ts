@@ -3,6 +3,7 @@ import { and, eq } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { campaigns, facebookLeads, leads, sources } from "@/lib/db/schema";
 import { getFacebookLead } from "@/lib/integrations/facebook";
+import { getPlatformCreds } from "@/lib/credentials";
 import { normalizeEmail, normalizePhone } from "@/lib/phone";
 import { env } from "@/lib/env";
 
@@ -16,12 +17,13 @@ export const runtime = "nodejs";
  * Subscribe the page to this URL in the Meta app dashboard (or via the Graph API)
  * with verify token = FACEBOOK_VERIFY_TOKEN.
  */
-export function GET(req: Request) {
+export async function GET(req: Request) {
   const url = new URL(req.url);
   const mode = url.searchParams.get("hub.mode");
   const token = url.searchParams.get("hub.verify_token");
   const challenge = url.searchParams.get("hub.challenge");
-  if (mode === "subscribe" && token && token === env.FACEBOOK_VERIFY_TOKEN) {
+  const verifyToken = (await getPlatformCreds("facebook")).verify_token;
+  if (mode === "subscribe" && token && verifyToken && token === verifyToken) {
     return new Response(challenge ?? "", { status: 200 });
   }
   return new Response("forbidden", { status: 403 });
@@ -29,7 +31,8 @@ export function GET(req: Request) {
 
 export async function POST(req: Request) {
   const raw = await req.text();
-  if (!verifySignature(raw, req.headers.get("x-hub-signature-256"))) {
+  const appSecret = (await getPlatformCreds("facebook")).app_secret;
+  if (!verifySignature(raw, req.headers.get("x-hub-signature-256"), appSecret)) {
     return new Response("invalid signature", { status: 403 });
   }
 
@@ -110,14 +113,14 @@ async function ingestLead(leadgenId: string) {
   });
 }
 
-function verifySignature(raw: string, header: string | null): boolean {
-  if (!env.FACEBOOK_APP_SECRET) {
+function verifySignature(raw: string, header: string | null, appSecret: string | null): boolean {
+  if (!appSecret) {
     if (env.NODE_ENV === "production") return false;
-    console.warn("[fb webhook] FACEBOOK_APP_SECRET unset — skipping signature check (dev only)");
+    console.warn("[fb webhook] Facebook app secret unset — skipping signature check (dev only)");
     return true;
   }
   if (!header?.startsWith("sha256=")) return false;
-  const expected = createHmac("sha256", env.FACEBOOK_APP_SECRET).update(raw).digest("hex");
+  const expected = createHmac("sha256", appSecret).update(raw).digest("hex");
   const a = Buffer.from(header.slice("sha256=".length));
   const b = Buffer.from(expected);
   return a.length === b.length && timingSafeEqual(a, b);
