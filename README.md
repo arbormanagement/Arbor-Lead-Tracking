@@ -47,6 +47,17 @@ lib/
 scripts/                seed · hash-password
 ```
 
+## Website tracking snippet
+Add once to arbor-mgmt.com (e.g. in the root layout `<head>`):
+
+```html
+<script async src="https://app.arbor-mgmt.com/track.js"></script>
+```
+
+It sets first-party `arbor_vid`/`arbor_sid` cookies, captures UTM/click-ids/referrer/
+GA client id, sends a pageview, and captures form submissions (add `data-arbor-ignore`
+to any form you want skipped). Web-form submissions become `web_form` leads.
+
 ## Phased delivery
 1. **Phase 1 (this scaffold):** native call tracking on static numbers — forward + whisper +
    record + voicemail; leads/calls dashboard. *Starts replacing CallRail.*
