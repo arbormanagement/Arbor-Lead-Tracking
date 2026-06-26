@@ -34,8 +34,24 @@ export const env = createEnv({
     DEEPGRAM_API_KEY: z.string().optional(),
     BLOB_READ_WRITE_TOKEN: z.string().optional(),
 
+    // MCP server — retained as an optional per-platform fallback for the read path.
     ARBOR_MCP_URL: z.string().url().default("https://arbor-mcp.up.railway.app/mcp"),
     ARBOR_MCP_TOKEN: z.string().optional(),
+
+    // ── Direct API credentials (primary read path) ──
+    // HousecallPro (revenue source of truth) — simple API-key REST.
+    HCP_API_BASE: z.string().url().default("https://api.housecallpro.com"),
+    HCP_API_KEY: z.string().optional(),
+    // Google Ads — OAuth2 refresh-token flow + developer token.
+    GOOGLE_ADS_DEVELOPER_TOKEN: z.string().optional(),
+    GOOGLE_ADS_CLIENT_ID: z.string().optional(),
+    GOOGLE_ADS_CLIENT_SECRET: z.string().optional(),
+    GOOGLE_ADS_REFRESH_TOKEN: z.string().optional(),
+    // Manager (MCC) account id, digits only, if calls go through a manager.
+    GOOGLE_ADS_LOGIN_CUSTOMER_ID: z.string().optional(),
+    // Facebook Marketing API — long-lived access token.
+    FACEBOOK_ACCESS_TOKEN: z.string().optional(),
+    FACEBOOK_API_VERSION: z.string().default("v21.0"),
 
     FB_AD_ACCOUNT_ID: z.string().optional(),
     GOOGLE_ADS_CUSTOMER_ID: z.string().optional(),
@@ -67,6 +83,15 @@ export const env = createEnv({
     BLOB_READ_WRITE_TOKEN: process.env.BLOB_READ_WRITE_TOKEN,
     ARBOR_MCP_URL: process.env.ARBOR_MCP_URL,
     ARBOR_MCP_TOKEN: process.env.ARBOR_MCP_TOKEN,
+    HCP_API_BASE: process.env.HCP_API_BASE,
+    HCP_API_KEY: process.env.HCP_API_KEY,
+    GOOGLE_ADS_DEVELOPER_TOKEN: process.env.GOOGLE_ADS_DEVELOPER_TOKEN,
+    GOOGLE_ADS_CLIENT_ID: process.env.GOOGLE_ADS_CLIENT_ID,
+    GOOGLE_ADS_CLIENT_SECRET: process.env.GOOGLE_ADS_CLIENT_SECRET,
+    GOOGLE_ADS_REFRESH_TOKEN: process.env.GOOGLE_ADS_REFRESH_TOKEN,
+    GOOGLE_ADS_LOGIN_CUSTOMER_ID: process.env.GOOGLE_ADS_LOGIN_CUSTOMER_ID,
+    FACEBOOK_ACCESS_TOKEN: process.env.FACEBOOK_ACCESS_TOKEN,
+    FACEBOOK_API_VERSION: process.env.FACEBOOK_API_VERSION,
     FB_AD_ACCOUNT_ID: process.env.FB_AD_ACCOUNT_ID,
     GOOGLE_ADS_CUSTOMER_ID: process.env.GOOGLE_ADS_CUSTOMER_ID,
     GA4_PROPERTY_ID: process.env.GA4_PROPERTY_ID,

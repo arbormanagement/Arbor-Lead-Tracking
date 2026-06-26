@@ -9,7 +9,8 @@ Edwardsville + O'Fallon). WhatConverts-style. Single-tenant. Owner: Justin
 - **Web/form tracking** via first-party `track.js` on arbor-mgmt.com.
 - **Facebook lead-gen** via the MCP webhook.
 - **ROI = attributed HousecallPro job revenue ÷ ad spend**, per source/campaign/location.
-- **Ad spend + HCP reads go through the Arbor MCP server** (`execute_tools`) — this app holds NO Google/Meta/HCP credentials, only an MCP token.
+- **Read path is DIRECT to each platform API** (decision 2026-06-26): a background sync needs clean typed data + reliability, so we don't route it through the LLM-oriented MCP gateway. All spend/revenue access is behind `lib/integrations` (`SpendProvider`/`RevenueProvider`) so any provider can be swapped — including back to an MCP-backed impl. The MCP client (`lib/mcp/client.ts`) is retained as an optional per-platform fallback.
+- Direct providers: `lib/integrations/housecallpro.ts` (API key), `google-ads.ts` (OAuth refresh → GAQL searchStream), `facebook.ts` (Graph insights). Sync jobs in `lib/sync/{spend,hcp}.ts`, recorded in `sync_runs`; admin trigger `POST /api/sync/{spend|hcp}` (Inngest cron wired at deploy).
 
 ## Stack & conventions
 - Next.js App Router on Vercel · Neon Postgres · Drizzle ORM (`casing: snake_case`).
