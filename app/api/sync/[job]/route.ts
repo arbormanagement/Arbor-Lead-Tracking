@@ -2,6 +2,8 @@ import { getSession } from "@/lib/auth";
 import { syncSpend } from "@/lib/sync/spend";
 import { syncHcp } from "@/lib/sync/hcp";
 import { runAttribution } from "@/lib/sync/attribution";
+import { syncTranscriptions } from "@/lib/sync/transcribe";
+import { syncLsaLeads } from "@/lib/sync/lsa";
 import { releaseExpired } from "@/lib/dni/assign";
 
 export const runtime = "nodejs";
@@ -28,11 +30,17 @@ export async function POST(_req: Request, { params }: { params: Promise<{ job: s
       case "reaper":
         await releaseExpired();
         return Response.json({ ok: true, result: "released expired leases" });
+      case "transcribe":
+        return Response.json({ ok: true, result: await syncTranscriptions({ limit: 25 }) });
+      case "lsa":
+        return Response.json({ ok: true, result: await syncLsaLeads({ sinceDays: 30 }) });
       case "all": {
+        const transcribe = await syncTranscriptions({ limit: 25 });
+        const lsa = await syncLsaLeads({ sinceDays: 30 });
         const hcp = await syncHcp({ sinceDays: 30 });
         const spend = await syncSpend({ sinceDays: 7 });
         const attribution = await runAttribution({ windowDays: 90 });
-        return Response.json({ ok: true, result: { hcp, spend, attribution } });
+        return Response.json({ ok: true, result: { transcribe, lsa, hcp, spend, attribution } });
       }
       default:
         return Response.json({ error: `unknown job '${job}'` }, { status: 400 });

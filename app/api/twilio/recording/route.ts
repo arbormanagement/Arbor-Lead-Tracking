@@ -39,7 +39,9 @@ export async function POST(req: Request) {
       })
       .where(eq(calls.twilioCallSid, callSid));
 
-    // TODO(phase5): inngest.send({ name: "call.recording.ready", data: { callSid } })
+    // Transcription runs via the batch job `syncTranscriptions` (POST /api/sync/transcribe,
+    // Inngest cron at deploy) which picks up calls with a recording and no transcript.
+    // A per-call Inngest event can replace the batch poll once Inngest is wired.
   }
 
   return xmlResponse("<Response/>");

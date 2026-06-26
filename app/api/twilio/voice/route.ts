@@ -142,6 +142,13 @@ async function recordCall(args: {
   const existing = await db.select({ id: calls.id }).from(calls).where(eq(calls.twilioCallSid, callSid)).limit(1);
   if (existing.length) return;
 
+  // Repeat-caller detection (one quick indexed lookup — keep the webhook fast).
+  let isFirstTime = true;
+  if (fromE164) {
+    const prior = await db.select({ id: calls.id }).from(calls).where(eq(calls.fromNumber, fromE164)).limit(1);
+    isFirstTime = prior.length === 0;
+  }
+
   const [lead] = await db
     .insert(leads)
     .values({
@@ -151,6 +158,7 @@ async function recordCall(args: {
       sourceId,
       location: tn.location ?? "unknown",
       isSpam: status === "rejected_spam",
+      isFirstTime,
     })
     .returning({ id: leads.id });
 

@@ -26,29 +26,37 @@ export default async function CallsPage() {
               <th>Duration</th>
               <th>Recording</th>
               <th>Intent</th>
+              <th>Transcript</th>
             </tr>
           </thead>
           <tbody>
-            {rows.map((c) => (
-              <tr key={c.id}>
-                <td>{dateTime(c.createdAt)}</td>
-                <td>{formatPhoneDisplay(c.fromNumber)}</td>
-                <td>
-                  <span className="badge">{c.voicemail ? "voicemail" : c.status}</span>
-                </td>
-                <td>{durationLabel(c.durationSec)}</td>
-                <td>
-                  {c.recordingUrl ? (
-                    <a href={c.recordingUrl} target="_blank" rel="noreferrer">
-                      ▶ play
-                    </a>
-                  ) : (
-                    "—"
-                  )}
-                </td>
-                <td>{c.intentLabel ?? "—"}</td>
-              </tr>
-            ))}
+            {rows.map((c) => {
+              const spam = c.spamScore != null && Number(c.spamScore) >= 0.5;
+              return (
+                <tr key={c.id}>
+                  <td>{dateTime(c.createdAt)}</td>
+                  <td>{formatPhoneDisplay(c.fromNumber)}</td>
+                  <td>
+                    <span className="badge">{c.voicemail ? "voicemail" : c.status}</span>
+                    {spam && <span className="badge" style={{ marginLeft: 4, color: "var(--danger)" }}>spam</span>}
+                  </td>
+                  <td>{durationLabel(c.durationSec)}</td>
+                  <td>
+                    {c.recordingUrl ? (
+                      <a href={c.recordingUrl} target="_blank" rel="noreferrer">
+                        ▶ play
+                      </a>
+                    ) : (
+                      "—"
+                    )}
+                  </td>
+                  <td>{c.intentLabel ?? "—"}</td>
+                  <td style={{ maxWidth: 320, color: "var(--muted)" }} title={c.transcript ?? ""}>
+                    {c.transcript ? c.transcript.slice(0, 90) + (c.transcript.length > 90 ? "…" : "") : "—"}
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       )}

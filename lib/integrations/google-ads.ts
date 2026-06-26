@@ -85,6 +85,71 @@ class GoogleAdsProvider implements SpendProvider {
     }
     return rows;
   }
+
+  /**
+   * Local Services Ads leads (calls/messages from the LSA unit). Best-effort field
+   * mapping — the local_services_lead resource shape can vary; raw is retained.
+   */
+  async getLsaLeads({ sinceDays }: { sinceDays: number }): Promise<LsaLead[]> {
+    const customerId = (env.GOOGLE_ADS_CUSTOMER_ID ?? "").replace(/-/g, "");
+    if (!customerId || !env.GOOGLE_ADS_DEVELOPER_TOKEN) return [];
+
+    const gaql = `
+      SELECT local_services_lead.id, local_services_lead.contact_details,
+             local_services_lead.lead_type, local_services_lead.lead_status,
+             local_services_lead.creation_date_time
+      FROM local_services_lead`;
+
+    const token = await this.accessToken();
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${token}`,
+      "developer-token": env.GOOGLE_ADS_DEVELOPER_TOKEN,
+      "Content-Type": "application/json",
+    };
+    if (env.GOOGLE_ADS_LOGIN_CUSTOMER_ID) {
+      headers["login-customer-id"] = env.GOOGLE_ADS_LOGIN_CUSTOMER_ID.replace(/-/g, "");
+    }
+
+    const res = await fetch(
+      `https://googleads.googleapis.com/${GOOGLE_ADS_API_VERSION}/customers/${customerId}/googleAds:searchStream`,
+      { method: "POST", headers, body: JSON.stringify({ query: gaql }), signal: AbortSignal.timeout(90_000) },
+    );
+    if (!res.ok) throw new Error(`Google LSA ${res.status}: ${await res.text()}`);
+
+    const cutoff = Date.now() - sinceDays * 86_400_000;
+    const batches = (await res.json()) as Array<{ results?: Array<Record<string, any>> }>;
+    const out: LsaLead[] = [];
+    for (const batch of batches) {
+      for (const r of batch.results ?? []) {
+        const l = r.localServicesLead ?? {};
+        const cd = l.contactDetails ?? {};
+        const created = l.creationDateTime ? new Date(l.creationDateTime) : null;
+        if (created && created.getTime() < cutoff) continue;
+        out.push({
+          id: String(l.id ?? ""),
+          name: cd.consumerName ?? null,
+          phone: cd.phoneNumber ?? null,
+          email: cd.email ?? null,
+          leadType: l.leadType ?? null,
+          status: l.leadStatus ?? null,
+          createdTime: created,
+          raw: r,
+        });
+      }
+    }
+    return out;
+  }
+}
+
+export interface LsaLead {
+  id: string;
+  name: string | null;
+  phone: string | null;
+  email: string | null;
+  leadType: string | null;
+  status: string | null;
+  createdTime: Date | null;
+  raw?: unknown;
 }
 
 export const googleAds = new GoogleAdsProvider();

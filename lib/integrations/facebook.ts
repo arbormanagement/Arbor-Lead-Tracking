@@ -55,6 +55,55 @@ class FacebookProvider implements SpendProvider {
   }
 }
 
+export interface FbLeadDetail {
+  leadgenId: string;
+  formId?: string;
+  adId?: string;
+  campaignId?: string;
+  createdTime?: string;
+  fieldData: Array<{ name: string; values: string[] }>;
+}
+
+/**
+ * Fetch a lead-gen submission's full field data. The webhook only carries the
+ * leadgen_id, so we read the fields directly from the Graph API. Also resolves the
+ * ad's campaign so the lead attributes to a campaign for ROI.
+ */
+export async function getFacebookLead(leadgenId: string): Promise<FbLeadDetail> {
+  if (!env.FACEBOOK_ACCESS_TOKEN) throw new Error("FACEBOOK_ACCESS_TOKEN is not set");
+  const v = env.FACEBOOK_API_VERSION;
+  const url = new URL(`https://graph.facebook.com/${v}/${leadgenId}`);
+  url.searchParams.set("fields", "id,created_time,ad_id,form_id,campaign_id,field_data");
+  url.searchParams.set("access_token", env.FACEBOOK_ACCESS_TOKEN);
+
+  const res = await fetch(url, { signal: AbortSignal.timeout(30_000) });
+  if (!res.ok) throw new Error(`Facebook lead ${res.status}: ${await res.text()}`);
+  const j = (await res.json()) as Record<string, any>;
+
+  let campaignId: string | undefined = j.campaign_id;
+  if (!campaignId && j.ad_id) {
+    // Some payloads omit campaign_id on the lead — resolve via the ad.
+    try {
+      const adUrl = new URL(`https://graph.facebook.com/${v}/${j.ad_id}`);
+      adUrl.searchParams.set("fields", "campaign_id");
+      adUrl.searchParams.set("access_token", env.FACEBOOK_ACCESS_TOKEN);
+      const adRes = await fetch(adUrl, { signal: AbortSignal.timeout(30_000) });
+      if (adRes.ok) campaignId = ((await adRes.json()) as { campaign_id?: string }).campaign_id;
+    } catch {
+      /* best effort */
+    }
+  }
+
+  return {
+    leadgenId: String(j.id ?? leadgenId),
+    formId: j.form_id,
+    adId: j.ad_id,
+    campaignId,
+    createdTime: j.created_time,
+    fieldData: Array.isArray(j.field_data) ? j.field_data : [],
+  };
+}
+
 function sumLeadActions(actions: unknown): number {
   if (!Array.isArray(actions)) return 0;
   return actions
