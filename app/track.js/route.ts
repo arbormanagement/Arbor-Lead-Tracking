@@ -100,6 +100,38 @@ const SNIPPET = String.raw`(function () {
 
     send(merge({ event: 'pageview' }));
 
+    // Pool-based DNI — swap displayed numbers to this session's tracking number.
+    function swapNumbers(e164, display) {
+      var tel = 'tel:' + e164;
+      var marked = document.querySelectorAll('[data-arbor-phone]');
+      for (var i = 0; i < marked.length; i++) {
+        var el = marked[i];
+        if (el.getAttribute('data-arbor-swapped')) continue;
+        el.textContent = display;
+        if (el.tagName === 'A') el.setAttribute('href', tel);
+        el.setAttribute('data-arbor-swapped', '1');
+      }
+      var links = document.querySelectorAll('a[href^="tel:"]');
+      for (var j = 0; j < links.length; j++) {
+        var a = links[j];
+        if (a.getAttribute('data-arbor-swapped')) continue;
+        a.setAttribute('href', tel);
+        if (/\d{3}[^\d]*\d{4}/.test(a.textContent || '')) a.textContent = display;
+        a.setAttribute('data-arbor-swapped', '1');
+      }
+    }
+    (function () {
+      var ASSIGN = new URL('/api/dni/assign', script ? script.src : location.origin).toString();
+      var body = JSON.stringify({
+        vid: vid, sid: sid, url: location.href, referrer: document.referrer || undefined,
+        utm: base.utm, click: base.click
+      });
+      fetch(ASSIGN, { method: 'POST', body: body, headers: { 'Content-Type': 'text/plain' } })
+        .then(function (r) { return r.json(); })
+        .then(function (d) { if (d && d.number) swapNumbers(d.number, d.display || d.number); })
+        .catch(function () {});
+    })();
+
     // Form capture — never block the site's own submit (capture phase, no preventDefault).
     document.addEventListener('submit', function (ev) {
       var form = ev.target;

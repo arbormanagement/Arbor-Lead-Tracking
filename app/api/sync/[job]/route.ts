@@ -2,6 +2,7 @@ import { getSession } from "@/lib/auth";
 import { syncSpend } from "@/lib/sync/spend";
 import { syncHcp } from "@/lib/sync/hcp";
 import { runAttribution } from "@/lib/sync/attribution";
+import { releaseExpired } from "@/lib/dni/assign";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -24,6 +25,9 @@ export async function POST(_req: Request, { params }: { params: Promise<{ job: s
         return Response.json({ ok: true, result: await syncHcp({ sinceDays: 30 }) });
       case "attribution":
         return Response.json({ ok: true, result: await runAttribution({ windowDays: 90 }) });
+      case "reaper":
+        await releaseExpired();
+        return Response.json({ ok: true, result: "released expired leases" });
       case "all": {
         const hcp = await syncHcp({ sinceDays: 30 });
         const spend = await syncSpend({ sinceDays: 7 });
