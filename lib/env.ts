@@ -65,6 +65,10 @@ export const env = createEnv({
 
     INNGEST_EVENT_KEY: z.string().optional(),
     INNGEST_SIGNING_KEY: z.string().optional(),
+
+    // Shared secret the Vercel Cron scheduler sends (Authorization: Bearer) to
+    // trigger /api/cron/* — keeps the sync jobs off the public internet.
+    CRON_SECRET: z.string().optional(),
   },
   client: {},
   // Next.js inlines process.env at build; pass through explicitly.
@@ -105,6 +109,7 @@ export const env = createEnv({
     FACEBOOK_VERIFY_TOKEN: process.env.FACEBOOK_VERIFY_TOKEN,
     INNGEST_EVENT_KEY: process.env.INNGEST_EVENT_KEY,
     INNGEST_SIGNING_KEY: process.env.INNGEST_SIGNING_KEY,
+    CRON_SECRET: process.env.CRON_SECRET,
   },
   // Allow `npm run build` / lint without a full env (skips validation when set).
   skipValidation:
