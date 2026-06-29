@@ -114,7 +114,11 @@ function PlatformCard({ platform, canSave }: { platform: Platform; canSave: bool
               </label>
               <input
                 type={f.secret ? "password" : "text"}
-                placeholder={f.placeholder || (st?.set ? "•••••••• (leave blank to keep)" : "")}
+                placeholder={
+                  st?.set
+                    ? `saved · ${f.secret ? "••••" : ""}${st.last4 ?? ""} — leave blank to keep`
+                    : f.placeholder || ""
+                }
                 value={values[f.key] ?? ""}
                 onChange={(e) => setValues((v) => ({ ...v, [f.key]: e.target.value }))}
                 style={input}
