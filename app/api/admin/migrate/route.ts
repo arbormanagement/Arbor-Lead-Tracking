@@ -28,7 +28,13 @@ const SEED_SOURCES: Array<{ key: string; displayName: string; platform: "google"
 ];
 
 export async function GET(req: Request) {
-  if (req.headers.get("authorization") !== `Bearer ${env.CRON_SECRET}` || !env.CRON_SECRET) {
+  // Accept the secret via Authorization header OR ?secret= query param (so it can be
+  // triggered from a browser, since the sandbox can't reach the SSO-protected URL).
+  const auth = req.headers.get("authorization");
+  const querySecret = new URL(req.url).searchParams.get("secret");
+  const authorized =
+    !!env.CRON_SECRET && (auth === `Bearer ${env.CRON_SECRET}` || querySecret === env.CRON_SECRET);
+  if (!authorized) {
     return new Response("unauthorized", { status: 401 });
   }
 
