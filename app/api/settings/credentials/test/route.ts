@@ -72,6 +72,18 @@ async function probe(platform: string): Promise<{ ok: boolean; error?: string; d
       });
       return res.ok ? { ok: true, detail: "Authenticated" } : { ok: false, error: `HTTP ${res.status}` };
     }
+    case "twilio": {
+      if (!c.account_sid) return { ok: false, error: "Account SID not set" };
+      const user = c.api_key_sid && c.api_key_secret ? c.api_key_sid : c.account_sid;
+      const pass = c.api_key_sid && c.api_key_secret ? c.api_key_secret : c.auth_token;
+      if (!pass) return { ok: false, error: "Auth token / API key secret not set" };
+      const basic = Buffer.from(`${user}:${pass}`).toString("base64");
+      const res = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${c.account_sid}.json`, {
+        headers: { Authorization: `Basic ${basic}` },
+        signal: AbortSignal.timeout(20_000),
+      });
+      return res.ok ? { ok: true, detail: "Account reachable" } : { ok: false, error: `HTTP ${res.status}` };
+    }
     default:
       return { ok: false, error: "unknown platform" };
   }

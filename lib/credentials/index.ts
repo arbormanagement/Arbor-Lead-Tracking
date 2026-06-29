@@ -36,16 +36,23 @@ export async function getPlatformCreds(platform: string, tenantId = DEFAULT_TENA
   const data = envFallback(spec);
 
   if (credentialEncryptionAvailable()) {
-    const rows = await db
-      .select({ key: integrationCredentials.key, value: integrationCredentials.valueEncrypted })
-      .from(integrationCredentials)
-      .where(and(eq(integrationCredentials.tenantId, tenantId), eq(integrationCredentials.platform, platform)));
-    for (const r of rows) {
-      try {
-        data[r.key] = decryptSecret(r.value);
-      } catch {
-        /* leave env fallback if a row fails to decrypt (e.g. root key rotated) */
+    try {
+      const rows = await db
+        .select({ key: integrationCredentials.key, value: integrationCredentials.valueEncrypted })
+        .from(integrationCredentials)
+        .where(and(eq(integrationCredentials.tenantId, tenantId), eq(integrationCredentials.platform, platform)));
+      for (const r of rows) {
+        try {
+          data[r.key] = decryptSecret(r.value);
+        } catch {
+          /* leave env fallback if a row fails to decrypt (e.g. root key rotated) */
+        }
       }
+    } catch (err) {
+      // DB unreachable → fall back to env values. Critical for the call hot path
+      // (Twilio creds), which must never hard-fail on a transient DB blip.
+      console.error(`[credentials] DB read failed for ${platform}; using env fallback`, err);
+      return data;
     }
   }
 

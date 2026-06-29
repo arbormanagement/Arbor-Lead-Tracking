@@ -11,7 +11,7 @@ export const runtime = "nodejs";
  */
 export async function POST(req: Request) {
   const { params, url } = await parseTwilioForm(req);
-  if (!validateTwilioSignature(req.headers.get("x-twilio-signature"), url, params)) {
+  if ((await validateTwilioSignature(req.headers.get("x-twilio-signature"), url, params)) === "invalid") {
     return new Response("invalid signature", { status: 403 });
   }
 

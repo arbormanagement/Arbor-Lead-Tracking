@@ -1,24 +1,34 @@
 import twilio from "twilio";
 import { env } from "@/lib/env";
+import { getTwilioConfig } from "./client";
+
+export type SignatureResult = "valid" | "invalid" | "unresolved";
 
 /**
- * Validate the X-Twilio-Signature header so spoofed POSTs can't inject fake calls.
- * Twilio signs the full webhook URL + sorted POST params with the auth token.
+ * Validate the X-Twilio-Signature header. Returns:
+ *  - "valid"      signature matches
+ *  - "invalid"    we have a token and the signature does NOT match (likely spoofed)
+ *  - "unresolved" no auth token available (or dev bypass) — caller decides (the
+ *                 voice route fails OPEN on this so a real call is never dropped)
  *
- * In dev (no auth token / explicit bypass) validation is skipped with a warning.
+ * The auth token comes from the in-app resolver (DB over env); if neither has it we
+ * return "unresolved" rather than rejecting.
  */
-export function validateTwilioSignature(
+export async function validateTwilioSignature(
   signature: string | null,
   url: string,
   params: Record<string, string>,
-): boolean {
-  if (!env.TWILIO_AUTH_TOKEN) {
-    if (env.NODE_ENV === "production") return false;
-    console.warn("[twilio] TWILIO_AUTH_TOKEN unset — skipping signature check (dev only)");
-    return true;
+): Promise<SignatureResult> {
+  const { authToken } = await getTwilioConfig();
+
+  if (!authToken) {
+    if (env.NODE_ENV !== "production") {
+      console.warn("[twilio] no auth token — skipping signature check (dev)");
+    }
+    return "unresolved";
   }
-  if (!signature) return false;
-  return twilio.validateRequest(env.TWILIO_AUTH_TOKEN, signature, url, params);
+  if (!signature) return "invalid";
+  return twilio.validateRequest(authToken, signature, url, params) ? "valid" : "invalid";
 }
 
 /** Parse an application/x-www-form-urlencoded Twilio webhook body. */
@@ -29,8 +39,5 @@ export async function parseTwilioForm(req: Request): Promise<{
   const body = await req.text();
   const params: Record<string, string> = {};
   new URLSearchParams(body).forEach((v, k) => (params[k] = v));
-  // Twilio signs the externally-visible URL. Prefer the configured webhook base
-  // so proxies/rewrites don't break validation.
-  const url = req.url;
-  return { params, url };
+  return { params, url: req.url };
 }

@@ -9,6 +9,7 @@ import {
   trackingNumbers,
 } from "@/lib/db/schema";
 import { validateTwilioSignature, parseTwilioForm } from "@/lib/twilio/signature";
+import { getTwilioConfig } from "@/lib/twilio/client";
 import {
   forwardTwiml,
   rejectTwiml,
@@ -28,7 +29,9 @@ export async function POST(req: Request) {
   const { params, url } = await parseTwilioForm(req);
   const signature = req.headers.get("x-twilio-signature");
 
-  if (!validateTwilioSignature(signature, url, params)) {
+  // Tri-state: reject only a confirmed-bad signature. "unresolved" (no token) fails
+  // OPEN — we forward rather than drop a real call.
+  if ((await validateTwilioSignature(signature, url, params)) === "invalid") {
     return new Response("invalid signature", { status: 403 });
   }
 
@@ -36,6 +39,9 @@ export async function POST(req: Request) {
   const fromRaw = params.From;
   const calledNumber = params.To; // the tracking number that was dialed
   const fromE164 = normalizePhone(fromRaw);
+
+  // Forwarding destination from the configured Twilio default (DB over env).
+  const destination = (await getTwilioConfig()).defaultDestination ?? env.TWILIO_DEFAULT_DESTINATION;
 
   try {
     // 1) Resolve which tracking number was called.
@@ -84,18 +90,18 @@ export async function POST(req: Request) {
 
     // 3) Spam pre-check (hard rules only — keep it fast).
     if (fromE164 && (await isHardSpam(fromE164))) {
-      await recordCall({ callSid, fromE164, tn, assignmentId, sourceKey, status: "rejected_spam" });
+      await recordCall({ callSid, fromE164, tn, assignmentId, sourceKey, destination, status: "rejected_spam" });
       return xmlResponse(rejectTwiml());
     }
 
     // 4) Persist the call + lead immediately (status callbacks fill in the rest).
-    await recordCall({ callSid, fromE164, tn, assignmentId, sourceKey, status: "ringing" });
+    await recordCall({ callSid, fromE164, tn, assignmentId, sourceKey, destination, status: "ringing" });
 
     // 5) Forward with whisper + dual-channel recording.
     const whisper = sourceKey ? `Tree lead from ${sourceKey}` : "Tree lead";
     return xmlResponse(
       forwardTwiml({
-        destination: env.TWILIO_DEFAULT_DESTINATION,
+        destination,
         whisper,
         recordingNotice: "This call may be recorded for quality.",
       }),
@@ -127,9 +133,10 @@ async function recordCall(args: {
   tn: typeof trackingNumbers.$inferSelect;
   assignmentId: string | null;
   sourceKey: string | null;
+  destination: string;
   status: string;
 }) {
-  const { callSid, fromE164, tn, assignmentId, sourceKey, status } = args;
+  const { callSid, fromE164, tn, assignmentId, sourceKey, destination, status } = args;
 
   // Resolve source id (best-effort) for the denormalized lead row.
   let sourceId: string | null = null;
@@ -168,7 +175,7 @@ async function recordCall(args: {
     trackingNumberId: tn.id,
     numberAssignmentId: assignmentId,
     fromNumber: fromE164,
-    toDestination: env.TWILIO_DEFAULT_DESTINATION,
+    toDestination: destination,
     direction: "inbound",
     status,
   });

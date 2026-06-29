@@ -1,11 +1,13 @@
+import { eq } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { trackingNumbers } from "@/lib/db/schema";
-import { getTwilioClient } from "./client";
+import { getTwilioClient, getTwilioConfig } from "./client";
 import { env } from "@/lib/env";
-import type { poolEnum, locationEnum } from "@/lib/db/schema";
+import type { poolEnum, locationEnum, numberStatusEnum } from "@/lib/db/schema";
 
 type Pool = (typeof poolEnum.enumValues)[number];
 type Loc = (typeof locationEnum.enumValues)[number];
+type NumberStatus = (typeof numberStatusEnum.enumValues)[number];
 
 interface ProvisionOpts {
   pool: Pool;
@@ -18,7 +20,10 @@ interface ProvisionOpts {
   friendlyName?: string;
 }
 
-const webhookBase = () => env.TWILIO_VOICE_WEBHOOK_BASE ?? `${env.APP_BASE_URL}/api/twilio`;
+async function webhookBase(): Promise<string> {
+  const cfg = await getTwilioConfig();
+  return cfg.voiceWebhookBase ?? env.TWILIO_VOICE_WEBHOOK_BASE ?? `${env.APP_BASE_URL}/api/twilio`;
+}
 
 /**
  * Provision (buy) or import a Twilio number into a pool: point its voice +
@@ -26,8 +31,8 @@ const webhookBase = () => env.TWILIO_VOICE_WEBHOOK_BASE ?? `${env.APP_BASE_URL}/
  * callbacks are set per-call in the dial TwiML (`lib/twilio/twiml.ts`), not here.
  */
 export async function provisionNumber(opts: ProvisionOpts) {
-  const client = getTwilioClient();
-  const base = webhookBase();
+  const client = await getTwilioClient();
+  const base = await webhookBase();
   const config = {
     voiceUrl: `${base}/voice`,
     voiceMethod: "POST" as const,
@@ -86,4 +91,53 @@ export async function provisionNumber(opts: ProvisionOpts) {
     .returning();
 
   return row;
+}
+
+/** Edit a tracking number's metadata (pool / static / source / location / name). */
+export async function updateNumber(
+  id: string,
+  patch: { pool?: Pool; isStatic?: boolean; staticSourceId?: string | null; location?: Loc; friendlyName?: string },
+) {
+  const [row] = await db
+    .update(trackingNumbers)
+    .set({ ...patch, updatedAt: new Date() })
+    .where(eq(trackingNumbers.id, id))
+    .returning();
+  return row;
+}
+
+/** Enable/disable a number in-app (keeps the Twilio number; just stops using it). */
+export async function setNumberStatus(id: string, status: NumberStatus) {
+  const [row] = await db
+    .update(trackingNumbers)
+    .set({ status, updatedAt: new Date() })
+    .where(eq(trackingNumbers.id, id))
+    .returning();
+  return row;
+}
+
+/**
+ * Release a number: relinquish it on Twilio (stops billing — the number is gone)
+ * and mark the row disabled. The row is kept so historical calls still resolve.
+ */
+export async function releaseNumber(id: string) {
+  const [row] = await db.select().from(trackingNumbers).where(eq(trackingNumbers.id, id)).limit(1);
+  if (!row) throw new Error("tracking number not found");
+
+  if (row.twilioSid) {
+    const client = await getTwilioClient();
+    try {
+      await client.incomingPhoneNumbers(row.twilioSid).remove();
+    } catch (err) {
+      // If it's already gone on Twilio, proceed to mark it disabled locally.
+      console.error("[twilio] release failed (continuing to disable locally)", err);
+    }
+  }
+
+  const [updated] = await db
+    .update(trackingNumbers)
+    .set({ status: "disabled", updatedAt: new Date() })
+    .where(eq(trackingNumbers.id, id))
+    .returning();
+  return updated;
 }

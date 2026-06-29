@@ -4,6 +4,7 @@ import { numberAssignments, trackingNumbers } from "@/lib/db/schema";
 import { formatPhoneDisplay } from "@/lib/phone";
 import { dateTime } from "@/lib/format";
 import { ProvisionForm } from "./provision-form";
+import { NumberActions } from "./number-actions";
 
 export const dynamic = "force-dynamic";
 
@@ -80,6 +81,7 @@ export default async function NumbersPage() {
               <th>Location</th>
               <th>Status</th>
               <th>Live</th>
+              <th>Actions</th>
             </tr>
           </thead>
           <tbody>
@@ -95,6 +97,9 @@ export default async function NumbersPage() {
                   <span className="badge">{n.status}</span>
                 </td>
                 <td>{leasedSet.has(n.id) ? "● leased" : ""}</td>
+                <td>
+                  <NumberActions id={n.id} status={n.status} pool={n.pool} />
+                </td>
               </tr>
             ))}
           </tbody>

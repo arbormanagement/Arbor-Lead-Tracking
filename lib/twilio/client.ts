@@ -1,28 +1,39 @@
 import twilio from "twilio";
-import { env } from "@/lib/env";
+import { getPlatformCreds } from "@/lib/credentials";
 
 /**
- * Twilio REST client (server-only). Prefer API key/secret over the auth token,
- * but fall back to the account SID + auth token if a key isn't configured.
- *
- * Lazily constructed so importing this module in a context without Twilio creds
- * (e.g. `next build`) doesn't throw.
+ * Twilio REST client (server-only), credentials from the in-app resolver (DB over
+ * env). Prefer API key/secret over the auth token, but fall back to account SID +
+ * auth token. Cached by resolved account SID so a credential change takes effect
+ * within the resolver's cache window.
  */
-let cached: ReturnType<typeof twilio> | null = null;
+let cached: { sid: string; client: ReturnType<typeof twilio> } | null = null;
 
-export function getTwilioClient() {
-  if (cached) return cached;
-  if (!env.TWILIO_ACCOUNT_SID) {
-    throw new Error("TWILIO_ACCOUNT_SID is not set");
-  }
-  if (env.TWILIO_API_KEY_SID && env.TWILIO_API_KEY_SECRET) {
-    cached = twilio(env.TWILIO_API_KEY_SID, env.TWILIO_API_KEY_SECRET, {
-      accountSid: env.TWILIO_ACCOUNT_SID,
-    });
-  } else if (env.TWILIO_AUTH_TOKEN) {
-    cached = twilio(env.TWILIO_ACCOUNT_SID, env.TWILIO_AUTH_TOKEN);
+export async function getTwilioClient() {
+  const c = await getPlatformCreds("twilio");
+  if (!c.account_sid) throw new Error("Twilio account SID is not configured");
+
+  if (cached && cached.sid === c.account_sid) return cached.client;
+
+  let client: ReturnType<typeof twilio>;
+  if (c.api_key_sid && c.api_key_secret) {
+    client = twilio(c.api_key_sid, c.api_key_secret, { accountSid: c.account_sid });
+  } else if (c.auth_token) {
+    client = twilio(c.account_sid, c.auth_token);
   } else {
     throw new Error("Twilio credentials missing (need API key/secret or auth token)");
   }
-  return cached;
+  cached = { sid: c.account_sid, client };
+  return client;
+}
+
+/** Resolve the auth token + default destination for signature checks / routing. */
+export async function getTwilioConfig() {
+  const c = await getPlatformCreds("twilio");
+  return {
+    accountSid: c.account_sid ?? null,
+    authToken: c.auth_token ?? null,
+    defaultDestination: c.default_destination ?? null,
+    voiceWebhookBase: c.voice_webhook_base ?? null,
+  };
 }

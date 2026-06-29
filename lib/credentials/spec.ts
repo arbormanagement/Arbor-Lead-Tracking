@@ -55,6 +55,18 @@ export const CREDENTIAL_SPECS: CredSpec[] = [
     label: "Deepgram (transcription)",
     fields: [{ key: "api_key", label: "API Key", secret: true, envKey: "DEEPGRAM_API_KEY" }],
   },
+  {
+    platform: "twilio",
+    label: "Twilio (call tracking)",
+    fields: [
+      { key: "account_sid", label: "Account SID", secret: true, envKey: "TWILIO_ACCOUNT_SID", placeholder: "AC…" },
+      { key: "auth_token", label: "Auth Token", secret: true, envKey: "TWILIO_AUTH_TOKEN" },
+      { key: "api_key_sid", label: "API Key SID (optional)", secret: true, envKey: "TWILIO_API_KEY_SID", placeholder: "SK…" },
+      { key: "api_key_secret", label: "API Key Secret (optional)", secret: true, envKey: "TWILIO_API_KEY_SECRET" },
+      { key: "default_destination", label: "Default forward number", envKey: "TWILIO_DEFAULT_DESTINATION", placeholder: "+16188368004" },
+      { key: "voice_webhook_base", label: "Webhook base (optional)", envKey: "TWILIO_VOICE_WEBHOOK_BASE", placeholder: "https://app…/api/twilio" },
+    ],
+  },
 ];
 
 export function getSpec(platform: string): CredSpec | undefined {
