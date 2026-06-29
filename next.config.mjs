@@ -3,6 +3,11 @@ const nextConfig = {
   reactStrictMode: true,
   // Twilio SDK is server-only; keep it out of the client/edge bundle.
   serverExternalPackages: ["twilio"],
+  // Bundle the Drizzle migration SQL into the one-time migrate function so it can
+  // apply migrations from inside Vercel (this app's network can reach Neon).
+  outputFileTracingIncludes: {
+    "/api/admin/migrate": ["./lib/db/migrations/**/*"],
+  },
   async headers() {
     return [
       {
