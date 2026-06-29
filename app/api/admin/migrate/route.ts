@@ -53,7 +53,20 @@ export async function GET(req: Request) {
     }
     const [{ count }] = await db.select({ count: sql<number>`count(*)::int` }).from(sources);
 
-    return Response.json({ ok: true, migrated: true, sources: count });
+    // 3) Report which key tables exist so we can confirm 0001 actually applied
+    //    (a prior migrate may have run on a build that predated this migration).
+    const res = await db.execute(
+      sql`select to_regclass('public.integration_credentials')::text as creds_table`,
+    );
+    const rows = (res as unknown as { rows?: Array<{ creds_table: string | null }> }).rows ?? [];
+    const credsTableExists = !!rows[0]?.creds_table;
+
+    return Response.json({
+      ok: true,
+      migrated: true,
+      sources: count,
+      tables: { integration_credentials: credsTableExists },
+    });
   } catch (err) {
     return Response.json({ ok: false, error: err instanceof Error ? err.message : String(err) }, { status: 500 });
   }

@@ -108,11 +108,17 @@ export async function credentialStatus(platform: string, tenantId = DEFAULT_TENA
 
   const dbKeys = new Set<string>();
   if (credentialEncryptionAvailable()) {
-    const rows = await db
-      .select({ key: integrationCredentials.key })
-      .from(integrationCredentials)
-      .where(and(eq(integrationCredentials.tenantId, tenantId), eq(integrationCredentials.platform, platform)));
-    for (const r of rows) dbKeys.add(r.key);
+    try {
+      const rows = await db
+        .select({ key: integrationCredentials.key })
+        .from(integrationCredentials)
+        .where(and(eq(integrationCredentials.tenantId, tenantId), eq(integrationCredentials.platform, platform)));
+      for (const r of rows) dbKeys.add(r.key);
+    } catch (err) {
+      // Table may not exist yet (DB not migrated to 0001). Don't crash the Settings
+      // page render — fall back to env-only status. getPlatformCreds is already guarded.
+      console.error(`[credentials] status DB read failed for ${platform}; env-only`, err);
+    }
   }
   const resolved = await getPlatformCreds(platform, tenantId);
 

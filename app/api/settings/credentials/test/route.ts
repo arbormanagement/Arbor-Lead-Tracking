@@ -73,16 +73,35 @@ async function probe(platform: string): Promise<{ ok: boolean; error?: string; d
       return res.ok ? { ok: true, detail: "Authenticated" } : { ok: false, error: `HTTP ${res.status}` };
     }
     case "twilio": {
-      if (!c.account_sid) return { ok: false, error: "Account SID not set" };
-      const user = c.api_key_sid && c.api_key_secret ? c.api_key_sid : c.account_sid;
-      const pass = c.api_key_sid && c.api_key_secret ? c.api_key_secret : c.auth_token;
-      if (!pass) return { ok: false, error: "Auth token / API key secret not set" };
+      // Two valid auth shapes: API Key (SK SID + secret) or Account SID + Auth Token.
+      const hasApiKey = !!(c.api_key_sid && c.api_key_secret);
+      const user = hasApiKey ? c.api_key_sid! : c.account_sid;
+      const pass = hasApiKey ? c.api_key_secret! : c.auth_token;
+      if (!user || !pass) {
+        return {
+          ok: false,
+          error: "Enter either an API Key SID + Secret, or an Account SID + Auth Token",
+        };
+      }
       const basic = Buffer.from(`${user}:${pass}`).toString("base64");
-      const res = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${c.account_sid}.json`, {
+      // If we have the Account SID, verify it directly. Otherwise (API-key-only) list
+      // accounts the key can reach — Twilio requires the Account SID in the path, so
+      // this both validates the key and discovers the account without forcing the user
+      // to also paste the (non-secret) Account SID just to run a connectivity test.
+      const url = c.account_sid
+        ? `https://api.twilio.com/2010-04-01/Accounts/${c.account_sid}.json`
+        : `https://api.twilio.com/2010-04-01/Accounts.json?PageSize=1`;
+      const res = await fetch(url, {
         headers: { Authorization: `Basic ${basic}` },
         signal: AbortSignal.timeout(20_000),
       });
-      return res.ok ? { ok: true, detail: "Account reachable" } : { ok: false, error: `HTTP ${res.status}` };
+      if (!res.ok) return { ok: false, error: `HTTP ${res.status}` };
+      return {
+        ok: true,
+        detail: c.account_sid
+          ? "Account reachable"
+          : "API key valid — also save your Account SID (AC…) to enable call tracking",
+      };
     }
     default:
       return { ok: false, error: "unknown platform" };
