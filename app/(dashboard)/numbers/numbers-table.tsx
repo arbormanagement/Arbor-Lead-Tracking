@@ -11,6 +11,7 @@ interface SourceOpt {
 interface PoolOpt {
   key: string;
   displayName: string;
+  isDni: boolean;
 }
 export interface NumberRow {
   id: string;
@@ -97,6 +98,7 @@ function Row({
 }) {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
+  const dniPools = pools.filter((p) => p.isDni);
 
   // Editable fields
   const [friendlyName, setFriendlyName] = useState(n.friendlyName ?? "");
@@ -128,7 +130,7 @@ function Row({
   async function save() {
     const ok = await patch({
       friendlyName,
-      pool,
+      pool: isStatic ? "reserved" : pool,
       isStatic,
       staticSourceKey: isStatic ? sourceKey : "",
       forwardDestination: forward || null,
@@ -211,23 +213,34 @@ function Row({
               <Field label="Forwards to (blank = account default)">
                 <input value={forward} onChange={(e) => setForward(e.target.value)} style={input} placeholder={officeDefault || "+1618…"} />
               </Field>
-              <Field label={`Source key${isStatic ? "" : " (pool number — ignored)"}`}>
-                <input
-                  list={`src-${n.id}`}
-                  value={sourceKey}
-                  onChange={(e) => setSourceKey(e.target.value)}
-                  disabled={!isStatic}
-                  style={{ ...input, opacity: isStatic ? 1 : 0.5 }}
-                  placeholder="e.g. gbp, google/cpc"
-                />
-                <datalist id={`src-${n.id}`}>
-                  {sources.map((s) => (
-                    <option key={s.key} value={s.key}>
-                      {s.displayName}
-                    </option>
-                  ))}
-                </datalist>
-              </Field>
+              {isStatic ? (
+                <Field label="Source (what this number represents)">
+                  <input
+                    list={`src-${n.id}`}
+                    value={sourceKey}
+                    onChange={(e) => setSourceKey(e.target.value)}
+                    style={input}
+                    placeholder="e.g. gbp, google/cpc"
+                  />
+                  <datalist id={`src-${n.id}`}>
+                    {sources.map((s) => (
+                      <option key={s.key} value={s.key}>
+                        {s.displayName}
+                      </option>
+                    ))}
+                  </datalist>
+                </Field>
+              ) : (
+                <Field label="DNI pool (channel)">
+                  <select value={pool} onChange={(e) => setPool(e.target.value)} style={input}>
+                    {dniPools.map((p) => (
+                      <option key={p.key} value={p.key}>
+                        {p.displayName}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+              )}
               <Field label="Whisper (blank = default)">
                 <input value={whisper} onChange={(e) => setWhisper(e.target.value)} style={input} placeholder="“Tree lead from {source}”" />
               </Field>
@@ -237,20 +250,16 @@ function Row({
                 <input type="checkbox" checked={record} onChange={(e) => setRecord(e.target.checked)} /> record calls
               </label>
               <label style={chk}>
-                <input type="checkbox" checked={isStatic} onChange={(e) => setIsStatic(e.target.checked)} /> static (fixed source)
+                type
+                <select
+                  value={isStatic ? "source" : "dni"}
+                  onChange={(e) => setIsStatic(e.target.value === "source")}
+                  style={{ ...input, padding: "4px 8px", width: "auto" }}
+                >
+                  <option value="source">Source number</option>
+                  <option value="dni">Website DNI</option>
+                </select>
               </label>
-              {!isStatic && (
-                <label style={chk}>
-                  pool
-                  <select value={pool} onChange={(e) => setPool(e.target.value)} style={{ ...input, padding: "4px 8px" }}>
-                    {pools.map((p) => (
-                      <option key={p.key} value={p.key}>
-                        {p.displayName}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              )}
               <button onClick={save} disabled={busy} style={solidBtn}>
                 {busy ? "Saving…" : "Save"}
               </button>

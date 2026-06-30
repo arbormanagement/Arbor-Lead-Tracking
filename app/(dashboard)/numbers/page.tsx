@@ -20,7 +20,7 @@ export default async function NumbersPage() {
 
   // User-managed pools (drive the dropdowns + the pool manager).
   const poolRows = await db.select().from(poolsTable).orderBy(poolsTable.key);
-  const poolOpts = poolRows.map((p) => ({ key: p.key, displayName: p.displayName }));
+  const poolOpts = poolRows.map((p) => ({ key: p.key, displayName: p.displayName, isDni: p.isDni }));
   // Live number count per pool (for the manager).
   const poolCounts = await db
     .select({ pool: trackingNumbers.pool, count: sql<number>`count(*)::int` })

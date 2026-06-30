@@ -11,6 +11,7 @@ interface SourceOpt {
 interface PoolOpt {
   key: string;
   displayName: string;
+  isDni: boolean;
 }
 interface Available {
   phoneNumber: string;
@@ -43,12 +44,17 @@ export function AddNumberFlow({
   const [results, setResults] = useState<Available[] | null>(null);
   const [searching, setSearching] = useState(false);
 
+  // Only DNI pools are relevant when buying a number — static "buckets" like
+  // print/lsa/reserved aren't something you pick per number.
+  const dniPools = pools.filter((p) => p.isDni);
+
   // Selection + config
   const [selected, setSelected] = useState<Available | null>(null);
+  // mode: a fixed number for one source, or a rotating website-DNI pool number.
+  const [mode, setMode] = useState<"source" | "dni">("source");
   const [friendlyName, setFriendlyName] = useState("");
   const [sourceKey, setSourceKey] = useState("");
-  const [isStatic, setIsStatic] = useState(true);
-  const [pool, setPool] = useState<string>("reserved");
+  const [pool, setPool] = useState<string>(dniPools[0]?.key ?? "google");
   const [forward, setForward] = useState(officeDefault);
   const [whisper, setWhisper] = useState("");
   const [record, setRecord] = useState(true);
@@ -80,12 +86,14 @@ export function AddNumberFlow({
     if (!selected) return;
     setBuying(true);
     setMsg(null);
+    const isStatic = mode === "source";
     const res = await fetch("/api/numbers", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         purchasePhoneNumber: selected.phoneNumber,
-        pool,
+        // Static numbers don't really belong to a pool — bucket them in "reserved".
+        pool: isStatic ? "reserved" : pool,
         isStatic,
         staticSourceKey: isStatic ? sourceKey || undefined : undefined,
         friendlyName: friendlyName || undefined,
@@ -199,13 +207,33 @@ export function AddNumberFlow({
           <div style={{ marginBottom: 12, fontWeight: 600 }}>
             Configure {formatPhoneDisplay(selected.phoneNumber)}
           </div>
+
+          {/* What's this number for? — drives whether we ask for a source or a DNI pool */}
+          <div style={{ marginBottom: 14 }}>
+            <span style={label}>What is this number for?</span>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <ModeCard
+                active={mode === "source"}
+                onClick={() => setMode("source")}
+                title="A specific source"
+                desc="A fixed number you put on one place — GBP, a yard sign, LSA, a print ad, or a test. Calls always attribute to that one source."
+              />
+              <ModeCard
+                active={mode === "dni"}
+                onClick={() => setMode("dni")}
+                title="Website DNI pool"
+                desc="A number swapped onto your website per visitor, by channel. Use this only for dynamic website tracking."
+              />
+            </div>
+          </div>
+
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
             <div>
               <span style={label}>Name</span>
               <input
                 value={friendlyName}
                 onChange={(e) => setFriendlyName(e.target.value)}
-                placeholder="e.g. GBP Edwardsville"
+                placeholder={mode === "source" ? "e.g. GBP Edwardsville" : "e.g. Website — Google"}
                 style={{ ...input, width: "100%" }}
               />
             </div>
@@ -218,24 +246,36 @@ export function AddNumberFlow({
                 style={{ ...input, width: "100%" }}
               />
             </div>
-            <div>
-              <span style={label}>Source key {isStatic ? "" : "(pool number — ignored)"}</span>
-              <input
-                list="source-keys"
-                value={sourceKey}
-                onChange={(e) => setSourceKey(e.target.value)}
-                placeholder="e.g. gbp, google/cpc, print"
-                disabled={!isStatic}
-                style={{ ...input, width: "100%", opacity: isStatic ? 1 : 0.5 }}
-              />
-              <datalist id="source-keys">
-                {sources.map((s) => (
-                  <option key={s.key} value={s.key}>
-                    {s.displayName}
-                  </option>
-                ))}
-              </datalist>
-            </div>
+            {mode === "source" ? (
+              <div>
+                <span style={label}>Source (what this number represents)</span>
+                <input
+                  list="source-keys"
+                  value={sourceKey}
+                  onChange={(e) => setSourceKey(e.target.value)}
+                  placeholder="e.g. gbp, google/cpc, print"
+                  style={{ ...input, width: "100%" }}
+                />
+                <datalist id="source-keys">
+                  {sources.map((s) => (
+                    <option key={s.key} value={s.key}>
+                      {s.displayName}
+                    </option>
+                  ))}
+                </datalist>
+              </div>
+            ) : (
+              <div>
+                <span style={label}>DNI pool (channel)</span>
+                <select value={pool} onChange={(e) => setPool(e.target.value)} style={{ ...input, width: "100%" }}>
+                  {dniPools.map((p) => (
+                    <option key={p.key} value={p.key}>
+                      {p.displayName}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
             <div>
               <span style={label}>Whisper (optional)</span>
               <input
@@ -252,22 +292,6 @@ export function AddNumberFlow({
               <input type="checkbox" checked={record} onChange={(e) => setRecord(e.target.checked)} />
               record calls
             </label>
-            <label style={{ display: "flex", gap: 6, alignItems: "center", color: "var(--muted)", fontSize: 13 }}>
-              <input type="checkbox" checked={isStatic} onChange={(e) => setIsStatic(e.target.checked)} />
-              static (fixed source) — uncheck for a DNI pool number
-            </label>
-            {!isStatic && (
-              <label style={{ display: "flex", gap: 6, alignItems: "center", color: "var(--muted)", fontSize: 13 }}>
-                pool
-                <select value={pool} onChange={(e) => setPool(e.target.value)} style={{ ...input, padding: "4px 8px" }}>
-                  {pools.map((p) => (
-                    <option key={p.key} value={p.key}>
-                      {p.displayName}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            )}
             <button onClick={buy} disabled={buying} style={solidBtn}>
               {buying ? "Buying…" : `Buy ${formatPhoneDisplay(selected.phoneNumber)}`}
             </button>
@@ -279,6 +303,37 @@ export function AddNumberFlow({
         <div style={{ marginTop: 12, color: msg.ok ? "var(--accent)" : "var(--danger)", fontSize: 13 }}>{msg.text}</div>
       )}
     </div>
+  );
+}
+
+function ModeCard({
+  active,
+  onClick,
+  title,
+  desc,
+}: {
+  active: boolean;
+  onClick: () => void;
+  title: string;
+  desc: string;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      style={{
+        flex: "1 1 280px",
+        textAlign: "left",
+        padding: "10px 12px",
+        borderRadius: 10,
+        border: `1px solid ${active ? "var(--accent)" : "var(--border)"}`,
+        background: active ? "color-mix(in srgb, var(--accent) 12%, transparent)" : "transparent",
+        color: "var(--text)",
+        cursor: "pointer",
+      }}
+    >
+      <div style={{ fontWeight: 700, marginBottom: 2 }}>{title}</div>
+      <div style={{ fontSize: 12, color: "var(--muted)" }}>{desc}</div>
+    </button>
   );
 }
 
