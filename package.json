@@ -5,7 +5,7 @@
   "description": "Internal lead-tracking & ROI app for Arbor Management (WhatConverts-style): native Twilio call tracking + DNI, web/form capture, HousecallPro revenue, ad-spend ROI.",
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
+    "build": "tsx scripts/migrate-deploy.ts && next build",
     "start": "next start",
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
