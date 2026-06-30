@@ -3,8 +3,6 @@ import { ulid } from "ulid";
 import { db } from "@/lib/db/client";
 import { numberAssignments, trackingNumbers } from "@/lib/db/schema";
 
-/** Pool key (references pools.key). Free text now that pools are user-managed. */
-type Pool = string;
 const LEASE_MINUTES = 30;
 
 export interface AttributionSnapshot {
@@ -60,20 +58,22 @@ export async function getActiveAssignmentForSession(sid: string): Promise<LeaseR
 }
 
 /**
- * Atomically lease a free number from `pool`. A single statement: a CTE picks one
- * unleased number with FOR UPDATE SKIP LOCKED, a data-modifying CTE inserts the
- * assignment, and the final SELECT returns the phone — so concurrent callers never
- * grab the same number, with no interactive transaction (HTTP-driver friendly).
- * Returns null when the pool is exhausted.
+ * Atomically lease a free number from the single shared website pool — every
+ * non-static active number is part of one rotation (CallRail-style); the visitor's
+ * source is frozen onto the lease, not derived from the number, so a call resolves
+ * to the exact source regardless of which number was handed out. A single statement:
+ * a CTE picks one unleased number with FOR UPDATE SKIP LOCKED, a data-modifying CTE
+ * inserts the assignment, and the final SELECT returns the phone — so concurrent
+ * callers never grab the same number, with no interactive transaction (HTTP-driver
+ * friendly). Returns null when the pool is exhausted.
  */
-export async function leaseNumber(pool: Pool, snap: AttributionSnapshot, sid: string, vid: string): Promise<LeaseResult | null> {
+export async function leaseNumber(snap: AttributionSnapshot, sid: string, vid: string): Promise<LeaseResult | null> {
   const id = ulid();
   const q = sql`
     WITH picked AS (
       SELECT tn.id AS tn_id
       FROM tracking_numbers tn
-      WHERE tn.pool = ${pool}
-        AND tn.status = 'active'
+      WHERE tn.status = 'active'
         AND tn.is_static = false
         AND NOT EXISTS (
           SELECT 1 FROM number_assignments na
@@ -107,16 +107,16 @@ export async function leaseNumber(pool: Pool, snap: AttributionSnapshot, sid: st
 }
 
 /**
- * Pool-exhaustion fallback: a static number we own (prefer one in the same channel)
- * so the page still shows a tracked number and the call resolves to its static
- * source. Returns null if we have no static number — then the page keeps its own.
+ * Pool-exhaustion fallback: any static number we own, so the page still shows a
+ * tracked number and the call resolves to that number's static source. Returns null
+ * if we have no static number — then the page keeps its own hard-coded number.
  */
-export async function getFallbackNumber(pool: Pool): Promise<LeaseResult | null> {
+export async function getFallbackNumber(): Promise<LeaseResult | null> {
   const [row] = await db
     .select({ phone: trackingNumbers.phoneNumber })
     .from(trackingNumbers)
     .where(and(eq(trackingNumbers.isStatic, true), eq(trackingNumbers.status, "active")))
-    .orderBy(sql`(${trackingNumbers.pool} = ${pool}) desc`, trackingNumbers.createdAt)
+    .orderBy(trackingNumbers.createdAt)
     .limit(1);
   if (!row) return null;
   return { phoneNumber: row.phone, assignmentId: null, reused: false };

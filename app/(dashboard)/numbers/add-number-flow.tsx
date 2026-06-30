@@ -8,11 +8,6 @@ interface SourceOpt {
   key: string;
   displayName: string;
 }
-interface PoolOpt {
-  key: string;
-  displayName: string;
-  isDni: boolean;
-}
 interface Available {
   phoneNumber: string;
   friendlyName: string;
@@ -25,15 +20,7 @@ interface Available {
  * actual digits → name it for a source + set where it forwards / the whisper →
  * buy. Posts to /api/numbers/available (search) and /api/numbers (purchase).
  */
-export function AddNumberFlow({
-  sources,
-  pools,
-  officeDefault,
-}: {
-  sources: SourceOpt[];
-  pools: PoolOpt[];
-  officeDefault: string;
-}) {
+export function AddNumberFlow({ sources, officeDefault }: { sources: SourceOpt[]; officeDefault: string }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
 
@@ -44,17 +31,12 @@ export function AddNumberFlow({
   const [results, setResults] = useState<Available[] | null>(null);
   const [searching, setSearching] = useState(false);
 
-  // Only DNI pools are relevant when buying a number — static "buckets" like
-  // print/lsa/reserved aren't something you pick per number.
-  const dniPools = pools.filter((p) => p.isDni);
-
   // Selection + config
   const [selected, setSelected] = useState<Available | null>(null);
-  // mode: a fixed number for one source, or a rotating website-DNI pool number.
+  // mode: a fixed number for one source, or a number in the shared website rotation.
   const [mode, setMode] = useState<"source" | "dni">("source");
   const [friendlyName, setFriendlyName] = useState("");
   const [sourceKey, setSourceKey] = useState("");
-  const [pool, setPool] = useState<string>(dniPools[0]?.key ?? "google");
   const [forward, setForward] = useState(officeDefault);
   const [whisper, setWhisper] = useState("");
   const [record, setRecord] = useState(true);
@@ -92,8 +74,8 @@ export function AddNumberFlow({
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         purchasePhoneNumber: selected.phoneNumber,
-        // Static numbers don't really belong to a pool — bucket them in "reserved".
-        pool: isStatic ? "reserved" : pool,
+        // Pools no longer drive DNI (single shared rotation) — bucket everything in "reserved".
+        pool: "reserved",
         isStatic,
         staticSourceKey: isStatic ? sourceKey || undefined : undefined,
         friendlyName: friendlyName || undefined,
@@ -221,8 +203,8 @@ export function AddNumberFlow({
               <ModeCard
                 active={mode === "dni"}
                 onClick={() => setMode("dni")}
-                title="Website DNI pool"
-                desc="A number swapped onto your website per visitor, by channel. Use this only for dynamic website tracking."
+                title="Website rotation (DNI)"
+                desc="Joins one shared pool that swaps onto your website per visitor; the source is auto-detected from how they arrived. Add a few (4–8) so concurrent visitors each get their own."
               />
             </div>
           </div>
@@ -246,7 +228,7 @@ export function AddNumberFlow({
                 style={{ ...input, width: "100%" }}
               />
             </div>
-            {mode === "source" ? (
+            {mode === "source" && (
               <div>
                 <span style={label}>Source (what this number represents)</span>
                 <input
@@ -263,17 +245,6 @@ export function AddNumberFlow({
                     </option>
                   ))}
                 </datalist>
-              </div>
-            ) : (
-              <div>
-                <span style={label}>DNI pool (channel)</span>
-                <select value={pool} onChange={(e) => setPool(e.target.value)} style={{ ...input, width: "100%" }}>
-                  {dniPools.map((p) => (
-                    <option key={p.key} value={p.key}>
-                      {p.displayName}
-                    </option>
-                  ))}
-                </select>
               </div>
             )}
             <div>

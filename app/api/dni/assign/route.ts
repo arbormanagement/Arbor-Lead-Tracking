@@ -16,8 +16,9 @@ export const runtime = "nodejs";
  * client-provided session id), CORS-open for the cross-origin call from the site.
  *
  * Order: reap expired leases → reuse this session's existing number → lease from
- * the source's pool → static fallback. Never throws to the page; on any failure it
- * returns `{ number: null }` and the page keeps its hard-coded number.
+ * the single shared website pool → static fallback. The visitor's source is frozen
+ * onto the lease, so the number itself is channel-agnostic. Never throws to the
+ * page; on any failure it returns `{ number: null }` and the page keeps its number.
  */
 const Body = z.object({
   vid: z.string().min(1).max(64),
@@ -90,12 +91,12 @@ export async function POST(req: Request) {
       landingPage: url,
     };
 
-    const leased = await leaseNumber(cls.pool, snapshot, sid, vid);
+    const leased = await leaseNumber(snapshot, sid, vid);
     if (leased) return numberResponse(leased.phoneNumber);
 
-    // Pool exhausted — fall back to a static number (still tracked) and flag it.
-    console.warn(`[dni] pool '${cls.pool}' exhausted — using static fallback`);
-    const fallback = await getFallbackNumber(cls.pool);
+    // Website pool exhausted — fall back to a static number (still tracked) and flag it.
+    console.warn(`[dni] website pool exhausted — using static fallback`);
+    const fallback = await getFallbackNumber();
     if (fallback) return numberResponse(fallback.phoneNumber);
 
     return Response.json({ number: null }, { headers: CORS });

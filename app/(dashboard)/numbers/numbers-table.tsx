@@ -8,11 +8,6 @@ interface SourceOpt {
   key: string;
   displayName: string;
 }
-interface PoolOpt {
-  key: string;
-  displayName: string;
-  isDni: boolean;
-}
 export interface NumberRow {
   id: string;
   phoneNumber: string;
@@ -38,12 +33,10 @@ export interface NumberRow {
 export function NumbersTable({
   rows,
   sources,
-  pools,
   officeDefault,
 }: {
   rows: NumberRow[];
   sources: SourceOpt[];
-  pools: PoolOpt[];
   officeDefault: string;
 }) {
   const [editing, setEditing] = useState<string | null>(null);
@@ -67,7 +60,6 @@ export function NumbersTable({
             key={n.id}
             n={n}
             sources={sources}
-            pools={pools}
             officeDefault={officeDefault}
             editing={editing === n.id}
             onEdit={() => setEditing(editing === n.id ? null : n.id)}
@@ -82,7 +74,6 @@ export function NumbersTable({
 function Row({
   n,
   sources,
-  pools,
   officeDefault,
   editing,
   onEdit,
@@ -90,7 +81,6 @@ function Row({
 }: {
   n: NumberRow;
   sources: SourceOpt[];
-  pools: PoolOpt[];
   officeDefault: string;
   editing: boolean;
   onEdit: () => void;
@@ -98,12 +88,10 @@ function Row({
 }) {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
-  const dniPools = pools.filter((p) => p.isDni);
 
   // Editable fields
   const [friendlyName, setFriendlyName] = useState(n.friendlyName ?? "");
   const [sourceKey, setSourceKey] = useState(n.sourceKey ?? "");
-  const [pool, setPool] = useState(n.pool);
   const [isStatic, setIsStatic] = useState(n.isStatic);
   const [forward, setForward] = useState(n.forwardDestination ?? "");
   const [whisper, setWhisper] = useState(n.whisperMessage ?? "");
@@ -130,7 +118,7 @@ function Row({
   async function save() {
     const ok = await patch({
       friendlyName,
-      pool: isStatic ? "reserved" : pool,
+      pool: "reserved",
       isStatic,
       staticSourceKey: isStatic ? sourceKey : "",
       forwardDestination: forward || null,
@@ -171,7 +159,7 @@ function Row({
           {n.isStatic ? (
             <span className="badge">{n.sourceKey ?? "no source"}</span>
           ) : (
-            <span className="badge">{n.pool} pool{n.leased ? " · leased" : ""}</span>
+            <span className="badge">website{n.leased ? " · leased" : ""}</span>
           )}
         </td>
         <td>{n.forwardDestination ? formatPhoneDisplay(n.forwardDestination) : <span style={{ color: "var(--muted)" }}>default</span>}</td>
@@ -231,14 +219,10 @@ function Row({
                   </datalist>
                 </Field>
               ) : (
-                <Field label="DNI pool (channel)">
-                  <select value={pool} onChange={(e) => setPool(e.target.value)} style={input}>
-                    {dniPools.map((p) => (
-                      <option key={p.key} value={p.key}>
-                        {p.displayName}
-                      </option>
-                    ))}
-                  </select>
+                <Field label="Source">
+                  <div style={{ color: "var(--muted)", fontSize: 12, padding: "7px 0" }}>
+                    Auto-detected per visitor (shared website rotation)
+                  </div>
                 </Field>
               )}
               <Field label="Whisper (blank = default)">

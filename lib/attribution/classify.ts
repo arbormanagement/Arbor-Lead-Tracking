@@ -1,6 +1,3 @@
-/** Pool key (references pools.key). Free text now that pools are user-managed. */
-type Pool = string;
-
 export interface TouchParams {
   gclid?: string | null;
   gbraid?: string | null;
@@ -14,45 +11,45 @@ export interface TouchParams {
 export interface Classification {
   /** Normalized source key, e.g. "google/cpc" — matches `sources.key`. */
   sourceKey: string;
-  /** Which Twilio number pool to lease a DNI number from. */
-  pool: Pool;
   medium: string;
 }
 
 /**
  * Classify a web session's traffic source from click IDs, UTM params, and referrer.
- * Click IDs win over UTM, which wins over referrer host. This drives BOTH the DNI
- * pool selection and the lead's last-touch source.
+ * Click IDs win over UTM, which wins over referrer host. This is frozen onto the DNI
+ * lease (so a call to a shared-pool number resolves to the visitor's exact source)
+ * and is the lead's last-touch source. Number pools are NOT keyed off this — DNI is
+ * a single shared rotation; the source lives on the lease, not the number.
  */
 export function classifySource(p: TouchParams): Classification {
   if (p.gclid || p.gbraid || p.wbraid) {
-    return { sourceKey: "google/cpc", pool: "google", medium: "cpc" };
+    return { sourceKey: "google/cpc", medium: "cpc" };
   }
   if (p.fbclid || isFacebookHost(p.referrer)) {
-    return { sourceKey: "facebook/paid", pool: "facebook", medium: "paid" };
+    return { sourceKey: "facebook/paid", medium: "paid" };
   }
 
   const src = p.utmSource?.toLowerCase();
   const med = p.utmMedium?.toLowerCase();
   if (src || med) {
     if (med === "cpc" || med === "ppc" || med === "paid") {
-      if (src?.includes("google")) return { sourceKey: "google/cpc", pool: "google", medium: "cpc" };
+      if (src?.includes("google")) return { sourceKey: "google/cpc", medium: "cpc" };
       if (src?.includes("facebook") || src?.includes("meta"))
-        return { sourceKey: "facebook/paid", pool: "facebook", medium: "paid" };
+        return { sourceKey: "facebook/paid", medium: "paid" };
     }
     if (src?.includes("gbp") || src?.includes("google_business") || med === "gbp") {
-      return { sourceKey: "gbp", pool: "organic", medium: "organic" };
+      return { sourceKey: "gbp", medium: "organic" };
     }
-    return { sourceKey: `${src ?? "other"}/${med ?? "referral"}`, pool: "organic", medium: med ?? "referral" };
+    return { sourceKey: `${src ?? "other"}/${med ?? "referral"}`, medium: med ?? "referral" };
   }
 
   if (p.referrer) {
     const host = hostOf(p.referrer);
-    if (host && isSearchHost(host)) return { sourceKey: "organic/seo", pool: "organic", medium: "organic" };
-    if (host) return { sourceKey: `${host}/referral`, pool: "organic", medium: "referral" };
+    if (host && isSearchHost(host)) return { sourceKey: "organic/seo", medium: "organic" };
+    if (host) return { sourceKey: `${host}/referral`, medium: "referral" };
   }
 
-  return { sourceKey: "direct", pool: "direct", medium: "none" };
+  return { sourceKey: "direct", medium: "none" };
 }
 
 function hostOf(url: string): string | null {
