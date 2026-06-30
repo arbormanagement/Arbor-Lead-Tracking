@@ -24,6 +24,16 @@ const SOURCES: Array<{ key: string; displayName: string; platform: Platform; cos
   { key: "referral", displayName: "Referral", platform: "other", costModel: "none" },
 ];
 
+const POOLS: Array<{ key: string; displayName: string; description: string; isDni: boolean }> = [
+  { key: "reserved", displayName: "Reserved", description: "Default bucket for static / test numbers", isDni: false },
+  { key: "google", displayName: "Google Ads", description: "DNI rotation for paid Google visitors", isDni: true },
+  { key: "facebook", displayName: "Facebook / Instagram", description: "DNI rotation for Meta visitors", isDni: true },
+  { key: "organic", displayName: "Organic / GBP", description: "DNI rotation for organic + GBP visitors", isDni: true },
+  { key: "direct", displayName: "Direct", description: "DNI rotation for direct / unknown visitors", isDni: true },
+  { key: "lsa", displayName: "Local Services Ads", description: "Static LSA tracking numbers", isDni: false },
+  { key: "print", displayName: "Print / Signage", description: "Yard signs, flyers, truck wraps", isDni: false },
+];
+
 async function main() {
   for (const s of SOURCES) {
     await db
@@ -37,10 +47,17 @@ async function main() {
       .onConflictDoNothing({ target: schema.sources.key });
     console.log(`✓ source ${s.key}`);
   }
+  for (const p of POOLS) {
+    await db
+      .insert(schema.pools)
+      .values({ key: p.key, displayName: p.displayName, description: p.description, isDni: p.isDni })
+      .onConflictDoNothing({ target: schema.pools.key });
+    console.log(`✓ pool ${p.key}`);
+  }
   const [{ count }] = await db
     .select({ count: sql<number>`count(*)::int` })
     .from(schema.sources);
-  console.log(`Done — ${count} sources total.`);
+  console.log(`Done — ${count} sources, ${POOLS.length} pools.`);
 }
 
 main().catch((e) => {

@@ -4,9 +4,11 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { formatPhoneDisplay } from "@/lib/phone";
 
-const POOLS = ["reserved", "google", "facebook", "organic", "lsa", "direct", "print"] as const;
-
 interface SourceOpt {
+  key: string;
+  displayName: string;
+}
+interface PoolOpt {
   key: string;
   displayName: string;
 }
@@ -35,10 +37,12 @@ export interface NumberRow {
 export function NumbersTable({
   rows,
   sources,
+  pools,
   officeDefault,
 }: {
   rows: NumberRow[];
   sources: SourceOpt[];
+  pools: PoolOpt[];
   officeDefault: string;
 }) {
   const [editing, setEditing] = useState<string | null>(null);
@@ -62,6 +66,7 @@ export function NumbersTable({
             key={n.id}
             n={n}
             sources={sources}
+            pools={pools}
             officeDefault={officeDefault}
             editing={editing === n.id}
             onEdit={() => setEditing(editing === n.id ? null : n.id)}
@@ -76,6 +81,7 @@ export function NumbersTable({
 function Row({
   n,
   sources,
+  pools,
   officeDefault,
   editing,
   onEdit,
@@ -83,6 +89,7 @@ function Row({
 }: {
   n: NumberRow;
   sources: SourceOpt[];
+  pools: PoolOpt[];
   officeDefault: string;
   editing: boolean;
   onEdit: () => void;
@@ -236,9 +243,9 @@ function Row({
                 <label style={chk}>
                   pool
                   <select value={pool} onChange={(e) => setPool(e.target.value)} style={{ ...input, padding: "4px 8px" }}>
-                    {POOLS.map((p) => (
-                      <option key={p} value={p}>
-                        {p}
+                    {pools.map((p) => (
+                      <option key={p.key} value={p.key}>
+                        {p.displayName}
                       </option>
                     ))}
                   </select>

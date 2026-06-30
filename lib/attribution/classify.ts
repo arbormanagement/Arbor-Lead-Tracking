@@ -1,6 +1,5 @@
-import type { poolEnum } from "@/lib/db/schema";
-
-type Pool = (typeof poolEnum.enumValues)[number];
+/** Pool key (references pools.key). Free text now that pools are user-managed. */
+type Pool = string;
 
 export interface TouchParams {
   gclid?: string | null;

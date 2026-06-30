@@ -2,9 +2,9 @@ import { and, desc, eq, gt, isNull, lt, sql } from "drizzle-orm";
 import { ulid } from "ulid";
 import { db } from "@/lib/db/client";
 import { numberAssignments, trackingNumbers } from "@/lib/db/schema";
-import type { poolEnum } from "@/lib/db/schema";
 
-type Pool = (typeof poolEnum.enumValues)[number];
+/** Pool key (references pools.key). Free text now that pools are user-managed. */
+type Pool = string;
 const LEASE_MINUTES = 30;
 
 export interface AttributionSnapshot {
@@ -72,7 +72,7 @@ export async function leaseNumber(pool: Pool, snap: AttributionSnapshot, sid: st
     WITH picked AS (
       SELECT tn.id AS tn_id
       FROM tracking_numbers tn
-      WHERE tn.pool = ${pool}::number_pool
+      WHERE tn.pool = ${pool}
         AND tn.status = 'active'
         AND tn.is_static = false
         AND NOT EXISTS (
@@ -116,7 +116,7 @@ export async function getFallbackNumber(pool: Pool): Promise<LeaseResult | null>
     .select({ phone: trackingNumbers.phoneNumber })
     .from(trackingNumbers)
     .where(and(eq(trackingNumbers.isStatic, true), eq(trackingNumbers.status, "active")))
-    .orderBy(sql`(${trackingNumbers.pool} = ${pool}::number_pool) desc`, trackingNumbers.createdAt)
+    .orderBy(sql`(${trackingNumbers.pool} = ${pool}) desc`, trackingNumbers.createdAt)
     .limit(1);
   if (!row) return null;
   return { phoneNumber: row.phone, assignmentId: null, reused: false };

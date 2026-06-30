@@ -4,9 +4,11 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { formatPhoneDisplay } from "@/lib/phone";
 
-const POOLS = ["reserved", "google", "facebook", "organic", "lsa", "direct", "print"] as const;
-
 interface SourceOpt {
+  key: string;
+  displayName: string;
+}
+interface PoolOpt {
   key: string;
   displayName: string;
 }
@@ -22,7 +24,15 @@ interface Available {
  * actual digits → name it for a source + set where it forwards / the whisper →
  * buy. Posts to /api/numbers/available (search) and /api/numbers (purchase).
  */
-export function AddNumberFlow({ sources, officeDefault }: { sources: SourceOpt[]; officeDefault: string }) {
+export function AddNumberFlow({
+  sources,
+  pools,
+  officeDefault,
+}: {
+  sources: SourceOpt[];
+  pools: PoolOpt[];
+  officeDefault: string;
+}) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
 
@@ -38,7 +48,7 @@ export function AddNumberFlow({ sources, officeDefault }: { sources: SourceOpt[]
   const [friendlyName, setFriendlyName] = useState("");
   const [sourceKey, setSourceKey] = useState("");
   const [isStatic, setIsStatic] = useState(true);
-  const [pool, setPool] = useState<(typeof POOLS)[number]>("reserved");
+  const [pool, setPool] = useState<string>("reserved");
   const [forward, setForward] = useState(officeDefault);
   const [whisper, setWhisper] = useState("");
   const [record, setRecord] = useState(true);
@@ -249,10 +259,10 @@ export function AddNumberFlow({ sources, officeDefault }: { sources: SourceOpt[]
             {!isStatic && (
               <label style={{ display: "flex", gap: 6, alignItems: "center", color: "var(--muted)", fontSize: 13 }}>
                 pool
-                <select value={pool} onChange={(e) => setPool(e.target.value as typeof pool)} style={{ ...input, padding: "4px 8px" }}>
-                  {POOLS.map((p) => (
-                    <option key={p} value={p}>
-                      {p}
+                <select value={pool} onChange={(e) => setPool(e.target.value)} style={{ ...input, padding: "4px 8px" }}>
+                  {pools.map((p) => (
+                    <option key={p.key} value={p.key}>
+                      {p.displayName}
                     </option>
                   ))}
                 </select>

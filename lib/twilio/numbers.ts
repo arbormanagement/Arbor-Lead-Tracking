@@ -3,9 +3,9 @@ import { db } from "@/lib/db/client";
 import { trackingNumbers } from "@/lib/db/schema";
 import { getTwilioClient, getTwilioConfig } from "./client";
 import { env } from "@/lib/env";
-import type { poolEnum, locationEnum, numberStatusEnum } from "@/lib/db/schema";
+import type { locationEnum, numberStatusEnum } from "@/lib/db/schema";
 
-type Pool = (typeof poolEnum.enumValues)[number];
+type Pool = string; // pools.key (user-managed)
 type Loc = (typeof locationEnum.enumValues)[number];
 type NumberStatus = (typeof numberStatusEnum.enumValues)[number];
 

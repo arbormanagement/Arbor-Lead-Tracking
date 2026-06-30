@@ -2,7 +2,7 @@ import { eq } from "drizzle-orm";
 import { z } from "zod";
 import { getSession } from "@/lib/auth";
 import { db } from "@/lib/db/client";
-import { sources } from "@/lib/db/schema";
+import { pools, sources } from "@/lib/db/schema";
 import { provisionNumber } from "@/lib/twilio/numbers";
 
 export const runtime = "nodejs";
@@ -13,7 +13,7 @@ export const maxDuration = 60;
  * Static numbers carry a source key (e.g. "gbp") so inbound calls resolve directly.
  */
 const Body = z.object({
-  pool: z.enum(["google", "facebook", "organic", "lsa", "direct", "print", "reserved"]),
+  pool: z.string().min(2).max(40),
   areaCode: z.string().regex(/^\d{3}$/).optional(),
   purchasePhoneNumber: z.string().optional(),
   tollFree: z.boolean().default(false),
@@ -41,6 +41,9 @@ export async function POST(req: Request) {
       { status: 400 },
     );
   }
+
+  const [poolRow] = await db.select({ key: pools.key }).from(pools).where(eq(pools.key, b.pool)).limit(1);
+  if (!poolRow) return Response.json({ error: `Unknown pool "${b.pool}"` }, { status: 400 });
 
   try {
     const staticSourceId = b.isStatic && b.staticSourceKey ? await resolveSource(b.staticSourceKey) : null;

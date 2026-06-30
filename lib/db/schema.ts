@@ -34,15 +34,8 @@ const updatedAt = () =>
 
 // ── Enums ────────────────────────────────────────────────────────────────────
 export const locationEnum = pgEnum("location", ["edwardsville", "ofallon", "unknown"]);
-export const poolEnum = pgEnum("number_pool", [
-  "google",
-  "facebook",
-  "organic",
-  "lsa",
-  "direct",
-  "print",
-  "reserved",
-]);
+// Pools are user-managed rows in `pools` (not a fixed enum), so a number's `pool`
+// is a plain text key referencing pools.key. Defaults seeded by the migrate/seed.
 export const numberStatusEnum = pgEnum("number_status", ["active", "disabled"]);
 export const platformEnum = pgEnum("platform", ["google", "google_lsa", "facebook", "other"]);
 export const leadTypeEnum = pgEnum("lead_type", [
@@ -174,6 +167,24 @@ export const adSpend = pgTable(
 );
 
 // ── Tracking numbers / DNI ───────────────────────────────────────────────────
+// User-managed number pools (channel buckets for DNI + organizing static numbers).
+// `key` is the stable identifier stored on tracking_numbers.pool.
+export const pools = pgTable(
+  "pools",
+  {
+    id: id(),
+    key: text("key").notNull(),
+    displayName: text("display_name").notNull(),
+    description: text("description"),
+    // Whether website DNI draws rotating numbers from this pool (vs. a label for
+    // organizing static numbers).
+    isDni: boolean("is_dni").notNull().default(true),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [uniqueIndex("pools_key_uq").on(t.key)],
+);
+
 export const trackingNumbers = pgTable(
   "tracking_numbers",
   {
@@ -181,7 +192,7 @@ export const trackingNumbers = pgTable(
     twilioSid: text("twilio_sid").notNull(),
     phoneNumber: text("phone_number").notNull(), // E.164
     friendlyName: text("friendly_name"),
-    pool: poolEnum("pool").notNull().default("reserved"),
+    pool: text("pool").notNull().default("reserved"), // references pools.key
     status: numberStatusEnum("status").notNull().default("active"),
     capabilities: jsonb("capabilities"),
     // Static (source-level) numbers — flyers, GBP, call extensions — never pooled/recycled.

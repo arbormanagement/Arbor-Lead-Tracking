@@ -4,7 +4,7 @@ import { migrate } from "drizzle-orm/neon-http/migrator";
 import { sql } from "drizzle-orm";
 import { env } from "@/lib/env";
 import { db } from "@/lib/db/client";
-import { sources } from "@/lib/db/schema";
+import { pools, sources } from "@/lib/db/schema";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -25,6 +25,18 @@ const SEED_SOURCES: Array<{ key: string; displayName: string; platform: "google"
   { key: "gbp", displayName: "Google Business Profile", platform: "other", costModel: "none" },
   { key: "direct", displayName: "Direct", platform: "other", costModel: "none" },
   { key: "referral", displayName: "Referral", platform: "other", costModel: "none" },
+];
+
+// Default number pools (user-manageable afterwards). `isDni` = website DNI draws
+// rotating numbers from it; the rest are buckets for organizing static numbers.
+const SEED_POOLS: Array<{ key: string; displayName: string; description: string; isDni: boolean }> = [
+  { key: "reserved", displayName: "Reserved", description: "Default bucket for static / test numbers", isDni: false },
+  { key: "google", displayName: "Google Ads", description: "DNI rotation for paid Google visitors", isDni: true },
+  { key: "facebook", displayName: "Facebook / Instagram", description: "DNI rotation for Meta visitors", isDni: true },
+  { key: "organic", displayName: "Organic / GBP", description: "DNI rotation for organic + GBP visitors", isDni: true },
+  { key: "direct", displayName: "Direct", description: "DNI rotation for direct / unknown visitors", isDni: true },
+  { key: "lsa", displayName: "Local Services Ads", description: "Static LSA tracking numbers", isDni: false },
+  { key: "print", displayName: "Print / Signage", description: "Yard signs, flyers, truck wraps", isDni: false },
 ];
 
 export async function GET(req: Request) {
@@ -52,6 +64,14 @@ export async function GET(req: Request) {
         .onConflictDoNothing({ target: sources.key });
     }
     const [{ count }] = await db.select({ count: sql<number>`count(*)::int` }).from(sources);
+
+    // 2b) Seed default pools (idempotent)
+    for (const p of SEED_POOLS) {
+      await db
+        .insert(pools)
+        .values({ key: p.key, displayName: p.displayName, description: p.description, isDni: p.isDni })
+        .onConflictDoNothing({ target: pools.key });
+    }
 
     // 3) Report which key tables exist so we can confirm 0001 actually applied
     //    (a prior migrate may have run on a build that predated this migration).

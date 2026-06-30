@@ -1,12 +1,13 @@
 import { and, desc, eq, gt, isNull, sql } from "drizzle-orm";
 import { db } from "@/lib/db/client";
-import { calls, numberAssignments, sources, trackingNumbers } from "@/lib/db/schema";
+import { calls, numberAssignments, pools as poolsTable, sources, trackingNumbers } from "@/lib/db/schema";
 import { formatPhoneDisplay } from "@/lib/phone";
 import { dateTime } from "@/lib/format";
 import { getTwilioConfig } from "@/lib/twilio/client";
 import { env } from "@/lib/env";
 import { AddNumberFlow } from "./add-number-flow";
 import { NumbersTable } from "./numbers-table";
+import { PoolsManager } from "./pools-manager";
 
 export const dynamic = "force-dynamic";
 
@@ -16,6 +17,16 @@ export default async function NumbersPage() {
   // Source key per static number (for display + the editor).
   const srcRows = await db.select({ id: sources.id, key: sources.key, displayName: sources.displayName }).from(sources);
   const srcById = new Map(srcRows.map((s) => [s.id, s.key]));
+
+  // User-managed pools (drive the dropdowns + the pool manager).
+  const poolRows = await db.select().from(poolsTable).orderBy(poolsTable.key);
+  const poolOpts = poolRows.map((p) => ({ key: p.key, displayName: p.displayName }));
+  // Live number count per pool (for the manager).
+  const poolCounts = await db
+    .select({ pool: trackingNumbers.pool, count: sql<number>`count(*)::int` })
+    .from(trackingNumbers)
+    .groupBy(trackingNumbers.pool);
+  const poolCountByKey = new Map(poolCounts.map((p) => [p.pool, p.count]));
 
   // Call activity per number (count + last call) — the CallRail-style activity column.
   const activity = await db
@@ -91,7 +102,7 @@ export default async function NumbersPage() {
         Buy a number, name it for a source, set where it rings — calls land in /leads attributed to that source.
       </p>
 
-      <AddNumberFlow sources={sourceOpts} officeDefault={officeDefault} />
+      <AddNumberFlow sources={sourceOpts} pools={poolOpts} officeDefault={officeDefault} />
 
       {pools.size > 0 && (
         <div className="cards">
@@ -116,8 +127,18 @@ export default async function NumbersPage() {
           (e.g. “GBP Edwardsville”), and pick where it forwards.
         </div>
       ) : (
-        <NumbersTable rows={rows} sources={sourceOpts} officeDefault={officeDefault} />
+        <NumbersTable rows={rows} sources={sourceOpts} pools={poolOpts} officeDefault={officeDefault} />
       )}
+
+      <PoolsManager
+        pools={poolRows.map((p) => ({
+          key: p.key,
+          displayName: p.displayName,
+          description: p.description,
+          isDni: p.isDni,
+          numberCount: poolCountByKey.get(p.key) ?? 0,
+        }))}
+      />
 
       <h2 className="page-title" style={{ fontSize: 16, marginTop: 28 }}>
         Recent assignments

@@ -14,7 +14,7 @@ export const maxDuration = 30;
  *  DELETE → release the number on Twilio (relinquish) and disable the row
  */
 const Patch = z.object({
-  pool: z.enum(["google", "facebook", "organic", "lsa", "direct", "print", "reserved"]).optional(),
+  pool: z.string().min(2).max(40).optional(),
   isStatic: z.boolean().optional(),
   staticSourceKey: z.string().optional(),
   location: z.enum(["edwardsville", "ofallon", "unknown"]).optional(),
