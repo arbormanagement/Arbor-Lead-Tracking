@@ -1,15 +1,16 @@
 import { eq } from "drizzle-orm";
 import { db } from "@/lib/db/client";
-import { hcpCustomers, hcpJobs } from "@/lib/db/schema";
+import { hcpCustomers, hcpEstimates, hcpJobs } from "@/lib/db/schema";
 import { revenueProvider } from "@/lib/integrations";
 import { normalizeEmail, normalizePhone } from "@/lib/phone";
 import { withSyncRun } from "./run";
 
 /**
- * hcp.sync.jobs — pull recently-updated HousecallPro customers + jobs and upsert
- * them. Customers carry normalized phone/email (phone_e164 / email_lc) so the
- * attribution engine can match leads → customers → job revenue. HCP amounts are
- * already in cents.
+ * hcp.sync.jobs — pull recently-updated HousecallPro customers, estimates, and jobs
+ * and upsert them. Customers carry normalized phone/email (phone_e164 / email_lc) so
+ * the attribution engine can match leads → customers → revenue. ROI revenue is the
+ * WON estimate amount (estimates); jobs are kept for completed/invoiced visibility.
+ * HCP amounts are already in cents.
  */
 export async function syncHcp({ sinceDays = 30 }: { sinceDays?: number } = {}) {
   return withSyncRun("hcp.sync.jobs", async () => {
@@ -96,6 +97,50 @@ export async function syncHcp({ sinceDays = 30 }: { sinceDays?: number } = {}) {
         });
     }
 
-    return { customers: customers.length, jobs: jobs.length };
+    const estimates = await provider.listEstimates({ sinceDays });
+    for (const e of estimates) {
+      let internalCustomerId: string | null = null;
+      if (e.hcpCustomerId) {
+        const [cust] = await db
+          .select({ id: hcpCustomers.id })
+          .from(hcpCustomers)
+          .where(eq(hcpCustomers.hcpCustomerId, e.hcpCustomerId))
+          .limit(1);
+        internalCustomerId = cust?.id ?? null;
+      }
+
+      await db
+        .insert(hcpEstimates)
+        .values({
+          hcpEstimateId: e.hcpEstimateId,
+          hcpCustomerId: internalCustomerId,
+          status: e.status,
+          won: e.won,
+          totalAmountCents: e.totalAmountCents,
+          approvedAmountCents: e.approvedAmountCents,
+          address: e.address,
+          createdAtHcp: e.createdAtHcp,
+          approvedAtHcp: e.approvedAtHcp,
+          raw: e.raw,
+          syncedAt: new Date(),
+        })
+        .onConflictDoUpdate({
+          target: hcpEstimates.hcpEstimateId,
+          set: {
+            hcpCustomerId: internalCustomerId,
+            status: e.status,
+            won: e.won,
+            totalAmountCents: e.totalAmountCents,
+            approvedAmountCents: e.approvedAmountCents,
+            address: e.address,
+            approvedAtHcp: e.approvedAtHcp,
+            raw: e.raw,
+            syncedAt: new Date(),
+            updatedAt: new Date(),
+          },
+        });
+    }
+
+    return { customers: customers.length, jobs: jobs.length, estimates: estimates.length };
   });
 }

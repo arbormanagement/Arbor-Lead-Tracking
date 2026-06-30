@@ -27,12 +27,14 @@ export default async function RoiPage() {
   return (
     <>
       <h1 className="page-title">ROI by source</h1>
-      <p className="page-sub">Last 30 days · last-touch attribution</p>
+      <p className="page-sub">
+        Last 30 days · last-touch attribution · revenue = won estimates (customer-approved) ÷ spend
+      </p>
 
       {rows.length === 0 ? (
         <div className="empty">
-          No ROI rows yet. These populate once ad spend (Google/Facebook via MCP) and
-          HousecallPro revenue are syncing and the attribution job has run (Phase 2).
+          No ROI rows yet. These populate once ad spend (Google/Facebook) and HousecallPro
+          estimates are syncing and the attribution job has run.
         </div>
       ) : (
         <table>
@@ -42,9 +44,9 @@ export default async function RoiPage() {
               <th>Leads</th>
               <th>Calls</th>
               <th>Forms</th>
-              <th>Won</th>
+              <th title="Estimates won (customer-approved)">Won</th>
               <th>Spend</th>
-              <th>Revenue</th>
+              <th title="Value of won estimates">Revenue</th>
               <th>CPL</th>
               <th>ROI</th>
             </tr>

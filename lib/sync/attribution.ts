@@ -5,7 +5,7 @@ import {
   attributions,
   campaigns,
   hcpCustomers,
-  hcpJobs,
+  hcpEstimates,
   leads,
   roiDaily,
   sources,
@@ -16,9 +16,11 @@ import { withSyncRun } from "./run";
  * attribution.run — the credential-independent core of ROI. Three passes, each a
  * full idempotent rebuild over a rolling window:
  *
- *   1. matchLeadsToJobs   leads → hcp_customers (phone/email) → nearest hcp_job
- *                         within `windowDays` → sets hcp_job_id, sales value, won.
- *                         Job-centric so each job's revenue is counted once.
+ *   1. matchLeadsToWonEstimates  leads → hcp_customers (phone/email) → nearest WON
+ *                         (customer-approved) hcp_estimate within `windowDays` → sets
+ *                         hcp_estimate_id, quote + sales value, status 'won'. Revenue
+ *                         is the approved-option amount. Estimate-centric so each won
+ *                         estimate's value is counted once.
  *   2. rebuildAttributions one 'last' touch per non-spam lead (first-touch arrives
  *                          with web tracking in Phase 3; the table already supports it).
  *   3. rebuildRoiDaily     aggregate leads + ad_spend into roi_daily per
@@ -28,58 +30,59 @@ import { withSyncRun } from "./run";
  */
 export async function runAttribution({ windowDays = 90 }: { windowDays?: number } = {}) {
   return withSyncRun("attribution.run", async () => {
-    const matched = await matchLeadsToJobs(windowDays);
+    const matched = await matchLeadsToWonEstimates(windowDays);
     const touches = await rebuildAttributions();
     const roiRows = await rebuildRoiDaily(windowDays);
-    return { matchedJobs: matched, attributionTouches: touches, roiRows };
+    return { matchedEstimates: matched, attributionTouches: touches, roiRows };
   });
 }
 
-// ── 1. Lead → HCP job revenue matching ───────────────────────────────────────
-async function matchLeadsToJobs(windowDays: number): Promise<number> {
+// ── 1. Lead → WON HCP estimate revenue matching ──────────────────────────────
+async function matchLeadsToWonEstimates(windowDays: number): Promise<number> {
   // Reset prior matches so this is a clean rebuild (preserve manual non-won statuses).
   await db
     .update(leads)
-    .set({ hcpJobId: null, salesValueCents: null })
+    .set({ hcpEstimateId: null, salesValueCents: null, quoteValueCents: null })
     .where(eq(leads.isSpam, false));
   await db.update(leads).set({ status: "new" }).where(eq(leads.status, "won"));
 
-  // Candidate jobs: have a customer and some revenue, created/scheduled recently.
+  // Candidate estimates: WON, with a customer + an approved amount, created recently.
   const lookback = new Date(Date.now() - (windowDays + 30) * 86_400_000);
-  const jobRows = await db
+  const estRows = await db
     .select({
-      jobId: hcpJobs.id,
-      invoiceTotal: hcpJobs.invoiceTotalCents,
-      total: hcpJobs.totalAmountCents,
-      scheduledStart: hcpJobs.scheduledStart,
-      createdAtHcp: hcpJobs.createdAtHcp,
+      estId: hcpEstimates.id,
+      approved: hcpEstimates.approvedAmountCents,
+      total: hcpEstimates.totalAmountCents,
+      createdAtHcp: hcpEstimates.createdAtHcp,
+      approvedAtHcp: hcpEstimates.approvedAtHcp,
       custId: hcpCustomers.id,
       custPhone: hcpCustomers.phoneE164,
       custEmail: hcpCustomers.emailLc,
     })
-    .from(hcpJobs)
-    .innerJoin(hcpCustomers, eq(hcpJobs.hcpCustomerId, hcpCustomers.id))
-    .where(gte(hcpJobs.createdAtHcp, lookback));
+    .from(hcpEstimates)
+    .innerJoin(hcpCustomers, eq(hcpEstimates.hcpCustomerId, hcpCustomers.id))
+    .where(and(eq(hcpEstimates.won, true), gte(hcpEstimates.createdAtHcp, lookback)));
 
   const claimedLeads = new Set<string>();
   let matched = 0;
 
-  for (const job of jobRows) {
-    const revenue = job.invoiceTotal || job.total || 0;
+  for (const est of estRows) {
+    const revenue = est.approved || 0;
     if (revenue <= 0) continue;
-    const jobDate = job.scheduledStart ?? job.createdAtHcp;
-    if (!jobDate) continue;
-    if (!job.custPhone && !job.custEmail) continue;
+    // Anchor to when it was won (falling back to created), so the lead must precede it.
+    const estDate = est.approvedAtHcp ?? est.createdAtHcp;
+    if (!estDate) continue;
+    if (!est.custPhone && !est.custEmail) continue;
 
-    const windowStart = new Date(jobDate.getTime() - windowDays * 86_400_000);
+    const windowStart = new Date(estDate.getTime() - windowDays * 86_400_000);
 
-    // Nearest non-spam lead from this customer that occurred before the job.
+    // Nearest non-spam lead from this customer that occurred before the estimate was won.
     const contactMatch =
-      job.custPhone && job.custEmail
-        ? or(eq(leads.phoneE164, job.custPhone), eq(leads.emailLc, job.custEmail))
-        : job.custPhone
-          ? eq(leads.phoneE164, job.custPhone)
-          : eq(leads.emailLc, job.custEmail!);
+      est.custPhone && est.custEmail
+        ? or(eq(leads.phoneE164, est.custPhone), eq(leads.emailLc, est.custEmail))
+        : est.custPhone
+          ? eq(leads.phoneE164, est.custPhone)
+          : eq(leads.emailLc, est.custEmail!);
 
     const candidates = await db
       .select({ id: leads.id })
@@ -89,7 +92,7 @@ async function matchLeadsToJobs(windowDays: number): Promise<number> {
           contactMatch,
           eq(leads.isSpam, false),
           gte(leads.occurredAt, windowStart),
-          lte(leads.occurredAt, jobDate),
+          lte(leads.occurredAt, estDate),
         ),
       )
       .orderBy(desc(leads.occurredAt))
@@ -102,8 +105,9 @@ async function matchLeadsToJobs(windowDays: number): Promise<number> {
     await db
       .update(leads)
       .set({
-        hcpCustomerId: job.custId,
-        hcpJobId: job.jobId,
+        hcpCustomerId: est.custId,
+        hcpEstimateId: est.estId,
+        quoteValueCents: est.total ?? revenue,
         salesValueCents: revenue,
         status: "won",
       })
@@ -201,7 +205,7 @@ async function rebuildRoiDaily(windowDays: number): Promise<number> {
       campaignId: leads.campaignId,
       location: leads.location,
       type: leads.type,
-      hcpJobId: leads.hcpJobId,
+      status: leads.status,
       sales: leads.salesValueCents,
       quote: leads.quoteValueCents,
     })
@@ -218,7 +222,8 @@ async function rebuildRoiDaily(windowDays: number): Promise<number> {
     row.leadsCount++;
     if (l.type === "call") row.callsCount++;
     if (l.type === "web_form") row.formsCount++;
-    if (l.hcpJobId) {
+    // "Won" = the lead's estimate was approved; revenue is that approved amount.
+    if (l.status === "won") {
       row.wonCount++;
       row.revenueCents += l.sales ?? 0;
     }

@@ -8,7 +8,7 @@ Edwardsville + O'Fallon). WhatConverts-style. Single-tenant. Owner: Justin
 - **Native call tracking + DNI on Twilio** — we own the numbers, swap/forward/record/transcribe. Goal: replace CallRail.
 - **Web/form tracking** via first-party `track.js` on arbor-mgmt.com.
 - **Facebook lead-gen** via the MCP webhook.
-- **ROI = attributed HousecallPro job revenue ÷ ad spend**, per source/campaign/location.
+- **ROI = attributed HousecallPro won-estimate revenue ÷ ad spend**, per source/campaign/location. Revenue event = a customer-approved (won) estimate, valued at the approved-option amount (`hcp_estimates`); completed jobs are still synced (`hcp_jobs`) for secondary completed/invoiced visibility.
 - **Read path is DIRECT to each platform API** (decision 2026-06-26): a background sync needs clean typed data + reliability, so we don't route it through the LLM-oriented MCP gateway. All spend/revenue access is behind `lib/integrations` (`SpendProvider`/`RevenueProvider`) so any provider can be swapped — including back to an MCP-backed impl. The MCP client (`lib/mcp/client.ts`) is retained as an optional per-platform fallback.
 - Direct providers: `lib/integrations/housecallpro.ts` (API key), `google-ads.ts` (OAuth refresh → GAQL searchStream), `facebook.ts` (Graph insights). Sync jobs in `lib/sync/{spend,hcp}.ts`, recorded in `sync_runs`; admin trigger `POST /api/sync/{spend|hcp}` (Inngest cron wired at deploy).
 

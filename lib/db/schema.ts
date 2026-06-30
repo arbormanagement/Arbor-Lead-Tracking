@@ -297,6 +297,35 @@ export const hcpJobs = pgTable(
   ],
 );
 
+// HCP estimates — the ROI revenue event is an estimate the customer WON (approved),
+// not a completed job. `approved_amount_cents` is the value of the accepted option(s);
+// `total_amount_cents` is the full estimate (all options) for reference.
+export const hcpEstimates = pgTable(
+  "hcp_estimates",
+  {
+    id: id(),
+    hcpEstimateId: text("hcp_estimate_id").notNull(),
+    hcpCustomerId: text("hcp_customer_id").references(() => hcpCustomers.id),
+    status: text("status"),
+    won: boolean("won").notNull().default(false),
+    totalAmountCents: integer("total_amount_cents").default(0),
+    approvedAmountCents: integer("approved_amount_cents").default(0),
+    address: jsonb("address"),
+    location: locationEnum("location").default("unknown"),
+    createdAtHcp: timestamp("created_at_hcp", { withTimezone: true }),
+    approvedAtHcp: timestamp("approved_at_hcp", { withTimezone: true }),
+    raw: jsonb("raw"),
+    syncedAt: timestamp("synced_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    uniqueIndex("hcp_estimates_hcp_id_uq").on(t.hcpEstimateId),
+    index("hcp_estimates_customer_idx").on(t.hcpCustomerId),
+    index("hcp_estimates_won_idx").on(t.won),
+  ],
+);
+
 // ── Leads (unified) ──────────────────────────────────────────────────────────
 export const leads = pgTable(
   "leads",
@@ -324,7 +353,8 @@ export const leads = pgTable(
     webSessionId: text("web_session_id").references(() => webSessions.id),
     hcpCustomerId: text("hcp_customer_id").references(() => hcpCustomers.id),
     hcpJobId: text("hcp_job_id").references(() => hcpJobs.id),
-    // Value (set when matched to an HCP job/invoice)
+    hcpEstimateId: text("hcp_estimate_id").references(() => hcpEstimates.id),
+    // Value: quote = estimate total; sales = the WON (approved) estimate amount.
     quoteValueCents: integer("quote_value_cents"),
     salesValueCents: integer("sales_value_cents"),
     // Flags

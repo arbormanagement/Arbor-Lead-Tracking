@@ -29,6 +29,13 @@
       "when": 1782829455376,
       "tag": "0003_mysterious_ultimatum",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1782852983253,
+      "tag": "0004_bumpy_magus",
+      "breakpoints": true
     }
   ]
 }

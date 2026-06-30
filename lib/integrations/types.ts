@@ -47,6 +47,22 @@ export interface HcpJobDTO {
   raw?: unknown;
 }
 
+export interface HcpEstimateDTO {
+  hcpEstimateId: string;
+  hcpCustomerId?: string | null;
+  status?: string | null;
+  /** Customer approved/accepted at least one option. */
+  won: boolean;
+  /** Full estimate value (all options). */
+  totalAmountCents: number;
+  /** Value of the approved option(s) — the ROI revenue figure when won. */
+  approvedAmountCents: number;
+  address?: unknown;
+  createdAtHcp?: Date | null;
+  approvedAtHcp?: Date | null;
+  raw?: unknown;
+}
+
 export interface SpendProvider {
   readonly name: string;
   /** Daily spend across active campaigns for a rolling window (default 7 days). */
@@ -59,4 +75,6 @@ export interface RevenueProvider {
   listCustomers(opts: { sinceDays: number }): Promise<HcpCustomerDTO[]>;
   /** Jobs created/updated within the window, with invoice totals folded in. */
   listJobs(opts: { sinceDays: number }): Promise<HcpJobDTO[]>;
+  /** Estimates updated within the window, with won/approved amounts folded in. */
+  listEstimates(opts: { sinceDays: number }): Promise<HcpEstimateDTO[]>;
 }

@@ -1,5 +1,5 @@
 import { getPlatformCreds } from "@/lib/credentials";
-import type { HcpCustomerDTO, HcpJobDTO, RevenueProvider } from "./types";
+import type { HcpCustomerDTO, HcpEstimateDTO, HcpJobDTO, RevenueProvider } from "./types";
 
 /**
  * Direct HousecallPro REST client. HCP is the ROI revenue source of truth, so it
@@ -85,6 +85,21 @@ class HousecallProProvider implements RevenueProvider {
     });
     return rows.map(mapJob);
   }
+
+  async listEstimates({ sinceDays }: { sinceDays: number }): Promise<HcpEstimateDTO[]> {
+    const cfg = await this.config();
+    const rows = await this.paginate(cfg, "/estimates", "estimates", {
+      sort_by: "updated_at",
+      sort_direction: "desc",
+    });
+    const cutoff = Date.now() - sinceDays * 86_400_000;
+    return rows
+      .filter((e) => {
+        const updated = parseDate(e.updated_at ?? e.updated_at_iso);
+        return !updated || updated.getTime() >= cutoff;
+      })
+      .map(mapEstimate);
+  }
 }
 
 function cents(v: unknown): number {
@@ -124,6 +139,47 @@ function mapJob(j: Record<string, unknown>): HcpJobDTO {
     address: j.address ?? null,
     createdAtHcp: parseDate(j.created_at),
     raw: j,
+  };
+}
+
+/**
+ * Map an HCP estimate. "Won" = the customer approved/accepted at least one option;
+ * the ROI revenue figure is the sum of the approved option amounts (falling back to
+ * the estimate total if HCP reports approval at the estimate level without an option
+ * breakdown). Defensive across field-name variants — `raw` is retained.
+ */
+function mapEstimate(e: Record<string, unknown>): HcpEstimateDTO {
+  const customer = e.customer as Record<string, unknown> | undefined;
+  const options = Array.isArray(e.options) ? (e.options as Array<Record<string, unknown>>) : [];
+
+  const isApproved = (o: Record<string, unknown>) => {
+    const s = String(o.approval_status ?? o.status ?? "").toLowerCase();
+    return /(approv|accept|won)/.test(s);
+  };
+  const optAmount = (o: Record<string, unknown>) => cents(o.total_amount ?? o.total ?? o.amount);
+
+  const approvedFromOptions = options.filter(isApproved).reduce((sum, o) => sum + optAmount(o), 0);
+  const totalAmountCents =
+    e.total_amount != null ? cents(e.total_amount) : options.reduce((sum, o) => sum + optAmount(o), 0);
+
+  const estStatus = String(e.work_status ?? e.status ?? "").toLowerCase();
+  const statusWon = /(approv|accept|won|signed)/.test(estStatus);
+  const won = approvedFromOptions > 0 || statusWon;
+  // Prefer the approved-option sum; if HCP only flags approval at the estimate level,
+  // fall back to the estimate total.
+  const approvedAmountCents = approvedFromOptions > 0 ? approvedFromOptions : won ? totalAmountCents : 0;
+
+  return {
+    hcpEstimateId: String(e.id),
+    hcpCustomerId: customer?.id ? String(customer.id) : e.customer_id ? String(e.customer_id) : null,
+    status: (e.work_status as string) ?? (e.status as string) ?? null,
+    won,
+    totalAmountCents,
+    approvedAmountCents,
+    address: e.address ?? null,
+    createdAtHcp: parseDate(e.created_at),
+    approvedAtHcp: won ? parseDate(e.updated_at ?? e.created_at) : null,
+    raw: e,
   };
 }
 
