@@ -40,8 +40,10 @@ export async function POST(req: Request) {
   const calledNumber = params.To; // the tracking number that was dialed
   const fromE164 = normalizePhone(fromRaw);
 
-  // Forwarding destination from the configured Twilio default (DB over env).
-  const destination = (await getTwilioConfig()).defaultDestination ?? env.TWILIO_DEFAULT_DESTINATION;
+  // Account-level forwarding default (DB over env). A matched tracking number may
+  // override this with its own destination below.
+  const accountDefault = (await getTwilioConfig()).defaultDestination ?? env.TWILIO_DEFAULT_DESTINATION;
+  let destination = accountDefault;
 
   try {
     // 1) Resolve which tracking number was called.
@@ -55,6 +57,9 @@ export async function POST(req: Request) {
       // Unknown number — just forward to the office so no call is lost.
       return xmlResponse(fallbackTwiml());
     }
+
+    // Per-number routing override (falls back to the account default).
+    destination = tn.forwardDestination ?? accountDefault;
 
     // 2) Resolve attribution.
     //    Static numbers map straight to their source; pooled numbers resolve to
@@ -97,12 +102,14 @@ export async function POST(req: Request) {
     // 4) Persist the call + lead immediately (status callbacks fill in the rest).
     await recordCall({ callSid, fromE164, tn, assignmentId, sourceKey, destination, status: "ringing" });
 
-    // 5) Forward with whisper + dual-channel recording.
-    const whisper = sourceKey ? `Tree lead from ${sourceKey}` : "Tree lead";
+    // 5) Forward with whisper + (optional) dual-channel recording. Per-number
+    //    whisper/recording overrides win over the source-derived defaults.
+    const whisper = tn.whisperMessage ?? (sourceKey ? `Tree lead from ${sourceKey}` : "Tree lead");
     return xmlResponse(
       forwardTwiml({
         destination,
         whisper,
+        record: tn.recordCalls,
         recordingNotice: "This call may be recorded for quality.",
       }),
     );

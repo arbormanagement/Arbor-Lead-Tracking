@@ -188,6 +188,11 @@ export const trackingNumbers = pgTable(
     isStatic: boolean("is_static").notNull().default(false),
     staticSourceId: text("static_source_id").references(() => sources.id),
     location: locationEnum("location").default("unknown"),
+    // Per-number call routing (override the global Twilio defaults). Null → fall
+    // back to the account default forward / whisper / recording.
+    forwardDestination: text("forward_destination"), // E.164 — where this number rings
+    whisperMessage: text("whisper_message"), // spoken to the rep before bridge
+    recordCalls: boolean("record_calls").notNull().default(true),
     provisionedAt: timestamp("provisioned_at", { withTimezone: true }),
     createdAt: createdAt(),
     updatedAt: updatedAt(),

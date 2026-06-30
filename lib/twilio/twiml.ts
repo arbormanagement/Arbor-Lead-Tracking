@@ -13,6 +13,8 @@ export interface ForwardOptions {
   actionPath?: string;
   /** Two-party-consent recording notice played to the caller before dialing. */
   recordingNotice?: string;
+  /** Record the call (dual-channel). Default true. When false, no recording or notice. */
+  record?: boolean;
   timeoutSec?: number;
 }
 
@@ -26,15 +28,21 @@ const base = () => env.TWILIO_VOICE_WEBHOOK_BASE ?? `${env.APP_BASE_URL}/api/twi
  */
 export function forwardTwiml(opts: ForwardOptions): string {
   const vr = new VoiceResponse();
+  const record = opts.record !== false; // default on
 
-  if (opts.recordingNotice) {
+  // Only play the recording notice when we're actually recording.
+  if (record && opts.recordingNotice) {
     vr.say({ voice: "Polly.Joanna" }, opts.recordingNotice);
   }
 
   const dial = vr.dial({
-    record: "record-from-answer-dual",
-    recordingStatusCallback: `${base()}${opts.recordingCallbackPath ?? "/recording"}`,
-    recordingStatusCallbackEvent: ["completed"],
+    ...(record
+      ? {
+          record: "record-from-answer-dual" as const,
+          recordingStatusCallback: `${base()}${opts.recordingCallbackPath ?? "/recording"}`,
+          recordingStatusCallbackEvent: ["completed"],
+        }
+      : {}),
     action: `${base()}${opts.actionPath ?? "/status"}`,
     answerOnBridge: true,
     timeout: opts.timeoutSec ?? 20,

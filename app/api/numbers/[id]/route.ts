@@ -20,6 +20,9 @@ const Patch = z.object({
   location: z.enum(["edwardsville", "ofallon", "unknown"]).optional(),
   status: z.enum(["active", "disabled"]).optional(),
   friendlyName: z.string().max(120).optional(),
+  forwardDestination: z.string().max(20).nullable().optional(),
+  whisperMessage: z.string().max(300).nullable().optional(),
+  recordCalls: z.boolean().optional(),
 });
 
 export async function PATCH(req: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -36,7 +39,8 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
 
     const hasMeta =
       b.pool !== undefined || b.isStatic !== undefined || b.location !== undefined ||
-      b.staticSourceKey !== undefined || b.friendlyName !== undefined;
+      b.staticSourceKey !== undefined || b.friendlyName !== undefined ||
+      b.forwardDestination !== undefined || b.whisperMessage !== undefined || b.recordCalls !== undefined;
     if (hasMeta) {
       const staticSourceId =
         b.staticSourceKey !== undefined ? await resolveSource(b.staticSourceKey) : undefined;
@@ -45,6 +49,9 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
         isStatic: b.isStatic,
         location: b.location,
         friendlyName: b.friendlyName,
+        forwardDestination: b.forwardDestination,
+        whisperMessage: b.whisperMessage,
+        recordCalls: b.recordCalls,
         ...(staticSourceId !== undefined ? { staticSourceId } : {}),
       });
       return Response.json({ ok: true, number: row });

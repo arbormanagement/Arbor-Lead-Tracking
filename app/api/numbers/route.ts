@@ -15,11 +15,16 @@ export const maxDuration = 60;
 const Body = z.object({
   pool: z.enum(["google", "facebook", "organic", "lsa", "direct", "print", "reserved"]),
   areaCode: z.string().regex(/^\d{3}$/).optional(),
+  purchasePhoneNumber: z.string().optional(),
+  tollFree: z.boolean().default(false),
   importPhoneNumber: z.string().optional(),
   isStatic: z.boolean().default(false),
   staticSourceKey: z.string().optional(),
   location: z.enum(["edwardsville", "ofallon", "unknown"]).default("unknown"),
   friendlyName: z.string().max(120).optional(),
+  forwardDestination: z.string().max(20).optional(),
+  whisperMessage: z.string().max(300).optional(),
+  recordCalls: z.boolean().default(true),
 });
 
 export async function POST(req: Request) {
@@ -30,8 +35,11 @@ export async function POST(req: Request) {
   if (!parsed.success) return Response.json({ error: "invalid input" }, { status: 400 });
   const b = parsed.data;
 
-  if (!b.areaCode && !b.importPhoneNumber) {
-    return Response.json({ error: "areaCode or importPhoneNumber is required" }, { status: 400 });
+  if (!b.areaCode && !b.importPhoneNumber && !b.purchasePhoneNumber && !b.tollFree) {
+    return Response.json(
+      { error: "Pick a number (purchasePhoneNumber), an area code, toll-free, or import an owned number" },
+      { status: 400 },
+    );
   }
 
   try {
@@ -39,11 +47,16 @@ export async function POST(req: Request) {
     const row = await provisionNumber({
       pool: b.pool,
       areaCode: b.areaCode,
+      purchasePhoneNumber: b.purchasePhoneNumber,
+      tollFree: b.tollFree,
       importPhoneNumber: b.importPhoneNumber,
       isStatic: b.isStatic,
       staticSourceId,
       location: b.location,
       friendlyName: b.friendlyName,
+      forwardDestination: b.forwardDestination || null,
+      whisperMessage: b.whisperMessage || null,
+      recordCalls: b.recordCalls,
     });
     return Response.json({ ok: true, number: row });
   } catch (err) {

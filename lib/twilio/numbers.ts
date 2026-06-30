@@ -12,12 +12,56 @@ type NumberStatus = (typeof numberStatusEnum.enumValues)[number];
 interface ProvisionOpts {
   pool: Pool;
   areaCode?: string;
+  /** Buy this exact available number (chosen from a search). Beats areaCode. */
+  purchasePhoneNumber?: string;
+  /** Buy a toll-free number (when searching by areaCode and none chosen). */
+  tollFree?: boolean;
   /** Import an already-owned number instead of buying one. */
   importPhoneNumber?: string;
   isStatic?: boolean;
   staticSourceId?: string | null;
   location?: Loc;
   friendlyName?: string;
+  /** Per-number call routing. */
+  forwardDestination?: string | null;
+  whisperMessage?: string | null;
+  recordCalls?: boolean;
+}
+
+export interface AvailableNumber {
+  phoneNumber: string;
+  friendlyName: string;
+  locality: string | null;
+  region: string | null;
+}
+
+/**
+ * List numbers available to buy from Twilio (so the admin picks the actual digits,
+ * CallRail-style) — local by area code (optionally a `contains` digit pattern) or
+ * toll-free. Voice-enabled only.
+ */
+export async function searchAvailableNumbers(opts: {
+  areaCode?: string;
+  contains?: string;
+  tollFree?: boolean;
+  limit?: number;
+}): Promise<AvailableNumber[]> {
+  const client = await getTwilioClient();
+  const limit = Math.min(opts.limit ?? 15, 30);
+  const list = opts.tollFree
+    ? await client.availablePhoneNumbers("US").tollFree.list({ contains: opts.contains, voiceEnabled: true, limit })
+    : await client.availablePhoneNumbers("US").local.list({
+        areaCode: opts.areaCode ? Number(opts.areaCode) : undefined,
+        contains: opts.contains,
+        voiceEnabled: true,
+        limit,
+      });
+  return list.map((n) => ({
+    phoneNumber: n.phoneNumber,
+    friendlyName: n.friendlyName,
+    locality: n.locality ?? null,
+    region: n.region ?? null,
+  }));
 }
 
 async function webhookBase(): Promise<string> {
@@ -56,15 +100,25 @@ export async function provisionNumber(opts: ProvisionOpts) {
     phoneNumber = updated.phoneNumber;
     capabilities = updated.capabilities;
   } else {
-    if (!opts.areaCode) throw new Error("areaCode is required to provision a new number");
-    const available = await client
-      .availablePhoneNumbers("US")
-      .local.list({ areaCode: Number(opts.areaCode), voiceEnabled: true, limit: 1 });
-    if (available.length === 0) throw new Error(`No available numbers in area code ${opts.areaCode}`);
-    const created = await client.incomingPhoneNumbers.create({
-      phoneNumber: available[0].phoneNumber,
-      ...config,
-    });
+    // Buy a specific chosen number, else the first available in the area code.
+    let toBuy = opts.purchasePhoneNumber;
+    if (!toBuy) {
+      if (!opts.areaCode && !opts.tollFree) {
+        throw new Error("areaCode, a chosen number, or tollFree is required to provision");
+      }
+      const available = await searchAvailableNumbers({
+        areaCode: opts.areaCode,
+        tollFree: opts.tollFree,
+        limit: 1,
+      });
+      if (available.length === 0) {
+        throw new Error(
+          opts.tollFree ? "No toll-free numbers available" : `No available numbers in area code ${opts.areaCode}`,
+        );
+      }
+      toBuy = available[0].phoneNumber;
+    }
+    const created = await client.incomingPhoneNumbers.create({ phoneNumber: toBuy, ...config });
     sid = created.sid;
     phoneNumber = created.phoneNumber;
     capabilities = created.capabilities;
@@ -81,6 +135,9 @@ export async function provisionNumber(opts: ProvisionOpts) {
       isStatic: opts.isStatic ?? false,
       staticSourceId: opts.staticSourceId ?? null,
       location: opts.location ?? "unknown",
+      forwardDestination: opts.forwardDestination ?? null,
+      whisperMessage: opts.whisperMessage ?? null,
+      recordCalls: opts.recordCalls ?? true,
       capabilities,
       provisionedAt: new Date(),
     })
@@ -93,10 +150,19 @@ export async function provisionNumber(opts: ProvisionOpts) {
   return row;
 }
 
-/** Edit a tracking number's metadata (pool / static / source / location / name). */
+/** Edit a tracking number's metadata + per-number routing. */
 export async function updateNumber(
   id: string,
-  patch: { pool?: Pool; isStatic?: boolean; staticSourceId?: string | null; location?: Loc; friendlyName?: string },
+  patch: {
+    pool?: Pool;
+    isStatic?: boolean;
+    staticSourceId?: string | null;
+    location?: Loc;
+    friendlyName?: string;
+    forwardDestination?: string | null;
+    whisperMessage?: string | null;
+    recordCalls?: boolean;
+  },
 ) {
   const [row] = await db
     .update(trackingNumbers)
