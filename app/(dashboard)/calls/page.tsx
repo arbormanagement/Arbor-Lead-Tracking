@@ -37,7 +37,7 @@ export default async function CallsPage() {
                   <td>{dateTime(c.createdAt)}</td>
                   <td>{formatPhoneDisplay(c.fromNumber)}</td>
                   <td>
-                    <span className="badge">{c.voicemail ? "voicemail" : c.status}</span>
+                    <span className="badge">{c.voicemail && !c.answered ? "voicemail" : c.status ?? "—"}</span>
                     {spam && <span className="badge" style={{ marginLeft: 4, color: "var(--danger)" }}>spam</span>}
                   </td>
                   <td>{durationLabel(c.durationSec)}</td>
