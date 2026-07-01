@@ -164,6 +164,14 @@ export async function syncHcp({ sinceDays = 30 }: { sinceDays?: number } = {}) {
         }),
     );
 
-    return { customers: customers.length, jobs: jobs.length, estimates: estimates.length };
+    const wonEstimates = estimates.filter((e) => e.won).length;
+    const wonValueCents = estimates.filter((e) => e.won).reduce((s, e) => s + (e.approvedAmountCents || 0), 0);
+    return {
+      customers: customers.length,
+      jobs: jobs.length,
+      estimates: estimates.length,
+      wonEstimates,
+      wonValueCents,
+    };
   });
 }
