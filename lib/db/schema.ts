@@ -481,6 +481,7 @@ export const roiDaily = pgTable(
     campaignId: text("campaign_id").references(() => campaigns.id),
     location: locationEnum("location").default("unknown"),
     leadsCount: integer("leads_count").notNull().default(0),
+    qualifiedCount: integer("qualified_count").notNull().default(0),
     callsCount: integer("calls_count").notNull().default(0),
     formsCount: integer("forms_count").notNull().default(0),
     wonCount: integer("won_count").notNull().default(0),

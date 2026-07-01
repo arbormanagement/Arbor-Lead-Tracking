@@ -1,0 +1,1 @@
+ALTER TABLE "roi_daily" ADD COLUMN "qualified_count" integer DEFAULT 0 NOT NULL;

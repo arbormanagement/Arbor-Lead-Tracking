@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, lte, or } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, lte, or } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import {
   adSpend,
@@ -29,30 +29,35 @@ import { withSyncRun } from "./run";
  */
 export async function runAttribution({ windowDays = 90 }: { windowDays?: number } = {}) {
   return withSyncRun("attribution.run", async () => {
-    const matched = await matchLeadsToWonEstimates(windowDays);
+    const matched = await matchLeadsToEstimates(windowDays);
     const touches = await rebuildAttributions();
     const roiRows = await rebuildRoiDaily(windowDays);
-    return { matchedEstimates: matched, attributionTouches: touches, roiRows };
+    return { qualifiedLeads: matched.qualified, wonLeads: matched.won, attributionTouches: touches, roiRows };
   });
 }
 
-// ── 1. Lead → WON HCP estimate revenue matching ──────────────────────────────
-async function matchLeadsToWonEstimates(windowDays: number): Promise<number> {
-  // Reset prior matches so this is a clean rebuild (preserve manual non-won statuses).
+// ── 1. Lead → HCP estimate matching (qualification + revenue) ─────────────────
+// A lead is a QUALIFIED lead once an estimate is created for its contact, and WON
+// once that estimate is approved — both derived from the same match, off the
+// contact embedded on the estimate (no dependency on a separate customer sync).
+async function matchLeadsToEstimates(windowDays: number): Promise<{ qualified: number; won: number }> {
+  // Clean rebuild: clear prior estimate links/values and reset the auto statuses.
   await db
     .update(leads)
     .set({ hcpEstimateId: null, salesValueCents: null, quoteValueCents: null })
     .where(eq(leads.isSpam, false));
-  await db.update(leads).set({ status: "new" }).where(eq(leads.status, "won"));
+  await db
+    .update(leads)
+    .set({ status: "new" })
+    .where(and(eq(leads.isSpam, false), inArray(leads.status, ["won", "qualified"])));
 
-  // Candidate estimates: WON, with a customer + an approved amount, created recently.
   const lookback = new Date(Date.now() - (windowDays + 30) * 86_400_000);
-  // Match off the contact embedded on the estimate itself — no dependency on the
-  // customer being independently synced (a brand-new estimate for an existing,
-  // not-recently-updated customer would otherwise have no customer row to join).
+  // Every estimate (created), won first so a won estimate claims its lead before a
+  // merely-created one does.
   const estRows = await db
     .select({
       estId: hcpEstimates.id,
+      won: hcpEstimates.won,
       approved: hcpEstimates.approvedAmountCents,
       total: hcpEstimates.totalAmountCents,
       createdAtHcp: hcpEstimates.createdAtHcp,
@@ -62,22 +67,20 @@ async function matchLeadsToWonEstimates(windowDays: number): Promise<number> {
       custEmail: hcpEstimates.customerEmailLc,
     })
     .from(hcpEstimates)
-    .where(and(eq(hcpEstimates.won, true), gte(hcpEstimates.createdAtHcp, lookback)));
+    .where(gte(hcpEstimates.createdAtHcp, lookback))
+    .orderBy(desc(hcpEstimates.won), desc(hcpEstimates.createdAtHcp));
 
   const claimedLeads = new Set<string>();
-  let matched = 0;
+  let qualified = 0;
+  let won = 0;
 
   for (const est of estRows) {
-    const revenue = est.approved || 0;
-    if (revenue <= 0) continue;
-    // Anchor to when it was won (falling back to created), so the lead must precede it.
-    const estDate = est.approvedAtHcp ?? est.createdAtHcp;
-    if (!estDate) continue;
     if (!est.custPhone && !est.custEmail) continue;
+    // Won → anchor to approval; created → anchor to creation. The lead must precede it.
+    const estDate = est.won ? est.approvedAtHcp ?? est.createdAtHcp : est.createdAtHcp;
+    if (!estDate) continue;
 
     const windowStart = new Date(estDate.getTime() - windowDays * 86_400_000);
-
-    // Nearest non-spam lead from this customer that occurred before the estimate was won.
     const contactMatch =
       est.custPhone && est.custEmail
         ? or(eq(leads.phoneE164, est.custPhone), eq(leads.emailLc, est.custEmail))
@@ -108,15 +111,17 @@ async function matchLeadsToWonEstimates(windowDays: number): Promise<number> {
       .set({
         hcpCustomerId: est.custId,
         hcpEstimateId: est.estId,
-        quoteValueCents: est.total ?? revenue,
-        salesValueCents: revenue,
-        status: "won",
+        quoteValueCents: est.total || est.approved || null,
+        salesValueCents: est.won ? est.approved || 0 : null,
+        status: est.won ? "won" : "qualified",
       })
       .where(eq(leads.id, pick.id));
-    matched++;
+    if (est.won) won++;
+    else qualified++;
   }
 
-  return matched;
+  // "qualified" total includes won leads (a won lead is also a qualified lead).
+  return { qualified: qualified + won, won };
 }
 
 // ── 2. Attribution trail (last-touch for now) ────────────────────────────────
@@ -169,6 +174,7 @@ interface RoiAcc {
   campaignId: string | null;
   location: "edwardsville" | "ofallon" | "unknown";
   leadsCount: number;
+  qualifiedCount: number;
   callsCount: number;
   formsCount: number;
   wonCount: number;
@@ -188,11 +194,11 @@ async function rebuildRoiDaily(windowDays: number): Promise<number> {
   const acc = new Map<string, RoiAcc>();
   const keyOf = (a: { date: string; sourceId: string | null; campaignId: string | null; location: string }) =>
     `${a.date}|${a.sourceId ?? ""}|${a.campaignId ?? ""}|${a.location}`;
-  const bump = (seed: Omit<RoiAcc, "leadsCount" | "callsCount" | "formsCount" | "wonCount" | "spendCents" | "revenueCents" | "quoteValueCents">) => {
+  const bump = (seed: Omit<RoiAcc, "leadsCount" | "qualifiedCount" | "callsCount" | "formsCount" | "wonCount" | "spendCents" | "revenueCents" | "quoteValueCents">) => {
     const k = keyOf(seed);
     let row = acc.get(k);
     if (!row) {
-      row = { ...seed, leadsCount: 0, callsCount: 0, formsCount: 0, wonCount: 0, spendCents: 0, revenueCents: 0, quoteValueCents: 0 };
+      row = { ...seed, leadsCount: 0, qualifiedCount: 0, callsCount: 0, formsCount: 0, wonCount: 0, spendCents: 0, revenueCents: 0, quoteValueCents: 0 };
       acc.set(k, row);
     }
     return row;
@@ -220,10 +226,11 @@ async function rebuildRoiDaily(windowDays: number): Promise<number> {
       campaignId: l.campaignId ?? null,
       location: (l.location ?? "unknown") as RoiAcc["location"],
     });
-    row.leadsCount++;
+    row.leadsCount++; // every captured (non-spam) contact
     if (l.type === "call") row.callsCount++;
     if (l.type === "web_form") row.formsCount++;
-    // "Won" = the lead's estimate was approved; revenue is that approved amount.
+    // Qualified = an estimate was created (status qualified or won). Won = approved.
+    if (l.status === "qualified" || l.status === "won") row.qualifiedCount++;
     if (l.status === "won") {
       row.wonCount++;
       row.revenueCents += l.sales ?? 0;
@@ -267,13 +274,15 @@ async function rebuildRoiDaily(windowDays: number): Promise<number> {
       campaignId: r.campaignId,
       location: r.location,
       leadsCount: r.leadsCount,
+      qualifiedCount: r.qualifiedCount,
       callsCount: r.callsCount,
       formsCount: r.formsCount,
       wonCount: r.wonCount,
       spendCents: r.spendCents,
       revenueCents: r.revenueCents,
       quoteValueCents: r.quoteValueCents,
-      costPerLeadCents: r.leadsCount ? Math.round(r.spendCents / r.leadsCount) : null,
+      // Cost per *qualified* lead (a real opportunity), not per raw contact.
+      costPerLeadCents: r.qualifiedCount ? Math.round(r.spendCents / r.qualifiedCount) : null,
       costPerAcquisitionCents: r.wonCount ? Math.round(r.spendCents / r.wonCount) : null,
       roiRatio: r.spendCents ? (r.revenueCents / r.spendCents).toFixed(4) : null,
     })),
