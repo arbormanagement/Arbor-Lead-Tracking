@@ -40,15 +40,23 @@ class HousecallProProvider implements RevenueProvider {
     return (await res.json()) as T;
   }
 
+  /**
+   * Paginate a newest-first list. `stopOlderThanMs` early-stops the moment a page's
+   * last item was updated before the cutoff — so a 30-day sync reads a few pages, not
+   * the whole account history (endpoints without a server-side date filter would
+   * otherwise walk to the 100-page cap and time the function out).
+   */
   private async paginate(
     cfg: HcpConfig,
     path: string,
     listKey: string,
     query: Record<string, string | number> = {},
+    stopOlderThanMs?: number,
   ): Promise<Array<Record<string, unknown>>> {
     const out: Array<Record<string, unknown>> = [];
     const pageSize = 100;
-    for (let page = 1; page <= 100; page++) {
+    const MAX_PAGES = 50;
+    for (let page = 1; page <= MAX_PAGES; page++) {
       const body = await this.get<Record<string, unknown>>(cfg, path, { ...query, page, page_size: pageSize });
       const items =
         (body[listKey] as Array<Record<string, unknown>>) ??
@@ -56,17 +64,22 @@ class HousecallProProvider implements RevenueProvider {
         [];
       out.push(...items);
       if (items.length < pageSize) break;
+      if (stopOlderThanMs != null) {
+        const last = items[items.length - 1];
+        const u = parseDate(last?.updated_at ?? last?.updated_at_iso);
+        if (u && u.getTime() < stopOlderThanMs) break; // sorted desc → the rest is older
+      }
     }
     return out;
   }
 
   async listCustomers({ sinceDays }: { sinceDays: number }): Promise<HcpCustomerDTO[]> {
     const cfg = await this.config();
+    const cutoff = Date.now() - sinceDays * 86_400_000;
     const rows = await this.paginate(cfg, "/customers", "customers", {
       sort_by: "updated_at",
       sort_direction: "desc",
-    });
-    const cutoff = Date.now() - sinceDays * 86_400_000;
+    }, cutoff);
     return rows
       .filter((c) => {
         const updated = parseDate(c.updated_at ?? c.updated_at_iso);
@@ -77,22 +90,23 @@ class HousecallProProvider implements RevenueProvider {
 
   async listJobs({ sinceDays }: { sinceDays: number }): Promise<HcpJobDTO[]> {
     const cfg = await this.config();
-    const min = new Date(Date.now() - sinceDays * 86_400_000).toISOString();
+    const cutoff = Date.now() - sinceDays * 86_400_000;
+    const min = new Date(cutoff).toISOString();
     const rows = await this.paginate(cfg, "/jobs", "jobs", {
       sort_by: "updated_at",
       sort_direction: "desc",
       scheduled_start_min: min,
-    });
+    }, cutoff);
     return rows.map(mapJob);
   }
 
   async listEstimates({ sinceDays }: { sinceDays: number }): Promise<HcpEstimateDTO[]> {
     const cfg = await this.config();
+    const cutoff = Date.now() - sinceDays * 86_400_000;
     const rows = await this.paginate(cfg, "/estimates", "estimates", {
       sort_by: "updated_at",
       sort_direction: "desc",
-    });
-    const cutoff = Date.now() - sinceDays * 86_400_000;
+    }, cutoff);
     return rows
       .filter((e) => {
         const updated = parseDate(e.updated_at ?? e.updated_at_iso);
