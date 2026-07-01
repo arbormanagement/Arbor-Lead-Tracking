@@ -1,38 +1,42 @@
 import { redirect } from "next/navigation";
-import Link from "next/link";
 import { getSession } from "@/lib/auth";
-
-const NAV = [
-  { href: "/", label: "Overview" },
-  { href: "/leads", label: "Leads" },
-  { href: "/calls", label: "Calls" },
-  { href: "/roi", label: "ROI" },
-  { href: "/spend", label: "Spend" },
-  { href: "/numbers", label: "Numbers" },
-  { href: "/settings", label: "Settings" },
-];
+import { SidebarNav } from "./sidebar-nav";
 
 export default async function DashboardLayout({ children }: { children: React.ReactNode }) {
   // Authoritative session check (Node runtime) — middleware is only a presence gate.
   const session = await getSession();
   if (!session) redirect("/login");
 
+  const email = session.email ?? "admin";
+  const initials = email.slice(0, 2).toUpperCase();
+
   return (
     <div className="app">
       <aside className="sidebar">
         <div className="brand">
-          Arbor
-          <small>Lead Tracking &amp; ROI</small>
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img className="logo" src="/brand/arbor-logo.webp" alt="Arbor Management" />
+          <div>
+            <b>Arbor</b>
+            <small>Lead Tracking</small>
+          </div>
         </div>
-        <nav className="nav">
-          {NAV.map((n) => (
-            <Link key={n.href} href={n.href}>
-              {n.label}
-            </Link>
-          ))}
-        </nav>
+
+        <SidebarNav />
+
+        <div className="side-foot">
+          <div className="avatar">{initials}</div>
+          <div className="who">
+            <b>{email}</b>
+            <small>Owner</small>
+          </div>
+          <a className="logout" href="/api/auth/logout" title="Sign out">⏻</a>
+        </div>
       </aside>
-      <main className="main">{children}</main>
+
+      <main className="main">
+        <div className="pagewrap">{children}</div>
+      </main>
     </div>
   );
 }
