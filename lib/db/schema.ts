@@ -204,6 +204,10 @@ export const trackingNumbers = pgTable(
     forwardDestination: text("forward_destination"), // E.164 — where this number rings
     whisperMessage: text("whisper_message"), // spoken to the rep before bridge
     recordCalls: boolean("record_calls").notNull().default(true),
+    // Pre-call message played to the caller before we dial (e.g. a recording notice).
+    // Independent of recording; `greeting_enabled` false → no message at all.
+    greetingMessage: text("greeting_message"),
+    greetingEnabled: boolean("greeting_enabled").notNull().default(true),
     provisionedAt: timestamp("provisioned_at", { withTimezone: true }),
     createdAt: createdAt(),
     updatedAt: updatedAt(),

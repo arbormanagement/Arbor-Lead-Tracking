@@ -26,6 +26,8 @@ interface ProvisionOpts {
   forwardDestination?: string | null;
   whisperMessage?: string | null;
   recordCalls?: boolean;
+  greetingMessage?: string | null;
+  greetingEnabled?: boolean;
 }
 
 export interface AvailableNumber {
@@ -138,6 +140,8 @@ export async function provisionNumber(opts: ProvisionOpts) {
       forwardDestination: opts.forwardDestination ?? null,
       whisperMessage: opts.whisperMessage ?? null,
       recordCalls: opts.recordCalls ?? true,
+      greetingMessage: opts.greetingMessage ?? null,
+      greetingEnabled: opts.greetingEnabled ?? true,
       capabilities,
       provisionedAt: new Date(),
     })
@@ -162,6 +166,8 @@ export async function updateNumber(
     forwardDestination?: string | null;
     whisperMessage?: string | null;
     recordCalls?: boolean;
+    greetingMessage?: string | null;
+    greetingEnabled?: boolean;
   },
 ) {
   const [row] = await db

@@ -20,6 +20,8 @@ export interface NumberRow {
   forwardDestination: string | null;
   whisperMessage: string | null;
   recordCalls: boolean;
+  greetingMessage: string | null;
+  greetingEnabled: boolean;
   leased: boolean;
   callCount: number;
   lastCallAt: string | null;
@@ -96,6 +98,8 @@ function Row({
   const [forward, setForward] = useState(n.forwardDestination ?? "");
   const [whisper, setWhisper] = useState(n.whisperMessage ?? "");
   const [record, setRecord] = useState(n.recordCalls);
+  const [greeting, setGreeting] = useState(n.greetingMessage ?? "");
+  const [greetingOn, setGreetingOn] = useState(n.greetingEnabled);
   const [msg, setMsg] = useState("");
 
   async function patch(body: Record<string, unknown>) {
@@ -124,6 +128,8 @@ function Row({
       forwardDestination: forward || null,
       whisperMessage: whisper || null,
       recordCalls: record,
+      greetingMessage: greeting || null,
+      greetingEnabled: greetingOn,
     });
     if (ok) {
       onDone();
@@ -228,11 +234,28 @@ function Row({
               <Field label="Whisper (blank = default)">
                 <input value={whisper} onChange={(e) => setWhisper(e.target.value)} style={input} placeholder="“Tree lead from {source}”" />
               </Field>
+              <Field label="Pre-call message to caller (blank = default)">
+                <input
+                  value={greeting}
+                  onChange={(e) => setGreeting(e.target.value)}
+                  style={{ ...input, opacity: greetingOn ? 1 : 0.5 }}
+                  disabled={!greetingOn}
+                  placeholder="“This call may be recorded.”"
+                />
+              </Field>
             </div>
             <div style={{ display: "flex", gap: 16, alignItems: "center", marginTop: 10, flexWrap: "wrap", padding: "0 2px" }}>
               <label style={chk}>
                 <input type="checkbox" checked={record} onChange={(e) => setRecord(e.target.checked)} /> record calls
               </label>
+              <label style={chk}>
+                <input type="checkbox" checked={greetingOn} onChange={(e) => setGreetingOn(e.target.checked)} /> play pre-call message
+              </label>
+              {record && !greetingOn && (
+                <span style={{ color: "var(--warn, #d19a00)", fontSize: 11 }}>
+                  ⚠ recording without a notice — check IL/MO consent rules
+                </span>
+              )}
               <label style={chk}>
                 type
                 <select

@@ -36,6 +36,13 @@
       "when": 1782852983253,
       "tag": "0004_bumpy_magus",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1782925374083,
+      "tag": "0005_curvy_whizzer",
+      "breakpoints": true
     }
   ]
 }

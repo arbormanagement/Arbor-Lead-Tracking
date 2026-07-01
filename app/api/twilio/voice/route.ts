@@ -24,6 +24,7 @@ export const runtime = "nodejs";
 export const maxDuration = 10;
 
 const GRACE_MS = 15 * 60 * 1000; // resolve a recently-released lease to its source
+const DEFAULT_GREETING = "This call may be recorded."; // used when a number's greeting is on but blank
 
 export async function POST(req: Request) {
   const { params, url } = await parseTwilioForm(req);
@@ -102,15 +103,18 @@ export async function POST(req: Request) {
     // 4) Persist the call + lead immediately (status callbacks fill in the rest).
     await recordCall({ callSid, fromE164, tn, assignmentId, sourceKey, destination, status: "ringing" });
 
-    // 5) Forward with whisper + (optional) dual-channel recording. Per-number
-    //    whisper/recording overrides win over the source-derived defaults.
+    // 5) Forward with an optional pre-call message + whisper + (optional) recording.
+    //    All three are per-number overrides. The greeting is independent of recording
+    //    so it can be turned off or customized in the app (mind consent laws if you
+    //    record without a notice).
     const whisper = tn.whisperMessage ?? (sourceKey ? `Tree lead from ${sourceKey}` : "Tree lead");
+    const greeting = tn.greetingEnabled ? (tn.greetingMessage || DEFAULT_GREETING) : undefined;
     return xmlResponse(
       forwardTwiml({
         destination,
         whisper,
         record: tn.recordCalls,
-        recordingNotice: "This call may be recorded for quality.",
+        greeting,
       }),
     );
   } catch (err) {

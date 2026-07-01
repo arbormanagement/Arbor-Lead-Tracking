@@ -11,9 +11,10 @@ export interface ForwardOptions {
   recordingCallbackPath?: string;
   /** Status callback for the dial leg. */
   actionPath?: string;
-  /** Two-party-consent recording notice played to the caller before dialing. */
-  recordingNotice?: string;
-  /** Record the call (dual-channel). Default true. When false, no recording or notice. */
+  /** Pre-call message played to the caller before dialing (e.g. a recording notice).
+   *  Independent of recording — plays whenever set. */
+  greeting?: string;
+  /** Record the call (dual-channel). Default true. */
   record?: boolean;
   timeoutSec?: number;
 }
@@ -30,9 +31,10 @@ export function forwardTwiml(opts: ForwardOptions): string {
   const vr = new VoiceResponse();
   const record = opts.record !== false; // default on
 
-  // Only play the recording notice when we're actually recording.
-  if (record && opts.recordingNotice) {
-    vr.say({ voice: "Polly.Joanna" }, opts.recordingNotice);
+  // Pre-call message (recording notice, greeting, etc.) — plays if set, regardless
+  // of recording, so it's fully controlled per number in the app.
+  if (opts.greeting) {
+    vr.say({ voice: "Polly.Joanna" }, opts.greeting);
   }
 
   const dial = vr.dial({

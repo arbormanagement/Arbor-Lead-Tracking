@@ -25,6 +25,8 @@ const Body = z.object({
   forwardDestination: z.string().max(20).optional(),
   whisperMessage: z.string().max(300).optional(),
   recordCalls: z.boolean().default(true),
+  greetingMessage: z.string().max(300).optional(),
+  greetingEnabled: z.boolean().default(true),
 });
 
 export async function POST(req: Request) {
@@ -60,6 +62,8 @@ export async function POST(req: Request) {
       forwardDestination: b.forwardDestination || null,
       whisperMessage: b.whisperMessage || null,
       recordCalls: b.recordCalls,
+      greetingMessage: b.greetingMessage || null,
+      greetingEnabled: b.greetingEnabled,
     });
     return Response.json({ ok: true, number: row });
   } catch (err) {

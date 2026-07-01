@@ -40,6 +40,8 @@ export function AddNumberFlow({ sources, officeDefault }: { sources: SourceOpt[]
   const [forward, setForward] = useState(officeDefault);
   const [whisper, setWhisper] = useState("");
   const [record, setRecord] = useState(true);
+  const [greeting, setGreeting] = useState("");
+  const [greetingOn, setGreetingOn] = useState(true);
 
   const [buying, setBuying] = useState(false);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
@@ -82,6 +84,8 @@ export function AddNumberFlow({ sources, officeDefault }: { sources: SourceOpt[]
         forwardDestination: forward || undefined,
         whisperMessage: whisper || undefined,
         recordCalls: record,
+        greetingMessage: greeting || undefined,
+        greetingEnabled: greetingOn,
       }),
     });
     const body = await res.json().catch(() => ({}));
@@ -256,6 +260,16 @@ export function AddNumberFlow({ sources, officeDefault }: { sources: SourceOpt[]
                 style={{ ...input, width: "100%" }}
               />
             </div>
+            <div>
+              <span style={label}>Pre-call message to caller (optional)</span>
+              <input
+                value={greeting}
+                onChange={(e) => setGreeting(e.target.value)}
+                placeholder="default: “This call may be recorded.”"
+                disabled={!greetingOn}
+                style={{ ...input, width: "100%", opacity: greetingOn ? 1 : 0.5 }}
+              />
+            </div>
           </div>
 
           <div style={{ display: "flex", gap: 16, alignItems: "center", marginTop: 12, flexWrap: "wrap" }}>
@@ -263,6 +277,15 @@ export function AddNumberFlow({ sources, officeDefault }: { sources: SourceOpt[]
               <input type="checkbox" checked={record} onChange={(e) => setRecord(e.target.checked)} />
               record calls
             </label>
+            <label style={{ display: "flex", gap: 6, alignItems: "center", color: "var(--muted)", fontSize: 13 }}>
+              <input type="checkbox" checked={greetingOn} onChange={(e) => setGreetingOn(e.target.checked)} />
+              play pre-call message
+            </label>
+            {record && !greetingOn && (
+              <span style={{ color: "var(--warn, #d19a00)", fontSize: 11 }}>
+                ⚠ recording without a notice — check IL/MO consent rules
+              </span>
+            )}
             <button onClick={buy} disabled={buying} style={solidBtn}>
               {buying ? "Buying…" : `Buy ${formatPhoneDisplay(selected.phoneNumber)}`}
             </button>

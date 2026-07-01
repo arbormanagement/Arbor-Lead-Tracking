@@ -23,6 +23,8 @@ const Patch = z.object({
   forwardDestination: z.string().max(20).nullable().optional(),
   whisperMessage: z.string().max(300).nullable().optional(),
   recordCalls: z.boolean().optional(),
+  greetingMessage: z.string().max(300).nullable().optional(),
+  greetingEnabled: z.boolean().optional(),
 });
 
 export async function PATCH(req: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -40,7 +42,8 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
     const hasMeta =
       b.pool !== undefined || b.isStatic !== undefined || b.location !== undefined ||
       b.staticSourceKey !== undefined || b.friendlyName !== undefined ||
-      b.forwardDestination !== undefined || b.whisperMessage !== undefined || b.recordCalls !== undefined;
+      b.forwardDestination !== undefined || b.whisperMessage !== undefined || b.recordCalls !== undefined ||
+      b.greetingMessage !== undefined || b.greetingEnabled !== undefined;
     if (hasMeta) {
       const staticSourceId =
         b.staticSourceKey !== undefined ? await resolveSource(b.staticSourceKey) : undefined;
@@ -52,6 +55,8 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
         forwardDestination: b.forwardDestination,
         whisperMessage: b.whisperMessage,
         recordCalls: b.recordCalls,
+        greetingMessage: b.greetingMessage,
+        greetingEnabled: b.greetingEnabled,
         ...(staticSourceId !== undefined ? { staticSourceId } : {}),
       });
       return Response.json({ ok: true, number: row });

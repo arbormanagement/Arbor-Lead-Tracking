@@ -61,6 +61,8 @@ export default async function NumbersPage() {
       forwardDestination: n.forwardDestination,
       whisperMessage: n.whisperMessage,
       recordCalls: n.recordCalls,
+      greetingMessage: n.greetingMessage,
+      greetingEnabled: n.greetingEnabled,
       leased: leasedSet.has(n.id),
       callCount: a?.count ?? 0,
       lastCallAt: a?.last ? dateTime(a.last as Date) : null,
