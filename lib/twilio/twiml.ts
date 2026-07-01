@@ -41,7 +41,7 @@ export function forwardTwiml(opts: ForwardOptions): string {
     ...(record
       ? {
           record: "record-from-answer-dual" as const,
-          recordingStatusCallback: `${base()}${opts.recordingCallbackPath ?? "/recording"}`,
+          recordingStatusCallback: `${base()}${opts.recordingCallbackPath ?? "/recording"}?src=dial`,
           recordingStatusCallbackEvent: ["completed"],
         }
       : {}),
@@ -67,7 +67,7 @@ export function forwardTwiml(opts: ForwardOptions): string {
   vr.record({
     maxLength: 120,
     playBeep: true,
-    recordingStatusCallback: `${base()}/recording`,
+    recordingStatusCallback: `${base()}/recording?src=voicemail`,
     recordingStatusCallbackEvent: ["completed"],
   });
   vr.hangup();

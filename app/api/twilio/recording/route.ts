@@ -24,7 +24,9 @@ export async function POST(req: Request) {
   const recordingUrl = params.RecordingUrl;
   const recordingSid = params.RecordingSid;
   const recordingDuration = params.RecordingDuration ? Number(params.RecordingDuration) : undefined;
-  const isVoicemail = !params.DialCallSid; // recording from <Record>, not <Dial>
+  // Reliable: the voicemail <Record> callback is tagged ?src=voicemail; the <Dial>
+  // recording is ?src=dial. (Old heuristic on a missing field could mislabel answers.)
+  const isVoicemail = new URL(url).searchParams.get("src") === "voicemail";
 
   if (callSid && recordingUrl) {
     await db

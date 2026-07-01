@@ -43,9 +43,7 @@ export default async function CallsPage() {
                   <td>{durationLabel(c.durationSec)}</td>
                   <td>
                     {c.recordingUrl ? (
-                      <a href={c.recordingUrl} target="_blank" rel="noreferrer">
-                        ▶ play
-                      </a>
+                      <audio controls preload="none" style={{ height: 32, maxWidth: 240 }} src={`/api/calls/${c.id}/recording`} />
                     ) : (
                       "—"
                     )}
