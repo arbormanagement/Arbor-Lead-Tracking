@@ -4,7 +4,6 @@ import {
   adSpend,
   attributions,
   campaigns,
-  hcpCustomers,
   hcpEstimates,
   leads,
   roiDaily,
@@ -48,6 +47,9 @@ async function matchLeadsToWonEstimates(windowDays: number): Promise<number> {
 
   // Candidate estimates: WON, with a customer + an approved amount, created recently.
   const lookback = new Date(Date.now() - (windowDays + 30) * 86_400_000);
+  // Match off the contact embedded on the estimate itself — no dependency on the
+  // customer being independently synced (a brand-new estimate for an existing,
+  // not-recently-updated customer would otherwise have no customer row to join).
   const estRows = await db
     .select({
       estId: hcpEstimates.id,
@@ -55,12 +57,11 @@ async function matchLeadsToWonEstimates(windowDays: number): Promise<number> {
       total: hcpEstimates.totalAmountCents,
       createdAtHcp: hcpEstimates.createdAtHcp,
       approvedAtHcp: hcpEstimates.approvedAtHcp,
-      custId: hcpCustomers.id,
-      custPhone: hcpCustomers.phoneE164,
-      custEmail: hcpCustomers.emailLc,
+      custId: hcpEstimates.hcpCustomerId,
+      custPhone: hcpEstimates.customerPhoneE164,
+      custEmail: hcpEstimates.customerEmailLc,
     })
     .from(hcpEstimates)
-    .innerJoin(hcpCustomers, eq(hcpEstimates.hcpCustomerId, hcpCustomers.id))
     .where(and(eq(hcpEstimates.won, true), gte(hcpEstimates.createdAtHcp, lookback)));
 
   const claimedLeads = new Set<string>();

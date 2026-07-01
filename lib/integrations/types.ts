@@ -50,6 +50,10 @@ export interface HcpJobDTO {
 export interface HcpEstimateDTO {
   hcpEstimateId: string;
   hcpCustomerId?: string | null;
+  /** Customer contact embedded on the estimate (raw) — normalized at sync for matching. */
+  customerPhone?: string | null;
+  customerEmail?: string | null;
+  customerName?: string | null;
   status?: string | null;
   /** Customer approved/accepted at least one option. */
   won: boolean;

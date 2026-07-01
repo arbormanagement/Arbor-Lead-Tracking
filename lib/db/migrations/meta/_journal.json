@@ -43,6 +43,13 @@
       "when": 1782925374083,
       "tag": "0005_curvy_whizzer",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1782933388869,
+      "tag": "0006_odd_thaddeus_ross",
+      "breakpoints": true
     }
   ]
 }

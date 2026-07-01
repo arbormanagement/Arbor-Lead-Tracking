@@ -314,6 +314,11 @@ export const hcpEstimates = pgTable(
     won: boolean("won").notNull().default(false),
     totalAmountCents: integer("total_amount_cents").default(0),
     approvedAmountCents: integer("approved_amount_cents").default(0),
+    // Customer contact embedded on the estimate itself (normalized) — matching keys
+    // off these so it doesn't depend on the customer being independently synced.
+    customerPhoneE164: text("customer_phone_e164"),
+    customerEmailLc: text("customer_email_lc"),
+    customerName: text("customer_name"),
     address: jsonb("address"),
     location: locationEnum("location").default("unknown"),
     createdAtHcp: timestamp("created_at_hcp", { withTimezone: true }),
@@ -327,6 +332,8 @@ export const hcpEstimates = pgTable(
     uniqueIndex("hcp_estimates_hcp_id_uq").on(t.hcpEstimateId),
     index("hcp_estimates_customer_idx").on(t.hcpCustomerId),
     index("hcp_estimates_won_idx").on(t.won),
+    index("hcp_estimates_phone_idx").on(t.customerPhoneE164),
+    index("hcp_estimates_email_idx").on(t.customerEmailLc),
   ],
 );
 

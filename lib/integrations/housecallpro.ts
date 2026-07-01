@@ -183,9 +183,14 @@ function mapEstimate(e: Record<string, unknown>): HcpEstimateDTO {
   // fall back to the estimate total.
   const approvedAmountCents = approvedFromOptions > 0 ? approvedFromOptions : won ? totalAmountCents : 0;
 
+  const custName = [customer?.first_name, customer?.last_name].filter(Boolean).join(" ") || null;
   return {
     hcpEstimateId: String(e.id),
     hcpCustomerId: customer?.id ? String(customer.id) : e.customer_id ? String(e.customer_id) : null,
+    customerPhone:
+      (customer?.mobile_number as string) ?? (customer?.home_number as string) ?? (customer?.work_number as string) ?? null,
+    customerEmail: (customer?.email as string) ?? null,
+    customerName: custName,
     status: (e.work_status as string) ?? (e.status as string) ?? null,
     won,
     totalAmountCents,
