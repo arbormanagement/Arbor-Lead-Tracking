@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { syncRuns } from "@/lib/db/schema";
 
@@ -29,4 +29,37 @@ export async function withSyncRun<T extends Record<string, unknown>>(
       .where(eq(syncRuns.id, run.id));
     throw err;
   }
+}
+
+/**
+ * Start time of the most recent SUCCESSFUL run of `job`, or null if it's never
+ * succeeded. Used as the incremental watermark. Reads `started_at` (not finished)
+ * so anything changed during the last run is re-pulled next time. The current run's
+ * own `running` row is excluded since we filter on status = 'success'.
+ */
+export async function lastSuccessfulRunStart(job: string): Promise<Date | null> {
+  const [row] = await db
+    .select({ startedAt: syncRuns.startedAt })
+    .from(syncRuns)
+    .where(and(eq(syncRuns.job, job), eq(syncRuns.status, "success")))
+    .orderBy(desc(syncRuns.startedAt))
+    .limit(1);
+  return row?.startedAt ?? null;
+}
+
+/**
+ * Fractional-day lookback for an incremental pull: from the last successful run's
+ * start, minus an overlap (covers records changed mid-run + clock skew), capped at
+ * `maxDays`. First run (no prior success) → full `maxDays` backfill. Providers key
+ * the window on `updated_at`, so a status change (e.g. an estimate approval) bumps
+ * the record's timestamp and it lands inside the window even if created long ago.
+ */
+export async function incrementalWindowDays(
+  job: string,
+  { overlapHours = 2, maxDays = 30 }: { overlapHours?: number; maxDays?: number } = {},
+): Promise<number> {
+  const last = await lastSuccessfulRunStart(job);
+  if (!last) return maxDays;
+  const ms = Date.now() - last.getTime() + overlapHours * 3_600_000;
+  return Math.min(maxDays, Math.max(overlapHours / 24, ms / 86_400_000));
 }

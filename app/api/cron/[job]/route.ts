@@ -30,7 +30,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ job: str
       case "transcribe":
         return Response.json({ ok: true, job, result: await syncTranscriptions({ limit: 25 }) });
       case "hcp":
-        return Response.json({ ok: true, job, result: await syncHcp({ sinceDays: 30 }) });
+        return Response.json({ ok: true, job, result: await syncHcp() });
       case "spend":
         return Response.json({ ok: true, job, result: await syncSpend({ sinceDays: 7 }) });
       case "lsa":
@@ -39,7 +39,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ job: str
         return Response.json({ ok: true, job, result: await runAttribution({ windowDays: 90 }) });
       // Convenience aggregates so a single daily cron can do the revenue→ROI chain.
       case "revenue": {
-        const hcp = await syncHcp({ sinceDays: 30 });
+        const hcp = await syncHcp();
         const spend = await syncSpend({ sinceDays: 7 });
         const lsa = await syncLsaLeads({ sinceDays: 30 });
         const attribution = await runAttribution({ windowDays: 90 });

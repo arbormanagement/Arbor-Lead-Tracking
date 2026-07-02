@@ -3,7 +3,11 @@ import { db } from "@/lib/db/client";
 import { hcpCustomers, hcpEstimates, hcpJobs } from "@/lib/db/schema";
 import { revenueProvider } from "@/lib/integrations";
 import { normalizeEmail, normalizePhone } from "@/lib/phone";
-import { withSyncRun } from "./run";
+import { incrementalWindowDays, withSyncRun } from "./run";
+
+// Cap / initial-backfill window for the history-walking endpoints, and the fixed
+// window for jobs (whose server-side scheduled_start filter must stay broad).
+const MAX_LOOKBACK_DAYS = 30;
 
 /**
  * hcp.sync.jobs — pull recently-updated HousecallPro customers, estimates, and jobs
@@ -33,17 +37,34 @@ function dedupeBy<T>(rows: T[], key: (r: T) => string): T[] {
   return [...m.values()];
 }
 
-export async function syncHcp({ sinceDays = 30 }: { sinceDays?: number } = {}) {
+/**
+ * @param sinceDays  Explicit lookback override (manual full backfill). When omitted,
+ *                   customers + estimates use an INCREMENTAL window derived from the
+ *                   last successful run (see `incrementalWindowDays`), so a routine
+ *                   hourly run reads only what changed instead of a fixed 30 days.
+ * @param jobsSinceDays  Fixed window for /jobs, whose server-side scheduled_start
+ *                   filter would wrongly drop recently-updated-but-earlier-scheduled
+ *                   jobs under a narrow window — so it stays broad regardless.
+ */
+export async function syncHcp(
+  { sinceDays, jobsSinceDays = MAX_LOOKBACK_DAYS }: { sinceDays?: number; jobsSinceDays?: number } = {},
+) {
   return withSyncRun("hcp.sync.jobs", async () => {
     const provider = await revenueProvider();
     if (!provider) return { skipped: "HousecallPro credentials not set", customers: 0, jobs: 0, estimates: 0 };
 
+    // Incremental window for the two endpoints that walk history (no server date
+    // filter). Explicit `sinceDays` forces a full backfill. Keyed on updated_at, so
+    // an approval to an old estimate resurfaces and flips it to won.
+    const windowDays =
+      sinceDays ?? (await incrementalWindowDays("hcp.sync.jobs", { overlapHours: 2, maxDays: MAX_LOOKBACK_DAYS }));
+
     // Fetch the three independent endpoints concurrently — read time is the slowest
     // one, not the sum. (Each still paginates 100/page internally.)
     const [customersRaw, jobsRaw, estimatesRaw] = await Promise.all([
-      provider.listCustomers({ sinceDays }),
-      provider.listJobs({ sinceDays }),
-      provider.listEstimates({ sinceDays }),
+      provider.listCustomers({ sinceDays: windowDays }),
+      provider.listJobs({ sinceDays: jobsSinceDays }),
+      provider.listEstimates({ sinceDays: windowDays }),
     ]);
 
     // ── Customers ────────────────────────────────────────────────────────────
@@ -178,6 +199,8 @@ export async function syncHcp({ sinceDays = 30 }: { sinceDays?: number } = {}) {
       estimates: estimates.length,
       wonEstimates,
       wonValueCents,
+      mode: sinceDays == null ? "incremental" : "explicit",
+      windowDays: Number(windowDays.toFixed(3)),
     };
   });
 }

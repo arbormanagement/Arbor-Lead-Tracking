@@ -19,12 +19,16 @@ export async function POST(_req: Request, { params }: { params: Promise<{ job: s
   if (!session) return Response.json({ error: "unauthorized" }, { status: 401 });
 
   const { job } = await params;
+  // Optional full-backfill override: POST /api/sync/hcp?days=30 forces an explicit
+  // window (bypasses the incremental watermark). Omit for the default incremental pull.
+  const daysParam = new URL(_req.url).searchParams.get("days");
+  const hcpDays = daysParam ? Number(daysParam) : undefined;
   try {
     switch (job) {
       case "spend":
         return Response.json({ ok: true, result: await syncSpend({ sinceDays: 7 }) });
       case "hcp":
-        return Response.json({ ok: true, result: await syncHcp({ sinceDays: 30 }) });
+        return Response.json({ ok: true, result: await syncHcp(hcpDays ? { sinceDays: hcpDays } : {}) });
       case "attribution":
         return Response.json({ ok: true, result: await runAttribution({ windowDays: 90 }) });
       case "reaper":
@@ -37,7 +41,7 @@ export async function POST(_req: Request, { params }: { params: Promise<{ job: s
       case "all": {
         const transcribe = await syncTranscriptions({ limit: 25 });
         const lsa = await syncLsaLeads({ sinceDays: 30 });
-        const hcp = await syncHcp({ sinceDays: 30 });
+        const hcp = await syncHcp(hcpDays ? { sinceDays: hcpDays } : {});
         const spend = await syncSpend({ sinceDays: 7 });
         const attribution = await runAttribution({ windowDays: 90 });
         return Response.json({ ok: true, result: { transcribe, lsa, hcp, spend, attribution } });
