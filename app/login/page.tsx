@@ -41,6 +41,8 @@ function LoginForm() {
   return (
     <div className="login-wrap">
       <form className="login-card" onSubmit={submit}>
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img className="logo" src="/brand/arbor-logo.webp" alt="Arbor Management" />
         <h1>Arbor Lead Tracking</h1>
         {err && <div className="err">{err}</div>}
         <input
