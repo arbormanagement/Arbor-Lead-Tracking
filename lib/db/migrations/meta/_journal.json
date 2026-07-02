@@ -57,6 +57,13 @@
       "when": 1782938225722,
       "tag": "0007_tranquil_purifiers",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1783014994744,
+      "tag": "0008_calm_vin_gonzales",
+      "breakpoints": true
     }
   ]
 }

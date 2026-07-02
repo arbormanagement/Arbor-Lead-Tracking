@@ -4,6 +4,7 @@ import { syncHcp } from "@/lib/sync/hcp";
 import { runAttribution } from "@/lib/sync/attribution";
 import { syncTranscriptions } from "@/lib/sync/transcribe";
 import { syncLsaLeads } from "@/lib/sync/lsa";
+import { syncConversions } from "@/lib/sync/conversions";
 import { releaseExpired } from "@/lib/dni/assign";
 
 export const runtime = "nodejs";
@@ -38,13 +39,16 @@ export async function POST(_req: Request, { params }: { params: Promise<{ job: s
         return Response.json({ ok: true, result: await syncTranscriptions({ limit: 25 }) });
       case "lsa":
         return Response.json({ ok: true, result: await syncLsaLeads({ sinceDays: 30 }) });
+      case "conversions":
+        return Response.json({ ok: true, result: await syncConversions({ sinceDays: 60 }) });
       case "all": {
         const transcribe = await syncTranscriptions({ limit: 25 });
         const lsa = await syncLsaLeads({ sinceDays: 30 });
         const hcp = await syncHcp(hcpDays ? { sinceDays: hcpDays } : {});
         const spend = await syncSpend({ sinceDays: 7 });
         const attribution = await runAttribution({ windowDays: 90 });
-        return Response.json({ ok: true, result: { transcribe, lsa, hcp, spend, attribution } });
+        const conversions = await syncConversions({ sinceDays: 60 });
+        return Response.json({ ok: true, result: { transcribe, lsa, hcp, spend, attribution, conversions } });
       }
       default:
         return Response.json({ error: `unknown job '${job}'` }, { status: 400 });

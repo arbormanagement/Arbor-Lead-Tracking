@@ -58,6 +58,67 @@ class FacebookProvider implements SpendProvider {
     }
     return rows;
   }
+
+  /**
+   * Conversions API: send server-side conversion events (closed-loop feedback).
+   * Each event carries an `event_id` (`${leadId}:${event}`) so Meta DEDUPES across
+   * retries — safe to re-send. Matches on hashed email/phone + `fbc` (derived from
+   * the stored fbclid). Uses the Conversions pixel/dataset id + its token (falls
+   * back to the ads access token). Sends the batch in one call.
+   */
+  async sendConversions(events: CapiEvent[]): Promise<{ ok: boolean; error?: string; raw?: unknown }> {
+    if (!events.length) return { ok: true };
+    const c = await getPlatformCreds("facebook");
+    const pixelId = c.conversions_pixel_id;
+    const token = c.conversions_token || c.access_token;
+    const apiVersion = c.api_version || "v21.0";
+    if (!pixelId) return { ok: false, error: "Facebook Conversions pixel/dataset id not configured" };
+    if (!token) return { ok: false, error: "Facebook Conversions access token not configured" };
+
+    const data = events.map((e) => ({
+      event_name: e.eventName,
+      event_time: e.eventTime,
+      action_source: e.actionSource,
+      event_id: e.eventId,
+      user_data: pruneEmpty({
+        em: e.emailHash ? [e.emailHash] : undefined,
+        ph: e.phoneHash ? [e.phoneHash] : undefined,
+        fbc: e.fbc,
+      }),
+      custom_data: { value: e.valueDollars, currency: e.currency ?? "USD" },
+    }));
+
+    try {
+      const res = await fetch(`https://graph.facebook.com/${apiVersion}/${pixelId}/events`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ data, access_token: token }),
+        signal: AbortSignal.timeout(30_000),
+      });
+      const json = await res.json();
+      if (!res.ok) return { ok: false, error: `Facebook CAPI ${res.status}: ${JSON.stringify(json)}`, raw: json };
+      return { ok: true, raw: json };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  }
+}
+
+function pruneEmpty<T extends Record<string, unknown>>(o: T): T {
+  for (const k of Object.keys(o)) if (o[k] === undefined) delete o[k];
+  return o;
+}
+
+export interface CapiEvent {
+  eventName: "Lead" | "Purchase";
+  eventTime: number; // unix seconds
+  actionSource: "phone_call" | "website" | "system_generated";
+  eventId: string; // dedup key
+  emailHash?: string | null;
+  phoneHash?: string | null;
+  fbc?: string; // fb.1.<ts>.<fbclid>
+  valueDollars: number;
+  currency?: string;
 }
 
 export interface FbLeadDetail {

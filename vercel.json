@@ -5,6 +5,7 @@
     { "path": "/api/cron/transcribe", "schedule": "*/10 * * * *" },
     { "path": "/api/cron/hcp", "schedule": "7 * * * *" },
     { "path": "/api/cron/attribution", "schedule": "22 * * * *" },
+    { "path": "/api/cron/conversions", "schedule": "37 * * * *" },
     { "path": "/api/cron/spend", "schedule": "37 7 * * *" },
     { "path": "/api/cron/lsa", "schedule": "47 7 * * *" }
   ]

@@ -37,6 +37,9 @@ export const CREDENTIAL_SPECS: CredSpec[] = [
       { key: "refresh_token", label: "Refresh Token", secret: true, envKey: "GOOGLE_ADS_REFRESH_TOKEN" },
       { key: "login_customer_id", label: "Login (MCC) Customer ID", envKey: "GOOGLE_ADS_LOGIN_CUSTOMER_ID" },
       { key: "customer_id", label: "Customer ID", envKey: "GOOGLE_ADS_CUSTOMER_ID" },
+      // Offline conversion import targets (leave blank to disable that event).
+      { key: "conversion_action_qualified", label: "Conv. action — Qualified Lead (ID or resource name)", envKey: "GOOGLE_ADS_CONV_QUALIFIED", placeholder: "e.g. 7259060772" },
+      { key: "conversion_action_won", label: "Conv. action — Won Estimate (ID or resource name)", envKey: "GOOGLE_ADS_CONV_WON", placeholder: "e.g. customers/8300392986/conversionActions/…" },
     ],
   },
   {
@@ -48,6 +51,10 @@ export const CREDENTIAL_SPECS: CredSpec[] = [
       { key: "verify_token", label: "Webhook Verify Token", envKey: "FACEBOOK_VERIFY_TOKEN" },
       { key: "ad_account_id", label: "Ad Account ID", envKey: "FB_AD_ACCOUNT_ID", placeholder: "act_…" },
       { key: "api_version", label: "API Version", envKey: "FACEBOOK_API_VERSION", placeholder: "v21.0" },
+      // Conversions API (closed-loop). Pixel/dataset id + a token that can write to
+      // it (ads_management / dataset token). Leave pixel blank to disable CAPI export.
+      { key: "conversions_pixel_id", label: "Conversions API — Pixel/Dataset ID", envKey: "FACEBOOK_PIXEL_ID" },
+      { key: "conversions_token", label: "Conversions API — Access Token (optional)", secret: true, envKey: "FACEBOOK_CONVERSIONS_TOKEN" },
     ],
   },
   {

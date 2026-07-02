@@ -4,6 +4,7 @@ import { syncHcp } from "@/lib/sync/hcp";
 import { runAttribution } from "@/lib/sync/attribution";
 import { syncTranscriptions } from "@/lib/sync/transcribe";
 import { syncLsaLeads } from "@/lib/sync/lsa";
+import { syncConversions } from "@/lib/sync/conversions";
 import { releaseExpired } from "@/lib/dni/assign";
 
 export const runtime = "nodejs";
@@ -37,13 +38,16 @@ export async function GET(req: Request, { params }: { params: Promise<{ job: str
         return Response.json({ ok: true, job, result: await syncLsaLeads({ sinceDays: 30 }) });
       case "attribution":
         return Response.json({ ok: true, job, result: await runAttribution({ windowDays: 90 }) });
+      case "conversions":
+        return Response.json({ ok: true, job, result: await syncConversions({ sinceDays: 60 }) });
       // Convenience aggregates so a single daily cron can do the revenue→ROI chain.
       case "revenue": {
         const hcp = await syncHcp();
         const spend = await syncSpend({ sinceDays: 7 });
         const lsa = await syncLsaLeads({ sinceDays: 30 });
         const attribution = await runAttribution({ windowDays: 90 });
-        return Response.json({ ok: true, job, result: { hcp, spend, lsa, attribution } });
+        const conversions = await syncConversions({ sinceDays: 60 });
+        return Response.json({ ok: true, job, result: { hcp, spend, lsa, attribution, conversions } });
       }
       default:
         return Response.json({ error: `unknown job '${job}'` }, { status: 400 });

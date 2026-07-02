@@ -548,6 +548,45 @@ export const syncRuns = pgTable(
   (t) => [index("sync_runs_job_idx").on(t.job, t.startedAt)],
 );
 
+// ── Conversion exports (closed-loop feedback to ad platforms) ─────────────────
+// One row per (lead, platform, event) we send back to Google Ads (offline click
+// conversion) / Meta (Conversions API). The unique key is the idempotency guard:
+// a row only ever advances to 'sent' once, so a retry never double-counts a
+// conversion in the ad account. `identifier` is the gclid/fbclid we matched on.
+export const conversionExportStatusEnum = pgEnum("conversion_export_status", [
+  "pending",
+  "sent",
+  "error",
+  "skipped",
+]);
+
+export const conversionExports = pgTable(
+  "conversion_exports",
+  {
+    id: id(),
+    leadId: text("lead_id")
+      .notNull()
+      .references(() => leads.id),
+    platform: text("platform").notNull(), // 'google' | 'facebook'
+    event: text("event").notNull(), // 'qualified' | 'won'
+    status: conversionExportStatusEnum("status").notNull().default("pending"),
+    valueCents: integer("value_cents"),
+    currency: text("currency").notNull().default("USD"),
+    identifier: text("identifier"), // the gclid / fbclid used to match the click
+    identifierType: text("identifier_type"), // 'gclid' | 'fbclid'
+    attempts: integer("attempts").notNull().default(0),
+    response: jsonb("response"),
+    error: text("error"),
+    sentAt: timestamp("sent_at", { withTimezone: true }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    uniqueIndex("conversion_exports_lead_platform_event_uq").on(t.leadId, t.platform, t.event),
+    index("conversion_exports_status_idx").on(t.status),
+  ],
+);
+
 // ── Settings (singleton key/value) ───────────────────────────────────────────
 export const settings = pgTable("settings", {
   key: text("key").primaryKey(),

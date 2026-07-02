@@ -132,6 +132,82 @@ class GoogleAdsProvider implements SpendProvider {
     }
     return out;
   }
+
+  /**
+   * Offline Conversion Import: upload gclid-matched conversions (closed-loop
+   * feedback so Smart Bidding can optimize toward won revenue). Uploads ONE
+   * conversion per request — at our volume that's fine, and it gives clean
+   * per-item success/failure without parsing partial-failure indices, so the
+   * caller's `conversion_exports` 'sent' guard can never double-count on retry.
+   * Uses the existing adwords OAuth (the scope is read+write; no new token needed).
+   */
+  async uploadClickConversions(items: ClickConversionInput[]): Promise<UploadResult[]> {
+    if (!items.length) return [];
+    const cfg = await this.config();
+    const token = await this.accessToken(cfg);
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${token}`,
+      "developer-token": cfg.developerToken,
+      "Content-Type": "application/json",
+    };
+    if (cfg.loginCustomerId) headers["login-customer-id"] = cfg.loginCustomerId.replace(/-/g, "");
+
+    const out: UploadResult[] = [];
+    for (const it of items) {
+      try {
+        const body = {
+          conversions: [
+            {
+              gclid: it.gclid,
+              conversionAction: normalizeConversionAction(it.conversionAction, cfg.customerId),
+              conversionDateTime: it.conversionDateTime,
+              conversionValue: it.valueDollars,
+              currencyCode: it.currencyCode ?? "USD",
+            },
+          ],
+          partialFailure: true,
+        };
+        const res = await fetch(
+          `https://googleads.googleapis.com/${GOOGLE_ADS_API_VERSION}/customers/${cfg.customerId}:uploadClickConversions`,
+          { method: "POST", headers, body: JSON.stringify(body), signal: AbortSignal.timeout(30_000) },
+        );
+        const json = (await res.json()) as { partialFailureError?: { message?: string } };
+        if (!res.ok) {
+          out.push({ ok: false, error: `Google Ads ${res.status}: ${JSON.stringify(json)}`, raw: json });
+          continue;
+        }
+        if (json.partialFailureError) {
+          out.push({ ok: false, error: json.partialFailureError.message ?? "partial failure", raw: json });
+          continue;
+        }
+        out.push({ ok: true, raw: json });
+      } catch (err) {
+        out.push({ ok: false, error: err instanceof Error ? err.message : String(err) });
+      }
+    }
+    return out;
+  }
+}
+
+/** Accept either a full resource name or a bare numeric id from settings. */
+function normalizeConversionAction(action: string, customerId: string): string {
+  const a = action.trim();
+  if (a.startsWith("customers/")) return a;
+  return `customers/${customerId}/conversionActions/${a.replace(/[^0-9]/g, "")}`;
+}
+
+export interface ClickConversionInput {
+  gclid: string;
+  conversionAction: string; // resource name or bare numeric id
+  conversionDateTime: string; // "yyyy-MM-dd HH:mm:ss+00:00"
+  valueDollars: number;
+  currencyCode?: string;
+}
+
+export interface UploadResult {
+  ok: boolean;
+  error?: string;
+  raw?: unknown;
 }
 
 export interface LsaLead {
