@@ -24,6 +24,6 @@ export function middleware(req: NextRequest) {
 export const config = {
   // Protect everything except public API surfaces, the snippet, login, and assets.
   matcher: [
-    "/((?!api/track|api/dni|api/twilio|api/webhooks|api/cron|api/admin|api/inngest|api/auth|track.js|login|_next|favicon.ico).*)",
+    "/((?!api/track|api/dni|api/twilio|api/webhooks|api/cron|api/admin|api/inngest|api/auth|track.js|dni-test|login|_next|favicon.ico).*)",
   ],
 };
