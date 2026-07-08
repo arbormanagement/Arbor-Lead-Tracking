@@ -102,6 +102,27 @@ class FacebookProvider implements SpendProvider {
       return { ok: false, error: err instanceof Error ? err.message : String(err) };
     }
   }
+
+  /**
+   * List the pixels/datasets on the ad account so the UI can offer the Conversions
+   * API id as a pick-list instead of a manual hunt in Events Manager. Uses the same
+   * ads access token (needs ads_read on the account/pixel).
+   */
+  async listPixels(): Promise<FbPixel[]> {
+    const cfg = await fbConfig();
+    const url = new URL(`https://graph.facebook.com/${cfg.apiVersion}/${cfg.adAccountId}/adspixels`);
+    url.searchParams.set("fields", "id,name");
+    url.searchParams.set("access_token", cfg.accessToken);
+    const res = await fetch(url, { signal: AbortSignal.timeout(30_000) });
+    if (!res.ok) throw new Error(`Facebook ${res.status}: ${await res.text()}`);
+    const body = (await res.json()) as { data?: Array<{ id: string; name?: string }> };
+    return (body.data ?? []).map((p) => ({ id: String(p.id), name: p.name ?? String(p.id) }));
+  }
+}
+
+export interface FbPixel {
+  id: string;
+  name: string;
 }
 
 function pruneEmpty<T extends Record<string, unknown>>(o: T): T {

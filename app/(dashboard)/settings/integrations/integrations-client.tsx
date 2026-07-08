@@ -39,8 +39,34 @@ function PlatformCard({ platform, canSave }: { platform: Platform; canSave: bool
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [pixels, setPixels] = useState<{ id: string; name: string }[] | null>(null);
+  const [pixelMsg, setPixelMsg] = useState("");
+  const [pixelLoading, setPixelLoading] = useState(false);
 
   const statusFor = (key: string) => status.find((s) => s.key === key);
+
+  async function findPixels() {
+    setPixelLoading(true);
+    setPixelMsg("");
+    try {
+      const res = await fetch("/api/settings/facebook/pixels");
+      const body = await res.json().catch(() => ({}));
+      if (body.ok && Array.isArray(body.pixels)) {
+        setPixels(body.pixels);
+        if (body.pixels.length === 0) setPixelMsg("No datasets on this ad account.");
+        else if (body.pixels.length === 1) {
+          setValues((v) => ({ ...v, conversions_pixel_id: body.pixels[0].id }));
+          setPixelMsg(`Found “${body.pixels[0].name}” — filled in. Hit Save.`);
+        } else setPixelMsg("Pick a dataset below.");
+      } else {
+        setPixelMsg(body.error ? `Couldn't fetch — ${body.error}` : "Couldn't fetch — save the Access Token first.");
+      }
+    } catch {
+      setPixelMsg("Network error");
+    } finally {
+      setPixelLoading(false);
+    }
+  }
 
   async function save() {
     setSaving(true);
@@ -106,24 +132,51 @@ function PlatformCard({ platform, canSave }: { platform: Platform; canSave: bool
           const badge = st?.set
             ? `${st.source === "db" ? "saved" : "env"} · ${f.secret ? "••••" : ""}${st.last4 ?? ""}`
             : "not set";
+          const isPixel = platform.platform === "facebook" && f.key === "conversions_pixel_id";
           return (
             <div key={f.key} style={{ display: "grid", gridTemplateColumns: "200px 1fr", gap: 10, alignItems: "center" }}>
               <label style={{ color: "var(--muted)", fontSize: 13 }}>
                 {f.label}
                 <div style={{ fontSize: 11, color: st?.set ? "var(--muted)" : "var(--warn)" }}>{badge}</div>
               </label>
-              <input
-                type={f.secret ? "password" : "text"}
-                placeholder={
-                  st?.set
-                    ? `saved · ${f.secret ? "••••" : ""}${st.last4 ?? ""} — leave blank to keep`
-                    : f.placeholder || ""
-                }
-                value={values[f.key] ?? ""}
-                onChange={(e) => setValues((v) => ({ ...v, [f.key]: e.target.value }))}
-                style={input}
-                autoComplete="off"
-              />
+              <div>
+                <input
+                  type={f.secret ? "password" : "text"}
+                  placeholder={
+                    st?.set
+                      ? `saved · ${f.secret ? "••••" : ""}${st.last4 ?? ""} — leave blank to keep`
+                      : f.placeholder || ""
+                  }
+                  value={values[f.key] ?? ""}
+                  onChange={(e) => setValues((v) => ({ ...v, [f.key]: e.target.value }))}
+                  style={input}
+                  autoComplete="off"
+                />
+                {isPixel && (
+                  <div style={{ marginTop: 6 }}>
+                    <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                      <button type="button" onClick={findPixels} disabled={pixelLoading} style={btn("ghost")}>
+                        {pixelLoading ? "Finding…" : "Find my pixel"}
+                      </button>
+                      {pixels && pixels.length > 1 && (
+                        <select
+                          value={values.conversions_pixel_id ?? ""}
+                          onChange={(e) => setValues((v) => ({ ...v, conversions_pixel_id: e.target.value }))}
+                          style={{ ...input, width: "auto" }}
+                        >
+                          <option value="">Select a dataset…</option>
+                          {pixels.map((p) => (
+                            <option key={p.id} value={p.id}>
+                              {p.name} ({p.id})
+                            </option>
+                          ))}
+                        </select>
+                      )}
+                    </div>
+                    {pixelMsg && <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 5 }}>{pixelMsg}</div>}
+                  </div>
+                )}
+              </div>
             </div>
           );
         })}
