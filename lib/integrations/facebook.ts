@@ -110,13 +110,40 @@ class FacebookProvider implements SpendProvider {
    */
   async listPixels(): Promise<FbPixel[]> {
     const cfg = await fbConfig();
-    const url = new URL(`https://graph.facebook.com/${cfg.apiVersion}/${cfg.adAccountId}/adspixels`);
-    url.searchParams.set("fields", "id,name");
-    url.searchParams.set("access_token", cfg.accessToken);
-    const res = await fetch(url, { signal: AbortSignal.timeout(30_000) });
-    if (!res.ok) throw new Error(`Facebook ${res.status}: ${await res.text()}`);
-    const body = (await res.json()) as { data?: Array<{ id: string; name?: string }> };
-    return (body.data ?? []).map((p) => ({ id: String(p.id), name: p.name ?? String(p.id) }));
+    const found = new Map<string, string>();
+
+    const pull = async (path: string, tolerant: boolean) => {
+      const url = new URL(`https://graph.facebook.com/${cfg.apiVersion}/${path}`);
+      url.searchParams.set("fields", "id,name");
+      url.searchParams.set("access_token", cfg.accessToken);
+      const res = await fetch(url, { signal: AbortSignal.timeout(30_000) });
+      if (!res.ok) {
+        if (tolerant) return; // best-effort secondary source
+        throw new Error(`Facebook ${res.status}: ${await res.text()}`);
+      }
+      const body = (await res.json()) as { data?: Array<{ id: string; name?: string }> };
+      for (const p of body.data ?? []) found.set(String(p.id), p.name ?? String(p.id));
+    };
+
+    // 1) Pixels/datasets assigned directly to the ad account.
+    await pull(`${cfg.adAccountId}/adspixels`, false);
+
+    // 2) Datasets usually live at the Business level (not the ad account) — resolve the
+    //    owning business and merge its pixels too. Best-effort; needs business_management.
+    try {
+      const bizUrl = new URL(`https://graph.facebook.com/${cfg.apiVersion}/${cfg.adAccountId}`);
+      bizUrl.searchParams.set("fields", "business");
+      bizUrl.searchParams.set("access_token", cfg.accessToken);
+      const bizRes = await fetch(bizUrl, { signal: AbortSignal.timeout(30_000) });
+      if (bizRes.ok) {
+        const j = (await bizRes.json()) as { business?: { id?: string } };
+        if (j.business?.id) await pull(`${j.business.id}/adspixels`, true);
+      }
+    } catch {
+      // ignore — the ad-account list is the primary source
+    }
+
+    return [...found].map(([id, name]) => ({ id, name }));
   }
 }
 

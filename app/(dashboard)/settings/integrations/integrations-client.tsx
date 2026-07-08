@@ -53,7 +53,8 @@ function PlatformCard({ platform, canSave }: { platform: Platform; canSave: bool
       const body = await res.json().catch(() => ({}));
       if (body.ok && Array.isArray(body.pixels)) {
         setPixels(body.pixels);
-        if (body.pixels.length === 0) setPixelMsg("No datasets on this ad account.");
+        if (body.pixels.length === 0)
+          setPixelMsg("No datasets found on the ad account or its business. Confirm one exists in Meta Events Manager (or that the token has business_management), or paste the ID manually.");
         else if (body.pixels.length === 1) {
           setValues((v) => ({ ...v, conversions_pixel_id: body.pixels[0].id }));
           setPixelMsg(`Found “${body.pixels[0].name}” — filled in. Hit Save.`);
