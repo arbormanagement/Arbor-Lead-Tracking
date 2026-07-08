@@ -46,15 +46,17 @@ export const CREDENTIAL_SPECS: CredSpec[] = [
     platform: "facebook",
     label: "Facebook / Instagram",
     fields: [
-      { key: "access_token", label: "Access Token (ads_read)", secret: true, envKey: "FACEBOOK_ACCESS_TOKEN" },
-      { key: "app_secret", label: "App Secret (webhook)", secret: true, envKey: "FACEBOOK_APP_SECRET" },
-      { key: "verify_token", label: "Webhook Verify Token", envKey: "FACEBOOK_VERIFY_TOKEN" },
+      // One System User token does everything: spend reads, CAPI conversion writes,
+      // AND lead-form retrieval. Scope it ads_read + ads_management + leads_retrieval.
+      { key: "access_token", label: "Access Token (System User: ads_read + ads_management + leads_retrieval)", secret: true, envKey: "FACEBOOK_ACCESS_TOKEN" },
       { key: "ad_account_id", label: "Ad Account ID", envKey: "FB_AD_ACCOUNT_ID", placeholder: "act_…" },
-      { key: "api_version", label: "API Version", envKey: "FACEBOOK_API_VERSION", placeholder: "v21.0" },
-      // Conversions API (closed-loop). Pixel/dataset id + a token that can write to
-      // it (ads_management / dataset token). Leave pixel blank to disable CAPI export.
+      // Conversions API (closed-loop). Just the pixel/dataset id — the token above
+      // (with ads_management) writes the events. Leave blank to disable CAPI export.
       { key: "conversions_pixel_id", label: "Conversions API — Pixel/Dataset ID", envKey: "FACEBOOK_PIXEL_ID" },
-      { key: "conversions_token", label: "Conversions API — Access Token (optional)", secret: true, envKey: "FACEBOOK_CONVERSIONS_TOKEN" },
+      // Lead-form webhook only. App Secret verifies Meta's payload signature (required
+      // in prod so forged leads can't enter the pipeline); Verify Token is the handshake.
+      { key: "app_secret", label: "App Secret (lead-form webhook)", secret: true, envKey: "FACEBOOK_APP_SECRET" },
+      { key: "verify_token", label: "Verify Token (lead-form webhook)", envKey: "FACEBOOK_VERIFY_TOKEN" },
     ],
   },
   {

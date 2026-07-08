@@ -45,7 +45,7 @@ export async function syncConversions({ sinceDays = 60, limit = 500 }: { sinceDa
     const googleOn = !!(googleAction.qualified || googleAction.won);
 
     const fb = await getPlatformCreds("facebook");
-    const facebookOn = !!fb.conversions_pixel_id && !!(fb.conversions_token || fb.access_token);
+    const facebookOn = !!fb.conversions_pixel_id && !!fb.access_token;
 
     if (!googleOn && !facebookOn) {
       return { skipped: "No conversion export destinations configured", sent: 0, failed: 0 };

@@ -70,7 +70,7 @@ class FacebookProvider implements SpendProvider {
     if (!events.length) return { ok: true };
     const c = await getPlatformCreds("facebook");
     const pixelId = c.conversions_pixel_id;
-    const token = c.conversions_token || c.access_token;
+    const token = c.access_token; // one System User token (with ads_management) writes CAPI
     const apiVersion = c.api_version || "v21.0";
     if (!pixelId) return { ok: false, error: "Facebook Conversions pixel/dataset id not configured" };
     if (!token) return { ok: false, error: "Facebook Conversions access token not configured" };
