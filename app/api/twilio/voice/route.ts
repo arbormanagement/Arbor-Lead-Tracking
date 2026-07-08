@@ -9,7 +9,7 @@ import {
   trackingNumbers,
 } from "@/lib/db/schema";
 import { validateTwilioSignature, parseTwilioForm } from "@/lib/twilio/signature";
-import { getTwilioConfig } from "@/lib/twilio/client";
+import { getDefaultForwardNumber } from "@/lib/routing";
 import {
   forwardTwiml,
   rejectTwiml,
@@ -17,7 +17,6 @@ import {
   xmlResponse,
 } from "@/lib/twilio/twiml";
 import { normalizePhone } from "@/lib/phone";
-import { env } from "@/lib/env";
 
 export const runtime = "nodejs";
 // This webhook must answer in well under 3s or the caller hears dead air.
@@ -41,9 +40,9 @@ export async function POST(req: Request) {
   const calledNumber = params.To; // the tracking number that was dialed
   const fromE164 = normalizePhone(fromRaw);
 
-  // Account-level forwarding default (DB over env). A matched tracking number may
+  // Account-level forwarding default (Settings → Routing, over env). A matched tracking number may
   // override this with its own destination below.
-  const accountDefault = (await getTwilioConfig()).defaultDestination ?? env.TWILIO_DEFAULT_DESTINATION;
+  const accountDefault = await getDefaultForwardNumber();
   let destination = accountDefault;
 
   try {

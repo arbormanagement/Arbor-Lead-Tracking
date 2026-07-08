@@ -27,13 +27,13 @@ export async function getTwilioClient() {
   return client;
 }
 
-/** Resolve the auth token + default destination for signature checks / routing. */
+/** Resolve the auth token + webhook base for signature checks / provisioning. The
+ *  default forward number now lives in Settings → Routing (see lib/routing.ts). */
 export async function getTwilioConfig() {
   const c = await getPlatformCreds("twilio");
   return {
     accountSid: c.account_sid ?? null,
     authToken: c.auth_token ?? null,
-    defaultDestination: c.default_destination ?? null,
     voiceWebhookBase: c.voice_webhook_base ?? null,
   };
 }

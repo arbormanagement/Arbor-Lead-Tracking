@@ -73,8 +73,8 @@ export const CREDENTIAL_SPECS: CredSpec[] = [
       { key: "auth_token", label: "Auth Token", secret: true, envKey: "TWILIO_AUTH_TOKEN" },
       { key: "api_key_sid", label: "API Key SID (optional)", secret: true, envKey: "TWILIO_API_KEY_SID", placeholder: "SK…" },
       { key: "api_key_secret", label: "API Key Secret (optional)", secret: true, envKey: "TWILIO_API_KEY_SECRET" },
-      { key: "default_destination", label: "Default forward number", envKey: "TWILIO_DEFAULT_DESTINATION", placeholder: "+16188368004" },
-      // Webhook base is derived from APP_BASE_URL in code (…/api/twilio) — no field needed.
+      // Default forward number lives in Settings → Routing (business config, not a
+      // credential); webhook base is derived from APP_BASE_URL in code.
     ],
   },
 ];

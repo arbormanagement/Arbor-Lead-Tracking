@@ -3,8 +3,7 @@ import { db } from "@/lib/db/client";
 import { calls, numberAssignments, sources, trackingNumbers } from "@/lib/db/schema";
 import { formatPhoneDisplay } from "@/lib/phone";
 import { dateTime } from "@/lib/format";
-import { getTwilioConfig } from "@/lib/twilio/client";
-import { env } from "@/lib/env";
+import { getDefaultForwardNumber } from "@/lib/routing";
 import { AddNumberFlow } from "./add-number-flow";
 import { NumbersTable } from "./numbers-table";
 
@@ -44,8 +43,7 @@ export default async function NumbersPage() {
     if (leasedSet.has(n.id)) webLeased++;
   }
 
-  const officeDefault =
-    (await getTwilioConfig()).defaultDestination ?? env.TWILIO_DEFAULT_DESTINATION ?? "";
+  const officeDefault = await getDefaultForwardNumber();
 
   const rows = numbers.map((n) => {
     const a = activityById.get(n.id);

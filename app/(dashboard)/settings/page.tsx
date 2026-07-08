@@ -1,11 +1,14 @@
 import Link from "next/link";
 import { getSession } from "@/lib/auth";
 import { credentialStatus, CREDENTIAL_SPECS } from "@/lib/credentials";
+import { getDefaultForwardNumber } from "@/lib/routing";
+import { formatPhoneDisplay } from "@/lib/phone";
 
 export const dynamic = "force-dynamic";
 
 export default async function SettingsPage() {
   const session = await getSession();
+  const defaultForward = await getDefaultForwardNumber();
 
   // How many platforms have at least one credential resolved (db or env).
   const statuses = await Promise.all(
@@ -41,11 +44,11 @@ export default async function SettingsPage() {
           <div className="value" style={{ fontSize: 16 }}>{session?.email}</div>
           <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>Owner</div>
         </div>
-        <div className="card pad">
-          <div className="label">☎ Default call routing</div>
-          <div className="value" style={{ fontSize: 16 }}>Office</div>
-          <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>+1 (618) 836-8004 · per-number override in /numbers</div>
-        </div>
+        <Link href="/settings/routing" className="card pad" style={{ display: "block" }}>
+          <div className="label">☎ Default call routing →</div>
+          <div className="value" style={{ fontSize: 16 }}>{formatPhoneDisplay(defaultForward)}</div>
+          <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>edit default forward · per-number override in /numbers</div>
+        </Link>
         <div className="card pad">
           <div className="label">◈ Attribution model</div>
           <div className="value" style={{ fontSize: 16 }}>Last-touch</div>
