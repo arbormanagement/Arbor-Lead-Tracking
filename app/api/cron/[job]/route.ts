@@ -5,6 +5,7 @@ import { runAttribution } from "@/lib/sync/attribution";
 import { syncTranscriptions } from "@/lib/sync/transcribe";
 import { syncLsaLeads } from "@/lib/sync/lsa";
 import { syncConversions } from "@/lib/sync/conversions";
+import { syncFacebookLeads } from "@/lib/sync/facebook-leads";
 import { releaseExpired } from "@/lib/dni/assign";
 
 export const runtime = "nodejs";
@@ -40,6 +41,8 @@ export async function GET(req: Request, { params }: { params: Promise<{ job: str
         return Response.json({ ok: true, job, result: await runAttribution({ windowDays: 90 }) });
       case "conversions":
         return Response.json({ ok: true, job, result: await syncConversions({ sinceDays: 60 }) });
+      case "fbleads":
+        return Response.json({ ok: true, job, result: await syncFacebookLeads() });
       // Convenience aggregates so a single daily cron can do the revenue→ROI chain.
       case "revenue": {
         const hcp = await syncHcp();

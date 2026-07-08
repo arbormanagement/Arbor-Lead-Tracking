@@ -10,13 +10,22 @@ interface FbConfig {
   accessToken: string;
   adAccountId: string;
   apiVersion: string;
+  pageId: string;
 }
+
+// Arbor's Facebook Page — the default lead-form source when page_id isn't set.
+const DEFAULT_PAGE_ID = "118081174908694";
 
 async function fbConfig(): Promise<FbConfig> {
   const c = await getPlatformCreds("facebook");
   if (!c.access_token) throw new Error("Facebook access token is not configured");
   if (!c.ad_account_id) throw new Error("Facebook ad account id is not configured");
-  return { accessToken: c.access_token, adAccountId: c.ad_account_id, apiVersion: c.api_version || "v21.0" };
+  return {
+    accessToken: c.access_token,
+    adAccountId: c.ad_account_id,
+    apiVersion: c.api_version || "v21.0",
+    pageId: c.page_id || DEFAULT_PAGE_ID,
+  };
 }
 
 class FacebookProvider implements SpendProvider {
@@ -145,11 +154,76 @@ class FacebookProvider implements SpendProvider {
 
     return [...found].map(([id, name]) => ({ id, name }));
   }
+
+  /** Lead-gen forms on the page (id, name, status). Needs leads_retrieval + page access. */
+  async listLeadForms(): Promise<FbLeadForm[]> {
+    const cfg = await fbConfig();
+    const out: FbLeadForm[] = [];
+    const url = new URL(`https://graph.facebook.com/${cfg.apiVersion}/${cfg.pageId}/leadgen_forms`);
+    url.searchParams.set("fields", "id,name,status");
+    url.searchParams.set("limit", "200");
+    url.searchParams.set("access_token", cfg.accessToken);
+    let next: string | null = url.toString();
+    for (let guard = 0; next && guard < 25; guard++) {
+      const res = await fetch(next, { signal: AbortSignal.timeout(30_000) });
+      if (!res.ok) throw new Error(`Facebook forms ${res.status}: ${await res.text()}`);
+      const body = (await res.json()) as { data?: Array<{ id: string; name?: string; status?: string }>; paging?: { next?: string } };
+      for (const f of body.data ?? []) out.push({ id: String(f.id), name: f.name ?? String(f.id), status: f.status ?? "UNKNOWN" });
+      next = body.paging?.next ?? null;
+    }
+    return out;
+  }
+
+  /**
+   * Leads submitted to a lead form, optionally only those created after `sinceUnix`
+   * (seconds). Polled on a schedule as an alternative to the webhook — so we ingest
+   * FB leads without touching the page's existing (Replit) webhook subscription.
+   * field_data comes back inline, so no per-lead fetch is needed.
+   */
+  async listFormLeads(formId: string, sinceUnix?: number): Promise<FbLeadDetail[]> {
+    const cfg = await fbConfig();
+    const first = new URL(`https://graph.facebook.com/${cfg.apiVersion}/${formId}/leads`);
+    first.searchParams.set("fields", "id,created_time,field_data,ad_id,campaign_id,form_id");
+    first.searchParams.set("limit", "200");
+    if (sinceUnix) {
+      first.searchParams.set("filtering", JSON.stringify([{ field: "time_created", operator: "GREATER_THAN", value: sinceUnix }]));
+    }
+    first.searchParams.set("access_token", cfg.accessToken);
+
+    const out: FbLeadDetail[] = [];
+    let next: string | null = first.toString();
+    for (let guard = 0; next && guard < 25; guard++) {
+      const res = await fetch(next, { signal: AbortSignal.timeout(30_000) });
+      if (!res.ok) throw new Error(`Facebook leads ${res.status}: ${await res.text()}`);
+      const body = (await res.json()) as {
+        data?: Array<{ id: string; created_time?: string; field_data?: Array<{ name: string; values: string[] }>; ad_id?: string; campaign_id?: string; form_id?: string }>;
+        paging?: { next?: string };
+      };
+      for (const l of body.data ?? []) {
+        out.push({
+          leadgenId: String(l.id),
+          formId: l.form_id ? String(l.form_id) : formId,
+          adId: l.ad_id ? String(l.ad_id) : undefined,
+          campaignId: l.campaign_id ? String(l.campaign_id) : undefined,
+          createdTime: l.created_time,
+          fieldData: l.field_data ?? [],
+        });
+      }
+      next = body.paging?.next ?? null;
+    }
+    return out;
+  }
 }
 
 export interface FbPixel {
   id: string;
   name: string;
+}
+
+export interface FbLeadForm {
+  id: string;
+  name: string;
+  status: string;
 }
 
 function pruneEmpty<T extends Record<string, unknown>>(o: T): T {

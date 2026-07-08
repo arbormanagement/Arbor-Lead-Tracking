@@ -51,6 +51,8 @@ export const CREDENTIAL_SPECS: CredSpec[] = [
       // AND lead-form retrieval. Scope it ads_read + ads_management + leads_retrieval.
       { key: "access_token", label: "Access Token (System User: ads_read + ads_management + leads_retrieval)", secret: true, envKey: "FACEBOOK_ACCESS_TOKEN" },
       { key: "ad_account_id", label: "Ad Account ID", envKey: "FB_AD_ACCOUNT_ID", placeholder: "act_…" },
+      // Page whose lead forms we poll (defaults to Arbor's page in code if blank).
+      { key: "page_id", label: "Page ID (lead forms)", envKey: "FACEBOOK_PAGE_ID", placeholder: "118081174908694" },
       // Conversions API (closed-loop). Just the pixel/dataset id — the token above
       // (with ads_management) writes the events. Leave blank to disable CAPI export.
       { key: "conversions_pixel_id", label: "Conversions API — Pixel/Dataset ID", envKey: "FACEBOOK_PIXEL_ID" },

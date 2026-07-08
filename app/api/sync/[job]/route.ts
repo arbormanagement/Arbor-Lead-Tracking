@@ -5,6 +5,7 @@ import { runAttribution } from "@/lib/sync/attribution";
 import { syncTranscriptions } from "@/lib/sync/transcribe";
 import { syncLsaLeads } from "@/lib/sync/lsa";
 import { syncConversions } from "@/lib/sync/conversions";
+import { syncFacebookLeads } from "@/lib/sync/facebook-leads";
 import { releaseExpired } from "@/lib/dni/assign";
 
 export const runtime = "nodejs";
@@ -41,6 +42,8 @@ export async function POST(_req: Request, { params }: { params: Promise<{ job: s
         return Response.json({ ok: true, result: await syncLsaLeads({ sinceDays: 30 }) });
       case "conversions":
         return Response.json({ ok: true, result: await syncConversions({ sinceDays: 60 }) });
+      case "fbleads":
+        return Response.json({ ok: true, result: await syncFacebookLeads(daysParam ? { sinceDays: Number(daysParam) } : {}) });
       case "all": {
         const transcribe = await syncTranscriptions({ limit: 25 });
         const lsa = await syncLsaLeads({ sinceDays: 30 });
@@ -48,7 +51,8 @@ export async function POST(_req: Request, { params }: { params: Promise<{ job: s
         const spend = await syncSpend({ sinceDays: 7 });
         const attribution = await runAttribution({ windowDays: 90 });
         const conversions = await syncConversions({ sinceDays: 60 });
-        return Response.json({ ok: true, result: { transcribe, lsa, hcp, spend, attribution, conversions } });
+        const fbleads = await syncFacebookLeads();
+        return Response.json({ ok: true, result: { transcribe, lsa, hcp, spend, attribution, conversions, fbleads } });
       }
       default:
         return Response.json({ error: `unknown job '${job}'` }, { status: 400 });
