@@ -58,11 +58,31 @@ async function probe(platform: string): Promise<{ ok: boolean; error?: string; d
     case "facebook": {
       if (!c.access_token || !c.ad_account_id) return { ok: false, error: "Access token / ad account not set" };
       const v = c.api_version || "v21.0";
-      const url = new URL(`https://graph.facebook.com/${v}/${c.ad_account_id}`);
-      url.searchParams.set("fields", "name");
-      url.searchParams.set("access_token", c.access_token);
-      const res = await fetch(url, { signal: AbortSignal.timeout(20_000) });
-      return res.ok ? { ok: true, detail: "Ad account reachable" } : { ok: false, error: `Graph ${res.status}` };
+      const token = c.access_token;
+      const graphGet = async (node: string) => {
+        const url = new URL(`https://graph.facebook.com/${v}/${node}`);
+        url.searchParams.set("fields", "name");
+        url.searchParams.set("access_token", token);
+        return fetch(url, { signal: AbortSignal.timeout(20_000) });
+      };
+
+      const acct = await graphGet(c.ad_account_id);
+      if (!acct.ok) return { ok: false, error: `ad account Graph ${acct.status}` };
+
+      // If a Conversions API pixel is set, verify the token can actually reach it —
+      // that's the CAPI write path (and the dataset access just granted), which the
+      // ad-account check does NOT cover.
+      if (c.conversions_pixel_id) {
+        const px = await graphGet(c.conversions_pixel_id);
+        if (!px.ok) {
+          return {
+            ok: false,
+            error: `Conversions pixel ${c.conversions_pixel_id} not reachable (Graph ${px.status}) — check the System User has dataset access`,
+          };
+        }
+        return { ok: true, detail: "Ad account + Conversions pixel reachable" };
+      }
+      return { ok: true, detail: "Ad account reachable (no Conversions pixel set)" };
     }
     case "deepgram": {
       if (!c.api_key) return { ok: false, error: "API key not set" };
