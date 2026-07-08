@@ -23,8 +23,9 @@ export const CREDENTIAL_SPECS: CredSpec[] = [
     platform: "housecallpro",
     label: "HousecallPro",
     fields: [
+      // API base defaults to https://api.housecallpro.com in code — only override in env
+      // for a non-standard host, so it's not worth a form field.
       { key: "api_key", label: "API Key", secret: true, envKey: "HCP_API_KEY" },
-      { key: "api_base", label: "API Base URL", envKey: "HCP_API_BASE", placeholder: "https://api.housecallpro.com" },
     ],
   },
   {
@@ -73,7 +74,7 @@ export const CREDENTIAL_SPECS: CredSpec[] = [
       { key: "api_key_sid", label: "API Key SID (optional)", secret: true, envKey: "TWILIO_API_KEY_SID", placeholder: "SK…" },
       { key: "api_key_secret", label: "API Key Secret (optional)", secret: true, envKey: "TWILIO_API_KEY_SECRET" },
       { key: "default_destination", label: "Default forward number", envKey: "TWILIO_DEFAULT_DESTINATION", placeholder: "+16188368004" },
-      { key: "voice_webhook_base", label: "Webhook base (optional)", envKey: "TWILIO_VOICE_WEBHOOK_BASE", placeholder: "https://app…/api/twilio" },
+      // Webhook base is derived from APP_BASE_URL in code (…/api/twilio) — no field needed.
     ],
   },
 ];
