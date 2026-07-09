@@ -52,6 +52,7 @@ export const leadStatusEnum = pgEnum("lead_status", [
   "quoted",
   "won",
   "lost",
+  "cancelled",
   "spam",
   "duplicate",
 ]);

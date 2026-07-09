@@ -143,6 +143,7 @@ tbody tr:hover { background: var(--panel-2); }
 .badge.info { color: var(--chart-spend); border-color: rgba(76, 141, 255, .32); background: rgba(76, 141, 255, .12); }
 .badge.warn { color: var(--warn); border-color: rgba(227, 179, 65, .3); }
 .badge.bad { color: var(--danger); border-color: rgba(240, 97, 106, .3); background: var(--danger-soft); }
+.badge.muted-strike { color: var(--faint); border-style: dashed; }
 
 /* ── Buttons / pills / inputs ──────────────────────────────────────────── */
 .btn { padding: 8px 14px; border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--panel); color: var(--text); font-weight: 600; font-size: 13px; cursor: pointer; }

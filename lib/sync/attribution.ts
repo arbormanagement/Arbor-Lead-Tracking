@@ -49,7 +49,7 @@ async function matchLeadsToEstimates(windowDays: number): Promise<{ qualified: n
   await db
     .update(leads)
     .set({ status: "new" })
-    .where(and(eq(leads.isSpam, false), inArray(leads.status, ["won", "qualified", "quoted", "lost"])));
+    .where(and(eq(leads.isSpam, false), inArray(leads.status, ["won", "qualified", "quoted", "lost", "cancelled"])));
 
   const lookback = new Date(Date.now() - (windowDays + 30) * 86_400_000);
   // Every estimate (created), won first so a won estimate claims its lead before a
@@ -107,16 +107,19 @@ async function matchLeadsToEstimates(windowDays: number): Promise<{ qualified: n
     if (!pick) continue;
 
     claimedLeads.add(pick.id);
-    // Stage from the estimate state: won (approved) → won; declined/expired → lost;
-    // has a quote amount → quoted; estimate exists but no price yet → qualified.
+    // Stage from the estimate state: won (approved) → won; cancelled → cancelled;
+    // declined/expired/rejected → lost; has a quote amount → quoted; estimate exists
+    // but no price yet → qualified.
     const s = (est.estStatus ?? "").toLowerCase();
     const status = est.won
       ? "won"
-      : /declin|expir|reject|cancel|lost/.test(s)
-        ? "lost"
-        : (est.total ?? 0) > 0
-          ? "quoted"
-          : "qualified";
+      : /cancel/.test(s)
+        ? "cancelled"
+        : /declin|expir|reject|lost/.test(s)
+          ? "lost"
+          : (est.total ?? 0) > 0
+            ? "quoted"
+            : "qualified";
     await db
       .update(leads)
       .set({
@@ -128,7 +131,7 @@ async function matchLeadsToEstimates(windowDays: number): Promise<{ qualified: n
       })
       .where(eq(leads.id, pick.id));
     if (est.won) won++;
-    else if (status !== "lost") qualified++;
+    else if (status !== "lost" && status !== "cancelled") qualified++;
   }
 
   // "qualified" total includes won leads (a won lead is also a qualified lead).
