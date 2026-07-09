@@ -24,6 +24,7 @@ const FILTERS = [
 
 function stageClass(status: string): string {
   if (status === "won") return "badge win";
+  if (status === "quoted") return "badge info";
   if (status === "qualified") return "badge warn";
   if (status === "spam" || status === "lost") return "badge bad";
   return "badge";
@@ -67,7 +68,7 @@ export default async function InboxPage({ searchParams }: { searchParams: Promis
   const [agg] = await db
     .select({
       total: sql<number>`count(*)::int`,
-      qualified: sql<number>`count(*) filter (where ${leads.status} in ('qualified','won'))::int`,
+      quoted: sql<number>`count(*) filter (where ${leads.quoteValueCents} > 0)::int`,
       won: sql<number>`count(*) filter (where ${leads.status} = 'won')::int`,
     })
     .from(leads)
@@ -79,7 +80,7 @@ export default async function InboxPage({ searchParams }: { searchParams: Promis
         <div>
           <h1 className="page-title">Inbox</h1>
           <p className="page-sub">
-            Real leads only — a call appears when the caller requested an estimate · {agg?.total ?? 0} leads · {agg?.qualified ?? 0} qualified · {agg?.won ?? 0} won · last 90 days
+            Real leads only — a call appears when the caller requested an estimate · {agg?.total ?? 0} leads · {agg?.quoted ?? 0} quoted · {agg?.won ?? 0} won · last 90 days
           </p>
         </div>
         <div className="controls">

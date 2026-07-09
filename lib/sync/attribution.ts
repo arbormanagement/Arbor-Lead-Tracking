@@ -49,7 +49,7 @@ async function matchLeadsToEstimates(windowDays: number): Promise<{ qualified: n
   await db
     .update(leads)
     .set({ status: "new" })
-    .where(and(eq(leads.isSpam, false), inArray(leads.status, ["won", "qualified"])));
+    .where(and(eq(leads.isSpam, false), inArray(leads.status, ["won", "qualified", "quoted", "lost"])));
 
   const lookback = new Date(Date.now() - (windowDays + 30) * 86_400_000);
   // Every estimate (created), won first so a won estimate claims its lead before a
@@ -58,6 +58,7 @@ async function matchLeadsToEstimates(windowDays: number): Promise<{ qualified: n
     .select({
       estId: hcpEstimates.id,
       won: hcpEstimates.won,
+      estStatus: hcpEstimates.status,
       approved: hcpEstimates.approvedAmountCents,
       total: hcpEstimates.totalAmountCents,
       createdAtHcp: hcpEstimates.createdAtHcp,
@@ -106,6 +107,16 @@ async function matchLeadsToEstimates(windowDays: number): Promise<{ qualified: n
     if (!pick) continue;
 
     claimedLeads.add(pick.id);
+    // Stage from the estimate state: won (approved) → won; declined/expired → lost;
+    // has a quote amount → quoted; estimate exists but no price yet → qualified.
+    const s = (est.estStatus ?? "").toLowerCase();
+    const status = est.won
+      ? "won"
+      : /declin|expir|reject|cancel|lost/.test(s)
+        ? "lost"
+        : (est.total ?? 0) > 0
+          ? "quoted"
+          : "qualified";
     await db
       .update(leads)
       .set({
@@ -113,11 +124,11 @@ async function matchLeadsToEstimates(windowDays: number): Promise<{ qualified: n
         hcpEstimateId: est.estId,
         quoteValueCents: est.total || est.approved || null,
         salesValueCents: est.won ? est.approved || 0 : null,
-        status: est.won ? "won" : "qualified",
+        status,
       })
       .where(eq(leads.id, pick.id));
     if (est.won) won++;
-    else qualified++;
+    else if (status !== "lost") qualified++;
   }
 
   // "qualified" total includes won leads (a won lead is also a qualified lead).
@@ -229,8 +240,8 @@ async function rebuildRoiDaily(windowDays: number): Promise<number> {
     row.leadsCount++; // every captured (non-spam) contact
     if (l.type === "call") row.callsCount++;
     if (l.type === "web_form") row.formsCount++;
-    // Qualified = an estimate was created (status qualified or won). Won = approved.
-    if (l.status === "qualified" || l.status === "won") row.qualifiedCount++;
+    // Qualified opportunity = an estimate exists (qualified/quoted/won). Won = approved.
+    if (l.status === "qualified" || l.status === "quoted" || l.status === "won") row.qualifiedCount++;
     if (l.status === "won") {
       row.wonCount++;
       row.revenueCents += l.sales ?? 0;

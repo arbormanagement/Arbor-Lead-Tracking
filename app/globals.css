@@ -140,6 +140,7 @@ tbody tr:hover { background: var(--panel-2); }
 /* ── Badges ────────────────────────────────────────────────────────────── */
 .badge { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 11.5px; background: var(--panel-2); border: 1px solid var(--border); color: var(--muted); }
 .badge.win { color: var(--accent); border-color: var(--accent-line); background: var(--accent-soft); }
+.badge.info { color: var(--chart-spend); border-color: rgba(76, 141, 255, .32); background: rgba(76, 141, 255, .12); }
 .badge.warn { color: var(--warn); border-color: rgba(227, 179, 65, .3); }
 .badge.bad { color: var(--danger); border-color: rgba(240, 97, 106, .3); background: var(--danger-soft); }
 

@@ -18,14 +18,14 @@ export default async function OverviewPage() {
       captured: sql<number>`count(*)::int`,
       calls: sql<number>`count(*) filter (where ${leads.type} = 'call')::int`,
       forms: sql<number>`count(*) filter (where ${leads.type} = 'web_form')::int`,
-      qualified: sql<number>`count(*) filter (where ${leads.status} in ('qualified','won'))::int`,
+      quoted: sql<number>`count(*) filter (where ${leads.quoteValueCents} > 0)::int`,
       won: sql<number>`count(*) filter (where ${leads.status} = 'won')::int`,
     })
     .from(leads)
     .where(and(gte(leads.occurredAt, since), eq(leads.isSpam, false), or(ne(leads.type, "call"), eq(leads.isLead, true))));
 
   const captured = f?.captured ?? 0;
-  const qualified = f?.qualified ?? 0;
+  const quoted = f?.quoted ?? 0;
   const won = f?.won ?? 0;
   const pct = (n: number, d: number) => (d > 0 ? Math.round((n / d) * 100) + "%" : "—");
 
@@ -44,7 +44,7 @@ export default async function OverviewPage() {
   const spend = daily.reduce((s, d) => s + d.spend, 0);
   const revenue = daily.reduce((s, d) => s + d.revenue, 0);
   const roas = spend > 0 ? (revenue / spend).toFixed(1) + "×" : "—";
-  const cpl = qualified > 0 && spend > 0 ? dollars(Math.round(spend / qualified)) : "—";
+  const cpl = quoted > 0 && spend > 0 ? dollars(Math.round(spend / quoted)) : "—";
 
   // Top sources by revenue.
   const top = await db
@@ -84,14 +84,14 @@ export default async function OverviewPage() {
           <div className="st-sub">{f?.calls ?? 0} calls · {f?.forms ?? 0} forms</div>
         </div>
         <div className="stage">
-          <div className="st-label"><span className="st-dot" style={{ background: "var(--chart-spend)" }} />Qualified leads</div>
-          {captured > 0 && <div className="st-conv">{pct(qualified, captured)} of captured</div>}
-          <div className="st-value mono">{qualified}</div>
-          <div className="st-sub">estimate created in HousecallPro</div>
+          <div className="st-label"><span className="st-dot" style={{ background: "var(--chart-spend)" }} />Quoted</div>
+          {captured > 0 && <div className="st-conv">{pct(quoted, captured)} of captured</div>}
+          <div className="st-value mono">{quoted}</div>
+          <div className="st-sub">estimate with a price sent</div>
         </div>
         <div className="stage">
           <div className="st-label"><span className="st-dot" style={{ background: "var(--accent)" }} />Won</div>
-          {qualified > 0 && <div className="st-conv">{pct(won, qualified)} close rate</div>}
+          {quoted > 0 && <div className="st-conv">{pct(won, quoted)} close rate</div>}
           <div className="st-value mono" style={{ color: "var(--accent)" }}>{won}</div>
           <div className="st-sub">estimate approved · {dollars(revenue)} revenue</div>
         </div>
@@ -102,7 +102,7 @@ export default async function OverviewPage() {
         <div className="card kpi"><div className="label">◐ Ad spend</div><div className="value mono">{dollars(spend)}</div></div>
         <div className="card kpi"><div className="label">◈ Revenue (won est.)</div><div className="value mono">{dollars(revenue)}</div></div>
         <div className="card kpi accent"><div className="label">✦ ROAS</div><div className="value mono pos">{roas}</div></div>
-        <div className="card kpi"><div className="label">☎ Cost / qualified lead</div><div className="value mono">{cpl}</div></div>
+        <div className="card kpi"><div className="label">☎ Cost / quoted lead</div><div className="value mono">{cpl}</div></div>
       </div>
 
       {/* Chart + top sources */}

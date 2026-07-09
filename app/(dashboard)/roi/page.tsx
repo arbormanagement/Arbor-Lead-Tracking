@@ -36,7 +36,7 @@ export default async function RoiPage() {
       <div className="page-head">
         <div>
           <h1 className="page-title">ROI by source</h1>
-          <p className="page-sub">Last 30 days · captured → qualified (estimate) → won (approved) · revenue = won estimates ÷ spend</p>
+          <p className="page-sub">Last 30 days · captured → quoted (estimate) → won (approved) · revenue = won estimates ÷ spend</p>
         </div>
         <div className="controls"><span className="pill">◷ Last 30 days ▾</span></div>
       </div>
@@ -52,11 +52,11 @@ export default async function RoiPage() {
             <tr>
               <th>Source</th>
               <th title="Every tracked call/form">Captured</th>
-              <th title="An estimate was created in HousecallPro">Qualified</th>
+              <th title="An estimate with a price was sent">Quoted</th>
               <th title="Estimate approved">Won</th>
               <th>Spend</th>
               <th title="Value of won estimates">Revenue</th>
-              <th title="Cost per qualified lead">CPL</th>
+              <th title="Cost per quoted lead">CPL</th>
               <th style={{ width: 150 }}>ROAS</th>
             </tr>
           </thead>
