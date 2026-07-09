@@ -1,13 +1,34 @@
-import { desc, sql } from "drizzle-orm";
+import { desc, eq, sql } from "drizzle-orm";
 import { db } from "@/lib/db/client";
-import { calls } from "@/lib/db/schema";
+import { calls, leads } from "@/lib/db/schema";
 import { dateTime, durationLabel } from "@/lib/format";
 import { formatPhoneDisplay } from "@/lib/phone";
+import { LeadToggle } from "../lead-toggle";
 
 export const dynamic = "force-dynamic";
 
 export default async function CallsPage() {
-  const rows = await db.select().from(calls).orderBy(desc(calls.createdAt)).limit(100);
+  const rows = await db
+    .select({
+      id: calls.id,
+      createdAt: calls.createdAt,
+      fromNumber: calls.fromNumber,
+      answered: calls.answered,
+      voicemail: calls.voicemail,
+      status: calls.status,
+      durationSec: calls.durationSec,
+      recordingUrl: calls.recordingUrl,
+      intentLabel: calls.intentLabel,
+      transcript: calls.transcript,
+      spamScore: calls.spamScore,
+      leadId: calls.leadId,
+      isLead: leads.isLead,
+      isLeadManual: leads.isLeadManual,
+    })
+    .from(calls)
+    .leftJoin(leads, eq(calls.leadId, leads.id))
+    .orderBy(desc(calls.createdAt))
+    .limit(100);
 
   const [agg] = await db
     .select({
@@ -41,6 +62,7 @@ export default async function CallsPage() {
               <th>Duration</th>
               <th>Recording</th>
               <th>Intent</th>
+              <th>Lead?</th>
               <th>Transcript</th>
             </tr>
           </thead>
@@ -66,6 +88,7 @@ export default async function CallsPage() {
                     )}
                   </td>
                   <td>{c.intentLabel ? <span className="badge">{c.intentLabel}</span> : <span className="muted">—</span>}</td>
+                  <td><LeadToggle leadId={c.leadId} isLead={c.isLead} manual={c.isLeadManual ?? false} /></td>
                   <td style={{ maxWidth: 300, color: "var(--muted)", fontSize: 12 }} title={c.transcript ?? ""}>
                     {c.transcript ? c.transcript.slice(0, 90) + (c.transcript.length > 90 ? "…" : "") : "—"}
                   </td>

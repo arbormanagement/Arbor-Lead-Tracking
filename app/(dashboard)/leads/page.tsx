@@ -4,6 +4,7 @@ import { db } from "@/lib/db/client";
 import { leads, sources } from "@/lib/db/schema";
 import { dateTime, dollars } from "@/lib/format";
 import { formatPhoneDisplay } from "@/lib/phone";
+import { LeadToggle } from "../lead-toggle";
 
 export const dynamic = "force-dynamic";
 
@@ -54,6 +55,8 @@ export default async function InboxPage({ searchParams }: { searchParams: Promis
       quote: leads.quoteValueCents,
       occurredAt: leads.occurredAt,
       isSpam: leads.isSpam,
+      isLead: leads.isLead,
+      isLeadManual: leads.isLeadManual,
     })
     .from(leads)
     .leftJoin(sources, eq(leads.sourceId, sources.id))
@@ -104,6 +107,7 @@ export default async function InboxPage({ searchParams }: { searchParams: Promis
               <th>Contact</th>
               <th>Source</th>
               <th>Stage</th>
+              <th>Lead?</th>
               <th style={{ textAlign: "right" }}>Value</th>
             </tr>
           </thead>
@@ -122,6 +126,7 @@ export default async function InboxPage({ searchParams }: { searchParams: Promis
                   </td>
                   <td className="muted">{r.sourceKey ?? "—"}</td>
                   <td><span className={r.isSpam ? "badge bad" : stageClass(r.status)}>{r.isSpam ? "spam" : r.status}</span></td>
+                  <td>{r.type === "call" ? <LeadToggle leadId={r.id} isLead={r.isLead} manual={r.isLeadManual ?? false} /> : <span className="muted" style={{ fontSize: 12 }}>✓</span>}</td>
                   <td className="mono" style={{ textAlign: "right" }}>
                     {r.sales ? <span style={{ color: "var(--accent)", fontWeight: 700 }}>{dollars(r.sales)}</span>
                       : r.quote ? <span className="muted">{dollars(r.quote)} quoted</span> : "—"}

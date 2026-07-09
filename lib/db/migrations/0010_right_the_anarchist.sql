@@ -1,0 +1,1 @@
+ALTER TABLE "leads" ADD COLUMN "is_lead_manual" boolean DEFAULT false NOT NULL;

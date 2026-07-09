@@ -36,6 +36,7 @@ async function runTranscription(call: PendingCall): Promise<"transcribed" | "spa
 
   if (call.leadId) {
     const spam = cls.spamScore >= SPAM_THRESHOLD;
+    // Skip if a human manually set is_lead — their decision wins over auto-classify.
     await db
       .update(leads)
       .set({
@@ -43,7 +44,7 @@ async function runTranscription(call: PendingCall): Promise<"transcribed" | "spa
         leadReason: cls.reason,
         ...(spam ? { isSpam: true, status: "spam" as const } : {}),
       })
-      .where(eq(leads.id, call.leadId));
+      .where(and(eq(leads.id, call.leadId), eq(leads.isLeadManual, false)));
     if (spam) return "spam";
   }
   return "transcribed";

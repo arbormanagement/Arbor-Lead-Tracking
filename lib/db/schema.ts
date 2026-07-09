@@ -374,7 +374,8 @@ export const leads = pgTable(
     // the transcript (AI or keyword: did the caller request an estimate?). null =
     // not yet classified. The Leads inbox shows only leads (or non-call types).
     isLead: boolean("is_lead"),
-    leadReason: text("lead_reason"), // short why (AI/keyword) for the is_lead call
+    leadReason: text("lead_reason"), // short why (AI/keyword/manual) for the is_lead call
+    isLeadManual: boolean("is_lead_manual").notNull().default(false), // human override — auto-classify won't touch it
     isFirstTime: boolean("is_first_time"),
     isDuplicate: boolean("is_duplicate").notNull().default(false),
     duplicateOfLeadId: text("duplicate_of_lead_id"),
