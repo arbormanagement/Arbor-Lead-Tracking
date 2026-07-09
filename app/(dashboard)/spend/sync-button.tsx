@@ -11,12 +11,14 @@ export function SyncButton() {
   const router = useRouter();
   const [state, setState] = useState<"idle" | "running" | "done" | "error">("idle");
   const [msg, setMsg] = useState("");
+  const [busy, setBusy] = useState<null | "all" | "backfill">(null);
 
-  async function run() {
+  async function post(url: string, label: "all" | "backfill") {
     setState("running");
+    setBusy(label);
     setMsg("");
     try {
-      const res = await fetch("/api/sync/all", { method: "POST" });
+      const res = await fetch(url, { method: "POST" });
       const body = await res.json();
       if (!res.ok || body.ok === false) throw new Error(body.error || "sync failed");
       setState("done");
@@ -25,30 +27,45 @@ export function SyncButton() {
     } catch (e) {
       setState("error");
       setMsg(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(null);
     }
   }
 
+  const primary = {
+    padding: "8px 14px",
+    border: "none",
+    borderRadius: 8,
+    background: "var(--accent)",
+    color: "#06210b",
+    fontWeight: 700,
+    cursor: "pointer",
+  } as const;
+  const ghost = {
+    padding: "8px 14px",
+    borderRadius: 8,
+    border: "1px solid var(--border)",
+    background: "transparent",
+    color: "var(--text)",
+    fontWeight: 600,
+    cursor: "pointer",
+  } as const;
+
   return (
-    <div style={{ marginBottom: 16 }}>
+    <div style={{ marginBottom: 16, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+      <button onClick={() => post("/api/sync/all", "all")} disabled={state === "running"} style={primary}>
+        {busy === "all" ? "Syncing…" : "Run sync now"}
+      </button>
       <button
-        onClick={run}
+        onClick={() => post("/api/sync/fbleads?days=90", "backfill")}
         disabled={state === "running"}
-        style={{
-          padding: "8px 14px",
-          border: "none",
-          borderRadius: 8,
-          background: "var(--accent)",
-          color: "#06210b",
-          fontWeight: 700,
-          cursor: "pointer",
-        }}
+        style={ghost}
+        title="One-time: pull the last 90 days of Facebook lead-form leads"
       >
-        {state === "running" ? "Syncing…" : "Run sync now"}
+        {busy === "backfill" ? "Backfilling…" : "Backfill FB leads (90d)"}
       </button>
       {msg && (
-        <span style={{ marginLeft: 12, color: state === "error" ? "var(--danger)" : "var(--muted)" }}>
-          {msg}
-        </span>
+        <span style={{ color: state === "error" ? "var(--danger)" : "var(--muted)", fontSize: 12 }}>{msg}</span>
       )}
     </div>
   );
