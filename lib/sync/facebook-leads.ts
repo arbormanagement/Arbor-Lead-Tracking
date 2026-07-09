@@ -1,7 +1,11 @@
 import { facebook } from "@/lib/integrations/facebook";
 import { getPlatformCreds } from "@/lib/credentials";
 import { ingestFacebookLead } from "@/lib/facebook/ingest";
+import { getSetting } from "@/lib/settings";
 import { incrementalWindowDays, withSyncRun } from "./run";
+
+/** Settings key: form IDs to poll. Empty ⇒ all ACTIVE forms (default). */
+export const FB_INCLUDED_FORMS_KEY = "facebook.lead_form_ids";
 
 /**
  * facebook.leads.poll — pull lead-form submissions via the Graph API instead of a
@@ -20,7 +24,12 @@ export async function syncFacebookLeads({ sinceDays }: { sinceDays?: number } = 
     const sinceUnix = Math.floor((Date.now() - windowDays * 86_400_000) / 1000);
 
     const forms = await facebook.listLeadForms();
-    const active = forms.filter((f) => f.status === "ACTIVE");
+    // If specific forms are selected in Settings, poll exactly those (so recruiting /
+    // non-customer forms are excluded). Otherwise default to all ACTIVE forms.
+    const includedIds = await getSetting<string[]>(FB_INCLUDED_FORMS_KEY, []);
+    const active = includedIds.length
+      ? forms.filter((f) => includedIds.includes(f.id))
+      : forms.filter((f) => f.status === "ACTIVE");
 
     let seen = 0;
     let created = 0;

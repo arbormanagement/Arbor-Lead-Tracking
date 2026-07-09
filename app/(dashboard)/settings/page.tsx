@@ -28,6 +28,12 @@ export default async function SettingsPage() {
         </div>
       </div>
 
+      <Link href="/settings/facebook-forms" className="card pad" style={{ display: "block", marginBottom: 14 }}>
+        <div className="label">ⓕ Facebook lead forms</div>
+        <div className="value" style={{ fontSize: 17, marginTop: 6 }}>Choose which forms become leads →</div>
+        <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>Exclude recruiting / non-customer forms from the inbox</div>
+      </Link>
+
       <Link href="/settings/integrations" className="card pad" style={{ display: "block", marginBottom: 20 }}>
         <div className="label">⚙ Integrations</div>
         <div className="value" style={{ fontSize: 17, marginTop: 6 }}>

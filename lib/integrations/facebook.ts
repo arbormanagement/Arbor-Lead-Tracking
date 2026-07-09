@@ -184,15 +184,17 @@ class FacebookProvider implements SpendProvider {
     const pageToken = await getPageAccessToken(cfg);
     const out: FbLeadForm[] = [];
     const url = new URL(`https://graph.facebook.com/${cfg.apiVersion}/${cfg.pageId}/leadgen_forms`);
-    url.searchParams.set("fields", "id,name,status");
+    url.searchParams.set("fields", "id,name,status,leads_count");
     url.searchParams.set("limit", "200");
     url.searchParams.set("access_token", pageToken);
     let next: string | null = url.toString();
     for (let guard = 0; next && guard < 25; guard++) {
       const res = await fetch(next, { signal: AbortSignal.timeout(30_000) });
       if (!res.ok) throw new Error(`Facebook forms ${res.status}: ${await res.text()}`);
-      const body = (await res.json()) as { data?: Array<{ id: string; name?: string; status?: string }>; paging?: { next?: string } };
-      for (const f of body.data ?? []) out.push({ id: String(f.id), name: f.name ?? String(f.id), status: f.status ?? "UNKNOWN" });
+      const body = (await res.json()) as { data?: Array<{ id: string; name?: string; status?: string; leads_count?: number }>; paging?: { next?: string } };
+      for (const f of body.data ?? []) {
+        out.push({ id: String(f.id), name: f.name ?? String(f.id), status: f.status ?? "UNKNOWN", leadsCount: f.leads_count ?? 0 });
+      }
       next = body.paging?.next ?? null;
     }
     return out;
@@ -273,6 +275,7 @@ export interface FbLeadForm {
   id: string;
   name: string;
   status: string;
+  leadsCount: number;
 }
 
 function pruneEmpty<T extends Record<string, unknown>>(o: T): T {
