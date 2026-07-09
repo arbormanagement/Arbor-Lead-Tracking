@@ -8,7 +8,6 @@ const NAV: Array<{ href: string; label: string; ic: string; section?: string }> 
   { href: "/leads", label: "Inbox", ic: "✉" },
   { href: "/calls", label: "Calls", ic: "☎" },
   { href: "/sources", label: "Sources", ic: "◈" },
-  { href: "/roi", label: "ROI", ic: "％" },
   { href: "/spend", label: "Spend", ic: "＄" },
   { href: "/numbers", label: "Numbers", ic: "#" },
   { href: "/settings", label: "Settings", ic: "⚙", section: "Admin" },
