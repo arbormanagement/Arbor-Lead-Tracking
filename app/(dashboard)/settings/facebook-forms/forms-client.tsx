@@ -11,6 +11,8 @@ export function FormsClient() {
   const [err, setErr] = useState("");
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState("");
+  const [cleaning, setCleaning] = useState(false);
+  const [cleanMsg, setCleanMsg] = useState("");
 
   useEffect(() => {
     (async () => {
@@ -52,6 +54,21 @@ export function FormsClient() {
       setMsg("Network error");
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function cleanup() {
+    if (!confirm("Delete already-ingested leads from the forms you did NOT select? This can't be undone.")) return;
+    setCleaning(true);
+    setCleanMsg("");
+    try {
+      const res = await fetch("/api/settings/facebook/forms/cleanup", { method: "POST" });
+      const body = await res.json();
+      setCleanMsg(res.ok && body.ok ? `Removed ${body.removed} lead(s)${body.note ? ` — ${body.note}` : ""}.` : body.error || "Cleanup failed");
+    } catch {
+      setCleanMsg("Network error");
+    } finally {
+      setCleaning(false);
     }
   }
 
@@ -102,11 +119,20 @@ export function FormsClient() {
         </tbody>
       </table>
 
-      <div style={{ marginTop: 14, display: "flex", gap: 12, alignItems: "center" }}>
+      <div style={{ marginTop: 14, display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
         <button className="btn solid" onClick={save} disabled={saving}>
           {saving ? "Saving…" : "Save selection"}
         </button>
         {msg && <span className="muted" style={{ fontSize: 13 }}>{msg}</span>}
+      </div>
+
+      <div style={{ marginTop: 18, paddingTop: 14, borderTop: "1px solid var(--border)", display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+        <button className="btn" onClick={cleanup} disabled={cleaning || none} style={none ? { opacity: 0.5 } : undefined}>
+          {cleaning ? "Removing…" : "Remove already-ingested leads from unselected forms"}
+        </button>
+        <span className="muted" style={{ fontSize: 12 }}>
+          {none ? "Select forms first — with none selected, no forms are excluded." : cleanMsg || "Deletes past leads from forms you didn't check (e.g. hiring)."}
+        </span>
       </div>
     </>
   );
