@@ -54,8 +54,8 @@ export default async function SpendPage() {
     <>
       <div className="page-head">
         <div>
-          <h1 className="page-title">Spend &amp; sync status</h1>
-          <p className="page-sub">Direct sync: HousecallPro revenue + Google/Facebook spend → ROI · last 30 days</p>
+          <h1 className="page-title">Data &amp; sync</h1>
+          <p className="page-sub">Run and monitor the data sync (HousecallPro revenue + Google/Facebook spend → ROI). Spend performance lives on Sources.</p>
         </div>
         <div className="controls">
           <SyncButton />

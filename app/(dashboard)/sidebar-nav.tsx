@@ -8,10 +8,10 @@ const NAV: Array<{ href: string; label: string; ic: string; section?: string }> 
   { href: "/leads", label: "Inbox", ic: "✉" },
   { href: "/calls", label: "Calls", ic: "☎" },
   { href: "/sources", label: "Sources", ic: "◈" },
-  { href: "/spend", label: "Spend", ic: "＄" },
   { href: "/numbers", label: "Numbers", ic: "#" },
   { href: "/settings", label: "Settings", ic: "⚙", section: "Admin" },
   { href: "/settings/integrations", label: "Integrations", ic: "◱" },
+  { href: "/spend", label: "Data & sync", ic: "⟳" },
 ];
 
 export function SidebarNav() {
