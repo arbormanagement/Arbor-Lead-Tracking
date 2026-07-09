@@ -1,4 +1,5 @@
 import { and, desc, eq, gte, ne, or, sql } from "drizzle-orm";
+import Link from "next/link";
 import type { ReactNode } from "react";
 import { db } from "@/lib/db/client";
 import { campaigns, leads, roiDaily, sources } from "@/lib/db/schema";
@@ -8,25 +9,9 @@ import { pickDays, timeframeLabel } from "@/lib/timeframes";
 import { LeadToggle } from "../lead-toggle";
 import { ViewControls } from "./view-controls";
 import { DIMS, parseGroups, type Dim } from "./view";
+import { stageClass, TYPE_META } from "./stage";
 
 export const dynamic = "force-dynamic";
-
-const TYPE_META: Record<string, { ic: string; label: string }> = {
-  call: { ic: "☎", label: "Call" },
-  web_form: { ic: "✉", label: "Form" },
-  facebook_leadgen: { ic: "ⓕ", label: "Facebook" },
-  lsa: { ic: "◎", label: "LSA" },
-  manual: { ic: "✎", label: "Manual" },
-};
-
-function stageClass(status: string): string {
-  if (status === "won") return "badge win";
-  if (status === "quoted") return "badge info";
-  if (status === "qualified") return "badge warn";
-  if (status === "spam" || status === "lost") return "badge bad";
-  if (status === "cancelled") return "badge muted-strike"; // neutral, distinct from lost
-  return "badge";
-}
 
 // ── Grouping / pivot ──────────────────────────────────────────────────────────
 const STAGE_ORDER = ["new", "qualified", "quoted", "won", "lost", "cancelled", "spam"];
@@ -251,10 +236,12 @@ export default async function InboxPage({
         <td className="muted mono" style={{ whiteSpace: "nowrap" }}>{dateTime(r.occurredAt)}</td>
         <td><span className="src"><span style={{ opacity: 0.85 }}>{t.ic}</span>{t.label}</span></td>
         <td>
-          <div style={{ fontWeight: 600 }}>{r.name || formatPhoneDisplay(r.phone) || r.email || "—"}</div>
-          {(r.name && (r.phone || r.email)) && (
-            <div className="muted" style={{ fontSize: 12 }}>{formatPhoneDisplay(r.phone) || r.email}</div>
-          )}
+          <Link href={`/leads/${r.id}`} className="rowlink">
+            <div style={{ fontWeight: 600 }}>{r.name || formatPhoneDisplay(r.phone) || r.email || "—"}</div>
+            {(r.name && (r.phone || r.email)) && (
+              <div className="muted" style={{ fontSize: 12 }}>{formatPhoneDisplay(r.phone) || r.email}</div>
+            )}
+          </Link>
         </td>
         <td className="muted">
           {r.sourceKey ?? "—"}
