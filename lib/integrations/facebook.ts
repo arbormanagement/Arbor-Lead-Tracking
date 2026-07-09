@@ -183,7 +183,9 @@ class FacebookProvider implements SpendProvider {
   async listFormLeads(formId: string, sinceUnix?: number): Promise<FbLeadDetail[]> {
     const cfg = await fbConfig();
     const first = new URL(`https://graph.facebook.com/${cfg.apiVersion}/${formId}/leads`);
-    first.searchParams.set("fields", "id,created_time,field_data,ad_id,campaign_id,form_id");
+    // NOTE: campaign_id is NOT a readable field on the lead node — requesting it 400s
+    // the whole call. We carry ad_id and resolve the campaign from it below.
+    first.searchParams.set("fields", "id,created_time,field_data,ad_id,form_id");
     first.searchParams.set("limit", "200");
     if (sinceUnix) {
       first.searchParams.set("filtering", JSON.stringify([{ field: "time_created", operator: "GREATER_THAN", value: sinceUnix }]));
@@ -196,7 +198,7 @@ class FacebookProvider implements SpendProvider {
       const res = await fetch(next, { signal: AbortSignal.timeout(30_000) });
       if (!res.ok) throw new Error(`Facebook leads ${res.status}: ${await res.text()}`);
       const body = (await res.json()) as {
-        data?: Array<{ id: string; created_time?: string; field_data?: Array<{ name: string; values: string[] }>; ad_id?: string; campaign_id?: string; form_id?: string }>;
+        data?: Array<{ id: string; created_time?: string; field_data?: Array<{ name: string; values: string[] }>; ad_id?: string; form_id?: string }>;
         paging?: { next?: string };
       };
       for (const l of body.data ?? []) {
@@ -204,14 +206,36 @@ class FacebookProvider implements SpendProvider {
           leadgenId: String(l.id),
           formId: l.form_id ? String(l.form_id) : formId,
           adId: l.ad_id ? String(l.ad_id) : undefined,
-          campaignId: l.campaign_id ? String(l.campaign_id) : undefined,
           createdTime: l.created_time,
           fieldData: l.field_data ?? [],
         });
       }
       next = body.paging?.next ?? null;
     }
+
+    // Resolve campaign from ad_id (once per distinct ad) so leads still attribute to
+    // a campaign. Best-effort — a failed lookup just leaves the lead at facebook/paid.
+    const adToCampaign = new Map<string, string | undefined>();
+    for (const d of out) {
+      if (!d.adId) continue;
+      if (!adToCampaign.has(d.adId)) adToCampaign.set(d.adId, await this.campaignForAd(cfg, d.adId));
+      d.campaignId = adToCampaign.get(d.adId);
+    }
     return out;
+  }
+
+  private async campaignForAd(cfg: FbConfig, adId: string): Promise<string | undefined> {
+    try {
+      const url = new URL(`https://graph.facebook.com/${cfg.apiVersion}/${adId}`);
+      url.searchParams.set("fields", "campaign_id");
+      url.searchParams.set("access_token", cfg.accessToken);
+      const res = await fetch(url, { signal: AbortSignal.timeout(20_000) });
+      if (!res.ok) return undefined;
+      const j = (await res.json()) as { campaign_id?: string };
+      return j.campaign_id ? String(j.campaign_id) : undefined;
+    } catch {
+      return undefined;
+    }
   }
 }
 

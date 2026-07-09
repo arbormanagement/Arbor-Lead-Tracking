@@ -6,6 +6,15 @@ import { SyncButton } from "./sync-button";
 
 export const dynamic = "force-dynamic";
 
+function summarizeStats(stats: unknown): string {
+  if (!stats || typeof stats !== "object") return "";
+  return Object.entries(stats as Record<string, unknown>)
+    .filter(([, v]) => typeof v === "string" || typeof v === "number")
+    .map(([k, v]) => `${k}: ${v}`)
+    .join(" · ")
+    .slice(0, 240);
+}
+
 function runClass(status: string): string {
   if (status === "success" || status === "ok" || status === "completed") return "badge win";
   if (status === "error" || status === "failed") return "badge bad";
@@ -100,7 +109,7 @@ export default async function SpendPage() {
               <th>Job</th>
               <th>Status</th>
               <th>Started</th>
-              <th>Finished</th>
+              <th>Result</th>
             </tr>
           </thead>
           <tbody>
@@ -108,8 +117,16 @@ export default async function SpendPage() {
               <tr key={r.id}>
                 <td style={{ fontWeight: 600 }}>{r.job}</td>
                 <td><span className={runClass(r.status)}>{r.status}</span></td>
-                <td className="muted mono">{dateTime(r.startedAt)}</td>
-                <td className="muted mono">{dateTime(r.finishedAt)}</td>
+                <td className="muted mono" style={{ whiteSpace: "nowrap" }}>{dateTime(r.startedAt)}</td>
+                <td style={{ maxWidth: 480 }}>
+                  {r.error ? (
+                    <span style={{ color: "var(--danger)", fontSize: 12 }}>{r.error}</span>
+                  ) : r.stats ? (
+                    <span className="muted mono" style={{ fontSize: 11.5 }}>{summarizeStats(r.stats)}</span>
+                  ) : (
+                    <span className="muted">—</span>
+                  )}
+                </td>
               </tr>
             ))}
           </tbody>
