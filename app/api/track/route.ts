@@ -139,6 +139,7 @@ export async function POST(req: Request) {
       .values({
         type: "web_form",
         status: "new",
+        isLead: true, // a submitted web form is inherently a lead
         name: c.name,
         phoneE164: normalizePhone(c.phone),
         emailLc: normalizeEmail(c.email),

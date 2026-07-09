@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, inArray, lte, or } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, lte, ne, or } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import {
   adSpend,
@@ -217,7 +217,7 @@ async function rebuildRoiDaily(windowDays: number): Promise<number> {
       quote: leads.quoteValueCents,
     })
     .from(leads)
-    .where(and(eq(leads.isSpam, false), gte(leads.occurredAt, since)));
+    .where(and(eq(leads.isSpam, false), gte(leads.occurredAt, since), or(ne(leads.type, "call"), eq(leads.isLead, true))));
 
   for (const l of leadRows) {
     const row = bump({

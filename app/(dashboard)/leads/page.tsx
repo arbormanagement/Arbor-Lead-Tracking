@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, sql } from "drizzle-orm";
+import { and, desc, eq, gte, ne, or, sql } from "drizzle-orm";
 import Link from "next/link";
 import { db } from "@/lib/db/client";
 import { leads, sources } from "@/lib/db/schema";
@@ -33,7 +33,12 @@ export default async function InboxPage({ searchParams }: { searchParams: Promis
   const validType = FILTERS.some((f) => f.key === type) ? type : "";
   const since = new Date(Date.now() - 90 * 86_400_000);
 
-  const typeCond = validType ? and(gte(leads.occurredAt, since), eq(leads.type, validType as "call")) : gte(leads.occurredAt, since);
+  // A call only counts as a lead once classified (caller requested an estimate);
+  // forms/FB/etc. are inherently leads. So the inbox = non-call types OR lead-calls.
+  const leadOnly = or(ne(leads.type, "call"), eq(leads.isLead, true));
+  const typeCond = validType
+    ? and(gte(leads.occurredAt, since), eq(leads.type, validType as "call"), leadOnly)
+    : and(gte(leads.occurredAt, since), leadOnly);
 
   const rows = await db
     .select({
@@ -63,7 +68,7 @@ export default async function InboxPage({ searchParams }: { searchParams: Promis
       won: sql<number>`count(*) filter (where ${leads.status} = 'won')::int`,
     })
     .from(leads)
-    .where(and(gte(leads.occurredAt, since), eq(leads.isSpam, false)));
+    .where(and(gte(leads.occurredAt, since), eq(leads.isSpam, false), leadOnly));
 
   return (
     <>
@@ -71,7 +76,7 @@ export default async function InboxPage({ searchParams }: { searchParams: Promis
         <div>
           <h1 className="page-title">Inbox</h1>
           <p className="page-sub">
-            Calls, forms &amp; Facebook leads · {agg?.total ?? 0} captured · {agg?.qualified ?? 0} qualified · {agg?.won ?? 0} won · last 90 days
+            Real leads only — a call appears when the caller requested an estimate · {agg?.total ?? 0} leads · {agg?.qualified ?? 0} qualified · {agg?.won ?? 0} won · last 90 days
           </p>
         </div>
         <div className="controls">

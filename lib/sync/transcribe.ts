@@ -2,7 +2,7 @@ import { and, eq, isNotNull, isNull } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { calls, leads } from "@/lib/db/schema";
 import { transcribeRecording } from "@/lib/transcription/deepgram";
-import { analyzeCall } from "@/lib/transcription/analyze";
+import { classifyCallLead } from "@/lib/transcription/classify-lead";
 import { withSyncRun } from "./run";
 
 const SPAM_THRESHOLD = 0.5;
@@ -19,7 +19,9 @@ async function runTranscription(call: PendingCall): Promise<"transcribed" | "spa
   if (!call.recordingUrl) return "skipped";
 
   const { transcript, confidence, provider } = await transcribeRecording(call.recordingUrl);
-  const { intent, spamScore } = analyzeCall(transcript);
+  // AI (or keyword) decides intent, spam, AND whether the caller is an actual lead
+  // (requested an estimate) — that gates the call into the Leads inbox.
+  const cls = await classifyCallLead(transcript);
 
   await db
     .update(calls)
@@ -27,14 +29,22 @@ async function runTranscription(call: PendingCall): Promise<"transcribed" | "spa
       transcript,
       transcriptConfidence: confidence != null ? confidence.toFixed(3) : null,
       transcriptProvider: provider,
-      intentLabel: intent,
-      spamScore: spamScore.toFixed(3),
+      intentLabel: cls.intent,
+      spamScore: cls.spamScore.toFixed(3),
     })
     .where(eq(calls.id, call.id));
 
-  if (spamScore >= SPAM_THRESHOLD && call.leadId) {
-    await db.update(leads).set({ isSpam: true, status: "spam" }).where(eq(leads.id, call.leadId));
-    return "spam";
+  if (call.leadId) {
+    const spam = cls.spamScore >= SPAM_THRESHOLD;
+    await db
+      .update(leads)
+      .set({
+        isLead: spam ? false : cls.isLead,
+        leadReason: cls.reason,
+        ...(spam ? { isSpam: true, status: "spam" as const } : {}),
+      })
+      .where(eq(leads.id, call.leadId));
+    if (spam) return "spam";
   }
   return "transcribed";
 }

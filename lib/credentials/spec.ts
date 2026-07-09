@@ -68,6 +68,11 @@ export const CREDENTIAL_SPECS: CredSpec[] = [
     fields: [{ key: "api_key", label: "API Key", secret: true, envKey: "DEEPGRAM_API_KEY" }],
   },
   {
+    platform: "anthropic",
+    label: "Anthropic (call AI — is it a lead?)",
+    fields: [{ key: "api_key", label: "API Key", secret: true, envKey: "ANTHROPIC_API_KEY", placeholder: "sk-ant-…" }],
+  },
+  {
     platform: "twilio",
     label: "Twilio (call tracking)",
     fields: [

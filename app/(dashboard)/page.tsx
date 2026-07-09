@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, sql } from "drizzle-orm";
+import { and, desc, eq, gte, ne, or, sql } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { leads, roiDaily, sources } from "@/lib/db/schema";
 import { dollars } from "@/lib/format";
@@ -22,7 +22,7 @@ export default async function OverviewPage() {
       won: sql<number>`count(*) filter (where ${leads.status} = 'won')::int`,
     })
     .from(leads)
-    .where(and(gte(leads.occurredAt, since), eq(leads.isSpam, false)));
+    .where(and(gte(leads.occurredAt, since), eq(leads.isSpam, false), or(ne(leads.type, "call"), eq(leads.isLead, true))));
 
   const captured = f?.captured ?? 0;
   const qualified = f?.qualified ?? 0;

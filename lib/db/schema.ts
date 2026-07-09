@@ -370,6 +370,11 @@ export const leads = pgTable(
     salesValueCents: integer("sales_value_cents"),
     // Flags
     isSpam: boolean("is_spam").notNull().default(false),
+    // Is this an actual lead? Forms/FB are inherently true; for calls it's set from
+    // the transcript (AI or keyword: did the caller request an estimate?). null =
+    // not yet classified. The Leads inbox shows only leads (or non-call types).
+    isLead: boolean("is_lead"),
+    leadReason: text("lead_reason"), // short why (AI/keyword) for the is_lead call
     isFirstTime: boolean("is_first_time"),
     isDuplicate: boolean("is_duplicate").notNull().default(false),
     duplicateOfLeadId: text("duplicate_of_lead_id"),

@@ -28,6 +28,7 @@ export async function ingestFacebookLead(detail: FbLeadDetail): Promise<boolean>
     .values({
       type: "facebook_leadgen",
       status: "new",
+      isLead: true, // a submitted lead-gen form is inherently a lead
       name: c.name,
       phoneE164: normalizePhone(c.phone),
       emailLc: normalizeEmail(c.email),
