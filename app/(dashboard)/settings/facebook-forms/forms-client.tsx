@@ -13,6 +13,7 @@ export function FormsClient() {
   const [msg, setMsg] = useState("");
   const [cleaning, setCleaning] = useState(false);
   const [cleanMsg, setCleanMsg] = useState("");
+  const [showAll, setShowAll] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -82,12 +83,19 @@ export function FormsClient() {
 
   const none = selected.size === 0;
 
+  // Declutter: only forms that matter (active, or have leads) show by default,
+  // sorted by volume. Archived / empty forms are hidden behind a toggle.
+  const sorted = [...forms!].sort((a, b) => b.leadsCount - a.leadsCount || a.name.localeCompare(b.name));
+  const relevant = sorted.filter((f) => f.status === "ACTIVE" || f.leadsCount > 0);
+  const rest = sorted.filter((f) => !(f.status === "ACTIVE" || f.leadsCount > 0));
+  const shown = showAll ? sorted : relevant;
+
   return (
     <>
       <div className="card pad" style={{ marginBottom: 14 }}>
         <div className="muted" style={{ fontSize: 12.5, lineHeight: 1.6 }}>
           Check the forms whose submissions should become <strong>customer leads</strong>. Uncheck recruiting /
-          non-customer forms (e.g. hiring). {none && <strong>Nothing selected = all ACTIVE forms are polled (default).</strong>}
+          non-customer forms. {none && <strong>Nothing selected = all ACTIVE forms are polled (default).</strong>}
         </div>
       </div>
 
@@ -101,8 +109,8 @@ export function FormsClient() {
           </tr>
         </thead>
         <tbody>
-          {forms!.map((f) => (
-            <tr key={f.id}>
+          {shown.map((f) => (
+            <tr key={f.id} style={selected.has(f.id) ? { background: "var(--accent-soft)" } : undefined}>
               <td>
                 <input type="checkbox" checked={selected.has(f.id)} onChange={() => toggle(f.id)} />
               </td>
@@ -118,6 +126,15 @@ export function FormsClient() {
           ))}
         </tbody>
       </table>
+
+      {rest.length > 0 && (
+        <button
+          onClick={() => setShowAll((v) => !v)}
+          style={{ marginTop: 10, background: "none", border: "none", color: "var(--muted)", cursor: "pointer", fontSize: 12.5, padding: 0 }}
+        >
+          {showAll ? "▴ Hide" : `▾ Show ${rest.length} archived / empty form${rest.length === 1 ? "" : "s"}`}
+        </button>
+      )}
 
       <div style={{ marginTop: 14, display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
         <button className="btn solid" onClick={save} disabled={saving}>
