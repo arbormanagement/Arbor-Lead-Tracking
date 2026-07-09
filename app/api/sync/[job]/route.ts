@@ -45,14 +45,17 @@ export async function POST(_req: Request, { params }: { params: Promise<{ job: s
       case "fbleads":
         return Response.json({ ok: true, result: await syncFacebookLeads(daysParam ? { sinceDays: Number(daysParam) } : {}) });
       case "all": {
+        // Ingest leads (fbleads) + revenue (hcp) BEFORE attribution so newly-pulled
+        // leads/estimates get matched in the same run. `?days=N` widens hcp + fbleads
+        // for a historical backfill; attribution + conversions follow.
         const transcribe = await syncTranscriptions({ limit: 25 });
         const lsa = await syncLsaLeads({ sinceDays: 30 });
+        const fbleads = await syncFacebookLeads(daysParam ? { sinceDays: Number(daysParam) } : {});
         const hcp = await syncHcp(hcpDays ? { sinceDays: hcpDays } : {});
         const spend = await syncSpend({ sinceDays: 7 });
         const attribution = await runAttribution({ windowDays: 90 });
         const conversions = await syncConversions({ sinceDays: 60 });
-        const fbleads = await syncFacebookLeads();
-        return Response.json({ ok: true, result: { transcribe, lsa, hcp, spend, attribution, conversions, fbleads } });
+        return Response.json({ ok: true, result: { transcribe, lsa, fbleads, hcp, spend, attribution, conversions } });
       }
       default:
         return Response.json({ error: `unknown job '${job}'` }, { status: 400 });
