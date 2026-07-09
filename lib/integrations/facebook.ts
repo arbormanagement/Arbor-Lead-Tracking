@@ -28,6 +28,29 @@ async function fbConfig(): Promise<FbConfig> {
   };
 }
 
+// Page-scoped reads (lead forms + their leads) require a PAGE access token, not the
+// system-user token (Graph #190). Exchange the system-user token for the page token
+// via GET /{page}?fields=access_token, cached ~10min (page tokens are long-lived).
+let cachedPageToken: { pageId: string; token: string; at: number } | null = null;
+
+async function getPageAccessToken(cfg: FbConfig): Promise<string> {
+  const now = Date.now();
+  if (cachedPageToken && cachedPageToken.pageId === cfg.pageId && now - cachedPageToken.at < 600_000) {
+    return cachedPageToken.token;
+  }
+  const url = new URL(`https://graph.facebook.com/${cfg.apiVersion}/${cfg.pageId}`);
+  url.searchParams.set("fields", "access_token");
+  url.searchParams.set("access_token", cfg.accessToken);
+  const res = await fetch(url, { signal: AbortSignal.timeout(20_000) });
+  if (!res.ok) throw new Error(`Facebook page token ${res.status}: ${await res.text()}`);
+  const j = (await res.json()) as { access_token?: string };
+  if (!j.access_token) {
+    throw new Error("Facebook: no Page access token returned — the token needs access to the Page (pages_show_list + page assignment)");
+  }
+  cachedPageToken = { pageId: cfg.pageId, token: j.access_token, at: now };
+  return j.access_token;
+}
+
 class FacebookProvider implements SpendProvider {
   readonly name = "facebook:direct";
 
@@ -158,11 +181,12 @@ class FacebookProvider implements SpendProvider {
   /** Lead-gen forms on the page (id, name, status). Needs leads_retrieval + page access. */
   async listLeadForms(): Promise<FbLeadForm[]> {
     const cfg = await fbConfig();
+    const pageToken = await getPageAccessToken(cfg);
     const out: FbLeadForm[] = [];
     const url = new URL(`https://graph.facebook.com/${cfg.apiVersion}/${cfg.pageId}/leadgen_forms`);
     url.searchParams.set("fields", "id,name,status");
     url.searchParams.set("limit", "200");
-    url.searchParams.set("access_token", cfg.accessToken);
+    url.searchParams.set("access_token", pageToken);
     let next: string | null = url.toString();
     for (let guard = 0; next && guard < 25; guard++) {
       const res = await fetch(next, { signal: AbortSignal.timeout(30_000) });
@@ -182,6 +206,7 @@ class FacebookProvider implements SpendProvider {
    */
   async listFormLeads(formId: string, sinceUnix?: number): Promise<FbLeadDetail[]> {
     const cfg = await fbConfig();
+    const pageToken = await getPageAccessToken(cfg);
     const first = new URL(`https://graph.facebook.com/${cfg.apiVersion}/${formId}/leads`);
     // NOTE: campaign_id is NOT a readable field on the lead node — requesting it 400s
     // the whole call. We carry ad_id and resolve the campaign from it below.
@@ -190,7 +215,7 @@ class FacebookProvider implements SpendProvider {
     if (sinceUnix) {
       first.searchParams.set("filtering", JSON.stringify([{ field: "time_created", operator: "GREATER_THAN", value: sinceUnix }]));
     }
-    first.searchParams.set("access_token", cfg.accessToken);
+    first.searchParams.set("access_token", pageToken);
 
     const out: FbLeadDetail[] = [];
     let next: string | null = first.toString();
