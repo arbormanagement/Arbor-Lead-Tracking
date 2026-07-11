@@ -127,7 +127,9 @@ async function matchLeadsToEstimates(windowDays: number): Promise<{ qualified: n
       .set({
         hcpCustomerId: est.custId,
         hcpEstimateId: est.estId,
-        quoteValueCents: est.total || est.approved || null,
+        // Won → what was actually approved (multi-approval = add-ons, so the sum);
+        // otherwise the highest-value option (alternative bids, not a sum).
+        quoteValueCents: (est.won ? est.approved : null) || est.total || null,
         salesValueCents: est.won ? est.approved || 0 : null,
         status,
       })

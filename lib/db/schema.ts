@@ -307,7 +307,8 @@ export const hcpJobs = pgTable(
 
 // HCP estimates — the ROI revenue event is an estimate the customer WON (approved),
 // not a completed job. `approved_amount_cents` is the value of the accepted option(s);
-// `total_amount_cents` is the full estimate (all options) for reference.
+// `total_amount_cents` is the quote value: the highest-value option (options are
+// usually alternative bids for the same work, so a sum would overstate the quote).
 export const hcpEstimates = pgTable(
   "hcp_estimates",
   {

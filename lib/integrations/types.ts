@@ -63,7 +63,7 @@ export interface HcpEstimateDTO {
    * everything else (no decisions yet, or a mix).
    */
   outcome: "won" | "lost" | "open";
-  /** Full estimate value (all options). */
+  /** Quote value — the highest-value option (options are usually alternative bids). */
   totalAmountCents: number;
   /** Value of the approved option(s) — the ROI revenue figure when won. */
   approvedAmountCents: number;

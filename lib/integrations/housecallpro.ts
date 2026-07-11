@@ -189,8 +189,11 @@ function mapEstimate(e: Record<string, unknown>): HcpEstimateDTO {
   const approvedAmountCents = options
     .filter((o) => APPROVED_STATUSES.has(approvalOf(o)))
     .reduce((sum, o) => sum + optAmount(o), 0);
+  // Quote value = the HIGHEST-value option, not the sum: multiple options are usually
+  // alternative bids for the same work, so summing overstates the quote (Justin,
+  // 2026-07-13). Approved revenue still sums, since multi-approval means add-ons.
   const totalAmountCents =
-    e.total_amount != null ? cents(e.total_amount) : options.reduce((sum, o) => sum + optAmount(o), 0);
+    e.total_amount != null ? cents(e.total_amount) : options.reduce((max, o) => Math.max(max, optAmount(o)), 0);
 
   const custName = [customer?.first_name, customer?.last_name].filter(Boolean).join(" ") || null;
   return {
