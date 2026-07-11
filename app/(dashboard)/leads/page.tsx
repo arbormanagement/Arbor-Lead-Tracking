@@ -52,6 +52,7 @@ export default async function InboxPage({ searchParams }: { searchParams: Promis
       phone: leads.phoneE164,
       email: leads.emailLc,
       sourceKey: sources.key,
+      selfReportedSource: leads.selfReportedSource,
       location: leads.location,
       sales: leads.salesValueCents,
       quote: leads.quoteValueCents,
@@ -127,7 +128,14 @@ export default async function InboxPage({ searchParams }: { searchParams: Promis
                       <div className="muted" style={{ fontSize: 12 }}>{formatPhoneDisplay(r.phone) || r.email}</div>
                     )}
                   </td>
-                  <td className="muted">{r.sourceKey ?? "—"}</td>
+                  <td className="muted">
+                    {r.sourceKey ?? "—"}
+                    {r.selfReportedSource && (
+                      <div style={{ fontSize: 11, marginTop: 2 }} title="Caller's own answer to 'how did you hear about us'">
+                        says: {r.selfReportedSource}
+                      </div>
+                    )}
+                  </td>
                   <td><span className={r.isSpam ? "badge bad" : stageClass(r.status)}>{r.isSpam ? "spam" : r.status}</span></td>
                   <td>{r.type === "call" ? <LeadToggle leadId={r.id} isLead={r.isLead} manual={r.isLeadManual ?? false} /> : <span className="muted" style={{ fontSize: 12 }}>✓</span>}</td>
                   <td className="mono" style={{ textAlign: "right" }}>
