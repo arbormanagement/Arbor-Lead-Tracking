@@ -61,7 +61,8 @@ export default async function SourcesPage() {
           No source performance yet — populates once ad spend + HousecallPro estimates are syncing.
         </div>
       ) : (
-        <table style={{ marginBottom: 30 }}>
+        <div className="table-scroll" style={{ marginBottom: 30 }}>
+        <table>
           <thead>
             <tr>
               <th>Source</th>
@@ -109,6 +110,7 @@ export default async function SourcesPage() {
             </tr>
           </tbody>
         </table>
+        </div>
       )}
 
       {/* Capture channels */}

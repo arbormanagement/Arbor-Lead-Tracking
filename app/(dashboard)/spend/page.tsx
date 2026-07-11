@@ -103,6 +103,7 @@ export default async function SpendPage() {
       {runs.length === 0 ? (
         <div className="empty">No sync runs recorded yet.</div>
       ) : (
+        <div className="table-scroll">
         <table>
           <thead>
             <tr>
@@ -131,6 +132,7 @@ export default async function SpendPage() {
             ))}
           </tbody>
         </table>
+        </div>
       )}
     </>
   );

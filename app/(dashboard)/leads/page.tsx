@@ -101,6 +101,7 @@ export default async function InboxPage({ searchParams }: { searchParams: Promis
       {rows.length === 0 ? (
         <div className="empty">No leads captured yet{validType ? " for this filter" : ""}.</div>
       ) : (
+        <div className="table-scroll">
         <table>
           <thead>
             <tr>
@@ -138,6 +139,7 @@ export default async function InboxPage({ searchParams }: { searchParams: Promis
             })}
           </tbody>
         </table>
+        </div>
       )}
     </>
   );
