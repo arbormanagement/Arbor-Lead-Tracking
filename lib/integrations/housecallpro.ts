@@ -157,31 +157,43 @@ function mapJob(j: Record<string, unknown>): HcpJobDTO {
 }
 
 /**
- * Map an HCP estimate. "Won" = the customer approved/accepted at least one option;
- * the ROI revenue figure is the sum of the approved option amounts (falling back to
- * the estimate total if HCP reports approval at the estimate level without an option
- * breakdown). Defensive across field-name variants — `raw` is retained.
+ * Live `approval_status` vocabulary (verified against the full account 2026-07-11):
+ * positive = "approved" | "pro approved"; negative = "declined" | "pro declined" |
+ * "expired"; null = no decision recorded. Estimate-level `work_status` never carries
+ * an approval signal — the decision lives only on the options.
+ */
+const APPROVED_STATUSES = new Set(["approved", "pro approved"]);
+const LOST_STATUSES = new Set(["declined", "pro declined", "expired"]);
+
+/**
+ * Map an HCP estimate. Outcome rule (Justin's reporting rule, 2026-07-11) reads the
+ * `approval_status` of every option:
+ *   won  — at least one option is approved/pro approved
+ *   lost — every option that HAS a status is declined/pro declined/expired
+ *   open — everything else (no statuses yet, or a mix)
+ * The ROI revenue figure is the sum of the approved option amounts. Defensive across
+ * field-name variants — `raw` is retained.
  */
 function mapEstimate(e: Record<string, unknown>): HcpEstimateDTO {
   const customer = e.customer as Record<string, unknown> | undefined;
   const options = Array.isArray(e.options) ? (e.options as Array<Record<string, unknown>>) : [];
 
-  const isApproved = (o: Record<string, unknown>) => {
-    const s = String(o.approval_status ?? o.status ?? "").toLowerCase();
-    return /(approv|accept|won)/.test(s);
-  };
+  const approvalOf = (o: Record<string, unknown>) => String(o.approval_status ?? "").trim().toLowerCase();
   const optAmount = (o: Record<string, unknown>) => cents(o.total_amount ?? o.total ?? o.amount);
 
-  const approvedFromOptions = options.filter(isApproved).reduce((sum, o) => sum + optAmount(o), 0);
-  const totalAmountCents =
-    e.total_amount != null ? cents(e.total_amount) : options.reduce((sum, o) => sum + optAmount(o), 0);
+  const statuses = options.map(approvalOf).filter((s) => s !== "" && s !== "null");
+  const won = statuses.some((s) => APPROVED_STATUSES.has(s));
+  const lost = !won && statuses.length > 0 && statuses.every((s) => LOST_STATUSES.has(s));
+  const outcome = won ? "won" : lost ? "lost" : "open";
 
-  const estStatus = String(e.work_status ?? e.status ?? "").toLowerCase();
-  const statusWon = /(approv|accept|won|signed)/.test(estStatus);
-  const won = approvedFromOptions > 0 || statusWon;
-  // Prefer the approved-option sum; if HCP only flags approval at the estimate level,
-  // fall back to the estimate total.
-  const approvedAmountCents = approvedFromOptions > 0 ? approvedFromOptions : won ? totalAmountCents : 0;
+  const approvedAmountCents = options
+    .filter((o) => APPROVED_STATUSES.has(approvalOf(o)))
+    .reduce((sum, o) => sum + optAmount(o), 0);
+  // Quote value = the HIGHEST-value option, not the sum: multiple options are usually
+  // alternative bids for the same work, so summing overstates the quote (Justin,
+  // 2026-07-13). Approved revenue still sums, since multi-approval means add-ons.
+  const totalAmountCents =
+    e.total_amount != null ? cents(e.total_amount) : options.reduce((max, o) => Math.max(max, optAmount(o)), 0);
 
   const custName = [customer?.first_name, customer?.last_name].filter(Boolean).join(" ") || null;
   return {
@@ -193,6 +205,7 @@ function mapEstimate(e: Record<string, unknown>): HcpEstimateDTO {
     customerName: custName,
     status: (e.work_status as string) ?? (e.status as string) ?? null,
     won,
+    outcome,
     totalAmountCents,
     approvedAmountCents,
     address: e.address ?? null,

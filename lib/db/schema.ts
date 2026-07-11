@@ -56,6 +56,9 @@ export const leadStatusEnum = pgEnum("lead_status", [
   "spam",
   "duplicate",
 ]);
+// Option-approval outcome of an HCP estimate: won = ≥1 option approved; lost = every
+// decided option declined/expired; open = no decisions yet (or a mix).
+export const estimateOutcomeEnum = pgEnum("estimate_outcome", ["won", "lost", "open"]);
 export const touchTypeEnum = pgEnum("touch_type", ["first", "last", "linear"]);
 export const syncStatusEnum = pgEnum("sync_status", ["running", "success", "error"]);
 
@@ -304,7 +307,8 @@ export const hcpJobs = pgTable(
 
 // HCP estimates — the ROI revenue event is an estimate the customer WON (approved),
 // not a completed job. `approved_amount_cents` is the value of the accepted option(s);
-// `total_amount_cents` is the full estimate (all options) for reference.
+// `total_amount_cents` is the quote value: the highest-value option (options are
+// usually alternative bids for the same work, so a sum would overstate the quote).
 export const hcpEstimates = pgTable(
   "hcp_estimates",
   {
@@ -313,6 +317,7 @@ export const hcpEstimates = pgTable(
     hcpCustomerId: text("hcp_customer_id").references(() => hcpCustomers.id),
     status: text("status"),
     won: boolean("won").notNull().default(false),
+    outcome: estimateOutcomeEnum("outcome").notNull().default("open"),
     totalAmountCents: integer("total_amount_cents").default(0),
     approvedAmountCents: integer("approved_amount_cents").default(0),
     // Customer contact embedded on the estimate itself (normalized) — matching keys
