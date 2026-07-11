@@ -119,6 +119,7 @@ export default async function NumbersPage() {
       {recent.length === 0 ? (
         <div className="empty">No DNI assignments yet.</div>
       ) : (
+        <div className="table-scroll">
         <table>
           <thead>
             <tr>
@@ -141,6 +142,7 @@ export default async function NumbersPage() {
             ))}
           </tbody>
         </table>
+        </div>
       )}
     </>
   );

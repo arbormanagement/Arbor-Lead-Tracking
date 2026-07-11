@@ -53,6 +53,7 @@ export default async function CallsPage() {
       {rows.length === 0 ? (
         <div className="empty">No calls yet. Once a tracking number is live, inbound calls land here.</div>
       ) : (
+        <div className="table-scroll">
         <table>
           <thead>
             <tr>
@@ -97,6 +98,7 @@ export default async function CallsPage() {
             })}
           </tbody>
         </table>
+        </div>
       )}
     </>
   );
