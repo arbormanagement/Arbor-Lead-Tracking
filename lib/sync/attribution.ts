@@ -58,6 +58,7 @@ async function matchLeadsToEstimates(windowDays: number): Promise<{ qualified: n
     .select({
       estId: hcpEstimates.id,
       won: hcpEstimates.won,
+      outcome: hcpEstimates.outcome,
       estStatus: hcpEstimates.status,
       approved: hcpEstimates.approvedAmountCents,
       total: hcpEstimates.totalAmountCents,
@@ -107,15 +108,16 @@ async function matchLeadsToEstimates(windowDays: number): Promise<{ qualified: n
     if (!pick) continue;
 
     claimedLeads.add(pick.id);
-    // Stage from the estimate state: won (approved) → won; cancelled → cancelled;
-    // declined/expired/rejected → lost; has a quote amount → quoted; estimate exists
-    // but no price yet → qualified.
+    // Stage from the estimate state: won (≥1 option approved) → won; cancelled →
+    // cancelled (estimate-level work_status — cancellation never reaches the option
+    // approval fields); lost (every decided option declined/expired) → lost; has a
+    // quote amount → quoted; estimate exists but no price yet → qualified.
     const s = (est.estStatus ?? "").toLowerCase();
     const status = est.won
       ? "won"
       : /cancel/.test(s)
         ? "cancelled"
-        : /declin|expir|reject|lost/.test(s)
+        : est.outcome === "lost"
           ? "lost"
           : (est.total ?? 0) > 0
             ? "quoted"

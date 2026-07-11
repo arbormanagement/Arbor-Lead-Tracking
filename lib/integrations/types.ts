@@ -55,8 +55,14 @@ export interface HcpEstimateDTO {
   customerEmail?: string | null;
   customerName?: string | null;
   status?: string | null;
-  /** Customer approved/accepted at least one option. */
+  /** Customer approved/accepted at least one option (outcome === "won"). */
   won: boolean;
+  /**
+   * Option-approval outcome: won = ≥1 option approved/pro approved; lost = every
+   * option that has an approval_status is declined/pro declined/expired; open =
+   * everything else (no decisions yet, or a mix).
+   */
+  outcome: "won" | "lost" | "open";
   /** Full estimate value (all options). */
   totalAmountCents: number;
   /** Value of the approved option(s) — the ROI revenue figure when won. */
