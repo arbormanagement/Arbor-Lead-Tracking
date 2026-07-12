@@ -41,17 +41,22 @@ export async function runAttribution({ windowDays = 90 }: { windowDays?: number 
 // once that estimate is approved — both derived from the same match, off the
 // contact embedded on the estimate (no dependency on a separate customer sync).
 async function matchLeadsToEstimates(windowDays: number): Promise<{ qualified: number; won: number }> {
-  // Clean rebuild: clear prior estimate links/values and reset the auto statuses.
+  const lookback = new Date(Date.now() - (windowDays + 30) * 86_400_000);
+
+  // Clean rebuild — but only within the window the estimate scan below can
+  // re-derive. A lead older than the lookback can never be re-matched this run,
+  // so clearing it would wipe its stage/value permanently; instead those keep
+  // their last matched state as frozen history. (Leads inside the window still
+  // fully re-derive, so cancellations/approval changes in HCP propagate.)
+  const resettable = and(eq(leads.isSpam, false), gte(leads.occurredAt, lookback));
   await db
     .update(leads)
     .set({ hcpEstimateId: null, salesValueCents: null, quoteValueCents: null })
-    .where(eq(leads.isSpam, false));
+    .where(resettable);
   await db
     .update(leads)
     .set({ status: "new" })
-    .where(and(eq(leads.isSpam, false), inArray(leads.status, ["won", "qualified", "quoted", "lost", "cancelled"])));
-
-  const lookback = new Date(Date.now() - (windowDays + 30) * 86_400_000);
+    .where(and(resettable, inArray(leads.status, ["won", "qualified", "quoted", "lost", "cancelled"])));
   // Every estimate (created), won first so a won estimate claims its lead before a
   // merely-created one does.
   const estRows = await db
