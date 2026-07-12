@@ -38,6 +38,9 @@ export const CREDENTIAL_SPECS: CredSpec[] = [
       { key: "refresh_token", label: "Refresh Token", secret: true, envKey: "GOOGLE_ADS_REFRESH_TOKEN" },
       { key: "login_customer_id", label: "Login (MCC) Customer ID", envKey: "GOOGLE_ADS_LOGIN_CUSTOMER_ID" },
       { key: "customer_id", label: "Customer ID", envKey: "GOOGLE_ADS_CUSTOMER_ID" },
+      // LSA lives in its own customer account under the MCC. When set, spend sync
+      // reads it too (cost lands under google/lsa) and LSA leads query it directly.
+      { key: "lsa_customer_id", label: "LSA Customer ID (Local Services account)", envKey: "GOOGLE_ADS_LSA_CUSTOMER_ID", placeholder: "e.g. 123-456-7890" },
       // Offline conversion import targets (leave blank to disable that event).
       { key: "conversion_action_qualified", label: "Conv. action — Qualified Lead (ID or resource name)", envKey: "GOOGLE_ADS_CONV_QUALIFIED", placeholder: "e.g. 7259060772" },
       { key: "conversion_action_won", label: "Conv. action — Won Estimate (ID or resource name)", envKey: "GOOGLE_ADS_CONV_WON", placeholder: "e.g. customers/8300392986/conversionActions/…" },
