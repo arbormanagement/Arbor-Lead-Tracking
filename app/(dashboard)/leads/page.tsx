@@ -41,6 +41,7 @@ interface Row {
   email: string | null;
   sourceKey: string | null;
   campaignName: string | null;
+  selfReportedSource: string | null;
   location: string | null;
   sales: number | null;
   quote: number | null;
@@ -177,6 +178,7 @@ export default async function InboxPage({
       email: leads.emailLc,
       sourceKey: sources.key,
       campaignName: campaigns.name,
+      selfReportedSource: leads.selfReportedSource,
       location: leads.location,
       sales: leads.salesValueCents,
       quote: leads.quoteValueCents,
@@ -214,7 +216,14 @@ export default async function InboxPage({
             <div className="muted" style={{ fontSize: 12 }}>{formatPhoneDisplay(r.phone) || r.email}</div>
           )}
         </td>
-        <td className="muted">{r.sourceKey ?? "—"}</td>
+        <td className="muted">
+          {r.sourceKey ?? "—"}
+          {r.selfReportedSource && (
+            <div style={{ fontSize: 11, marginTop: 2 }} title="Caller's own answer to 'how did you hear about us'">
+              says: {r.selfReportedSource}
+            </div>
+          )}
+        </td>
         <td><span className={r.isSpam ? "badge bad" : stageClass(r.status)}>{r.isSpam ? "spam" : r.status}</span></td>
         <td>{r.type === "call" ? <LeadToggle leadId={r.id} isLead={r.isLead} manual={r.isLeadManual ?? false} /> : <span className="muted" style={{ fontSize: 12 }}>✓</span>}</td>
         <td className="mono" style={{ textAlign: "right" }}>
@@ -270,7 +279,7 @@ export default async function InboxPage({
     const primaryKeys = orderKeys(primary, rowDim);
     const colKeys = orderKeys(groupRows(rows, colDim), colDim);
     return (
-      <div style={{ overflowX: "auto", marginBottom: 18 }}>
+      <div className="table-scroll" style={{ marginBottom: 18 }}>
         <table>
           <thead>
             <tr>
@@ -344,10 +353,12 @@ export default async function InboxPage({
       ) : (
         <>
           {groups.length >= 2 && pivot()}
-          <table>
-            {tableHead}
-            <tbody>{renderLevel(rows, groups, 0, "g")}</tbody>
-          </table>
+          <div className="table-scroll">
+            <table>
+              {tableHead}
+              <tbody>{renderLevel(rows, groups, 0, "g")}</tbody>
+            </table>
+          </div>
         </>
       )}
     </>

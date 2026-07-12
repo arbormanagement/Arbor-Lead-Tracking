@@ -44,6 +44,7 @@ export function NumbersTable({
   const [editing, setEditing] = useState<string | null>(null);
 
   return (
+    <div className="table-scroll">
     <table>
       <thead>
         <tr>
@@ -70,6 +71,7 @@ export function NumbersTable({
         ))}
       </tbody>
     </table>
+    </div>
   );
 }
 

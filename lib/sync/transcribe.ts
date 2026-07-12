@@ -30,12 +30,19 @@ async function runTranscription(call: PendingCall): Promise<"transcribed" | "spa
       transcriptConfidence: confidence != null ? confidence.toFixed(3) : null,
       transcriptProvider: provider,
       intentLabel: cls.intent,
+      summary: cls.summary,
+      selfReportedSource: cls.selfReportedSource,
       spamScore: cls.spamScore.toFixed(3),
     })
     .where(eq(calls.id, call.id));
 
   if (call.leadId) {
     const spam = cls.spamScore >= SPAM_THRESHOLD;
+    // Self-reported source is data, not judgment — set it regardless of the manual
+    // is_lead override below.
+    if (cls.selfReportedSource) {
+      await db.update(leads).set({ selfReportedSource: cls.selfReportedSource }).where(eq(leads.id, call.leadId));
+    }
     // Skip if a human manually set is_lead — their decision wins over auto-classify.
     await db
       .update(leads)

@@ -1,6 +1,6 @@
 {
-  "id": "9954e010-5515-4a0a-a195-2e70e131c30e",
-  "prevId": "8aefcf9d-76ec-4670-a607-6e9232b03bc7",
+  "id": "20243190-fba0-410d-9a74-723125febe70",
+  "prevId": "9954e010-5515-4a0a-a195-2e70e131c30e",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -464,6 +464,18 @@
         },
         "intent_label": {
           "name": "intent_label",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "summary": {
+          "name": "summary",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "self_reported_source": {
+          "name": "self_reported_source",
           "type": "text",
           "primaryKey": false,
           "notNull": false
@@ -1849,6 +1861,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "self_reported_source": {
+          "name": "self_reported_source",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "is_lead_manual": {
           "name": "is_lead_manual",
           "type": "boolean",
@@ -2059,6 +2077,100 @@
           "tableTo": "hcp_estimates",
           "columnsFrom": [
             "hcp_estimate_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.manual_spend": {
+      "name": "manual_spend",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "source_id": {
+          "name": "source_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "month": {
+          "name": "month",
+          "type": "date",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "amount_cents": {
+          "name": "amount_cents",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "note": {
+          "name": "note",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "manual_spend_source_month_uq": {
+          "name": "manual_spend_source_month_uq",
+          "columns": [
+            {
+              "expression": "source_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "month",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "manual_spend_source_id_sources_id_fk": {
+          "name": "manual_spend_source_id_sources_id_fk",
+          "tableFrom": "manual_spend",
+          "tableTo": "sources",
+          "columnsFrom": [
+            "source_id"
           ],
           "columnsTo": [
             "id"

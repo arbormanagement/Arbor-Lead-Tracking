@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, inArray, lte, ne, or } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, lte, ne, or, sql } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import {
   adSpend,
@@ -6,9 +6,11 @@ import {
   campaigns,
   hcpEstimates,
   leads,
+  manualSpend,
   roiDaily,
   sources,
 } from "@/lib/db/schema";
+import { getSetting } from "@/lib/settings";
 import { withSyncRun } from "./run";
 
 /**
@@ -46,7 +48,18 @@ export async function runAttribution({
 // A lead is a QUALIFIED lead once an estimate is created for its contact, and WON
 // once that estimate is approved — both derived from the same match, off the
 // contact embedded on the estimate (no dependency on a separate customer sync).
+//
+// Two settings shape the match:
+//  · attribution_model — "last_touch" (default) credits the latest qualifying lead
+//    before the estimate; "first_touch" credits the earliest (WhatConverts-style
+//    single-touch models, applied retroactively on each rebuild).
+//  · customer_window_days — repeat business: a won estimate whose contact has NO
+//    unclaimed lead of its own inherits the contact's already-matched lead when it
+//    falls within this many days of it (ServiceTitan "Smart Attribution" style),
+//    so paid channels get credit for the follow-up work they generated. 0 disables.
 async function matchLeadsToEstimates(windowDays: number): Promise<{ qualified: number; won: number }> {
+  const model = await getSetting<string>("attribution_model", "last_touch");
+  const customerWindowDays = await getSetting<number>("customer_window_days", 90);
   const lookback = new Date(Date.now() - (windowDays + 30) * 86_400_000);
 
   // Estimates worth (re)deriving from: recently created, OR changed in HCP
@@ -81,12 +94,14 @@ async function matchLeadsToEstimates(windowDays: number): Promise<{ qualified: n
     .update(leads)
     .set({ hcpEstimateId: null, salesValueCents: null, quoteValueCents: null })
     .where(resettable);
+
   // Every estimate (created), won first so a won estimate claims its lead before a
   // merely-created one does.
   const estRows = await db
     .select({
       estId: hcpEstimates.id,
       won: hcpEstimates.won,
+      outcome: hcpEstimates.outcome,
       estStatus: hcpEstimates.status,
       approved: hcpEstimates.approvedAmountCents,
       total: hcpEstimates.totalAmountCents,
@@ -101,6 +116,9 @@ async function matchLeadsToEstimates(windowDays: number): Promise<{ qualified: n
     .orderBy(desc(hcpEstimates.won), desc(hcpEstimates.createdAtHcp));
 
   const claimedLeads = new Set<string>();
+  // Contact key → the first claimed lead for that contact, for the repeat-business
+  // inheritance pass (customer_window_days).
+  const claimedByContact = new Map<string, { leadId: string; leadAt: Date }>();
   let qualified = 0;
   let won = 0;
 
@@ -109,6 +127,10 @@ async function matchLeadsToEstimates(windowDays: number): Promise<{ qualified: n
     // Won → anchor to approval; created → anchor to creation. The lead must precede it.
     const estDate = est.won ? est.approvedAtHcp ?? est.createdAtHcp : est.createdAtHcp;
     if (!estDate) continue;
+
+    const contactKeys = [est.custPhone && `p:${est.custPhone}`, est.custEmail && `e:${est.custEmail}`].filter(
+      Boolean,
+    ) as string[];
 
     // Search back from the estimate's creation (the lead precedes the estimate),
     // not from a possibly much-later approval — a late approval must still be
@@ -123,7 +145,7 @@ async function matchLeadsToEstimates(windowDays: number): Promise<{ qualified: n
           : eq(leads.emailLc, est.custEmail!);
 
     const candidates = await db
-      .select({ id: leads.id })
+      .select({ id: leads.id, occurredAt: leads.occurredAt })
       .from(leads)
       .where(
         and(
@@ -133,22 +155,44 @@ async function matchLeadsToEstimates(windowDays: number): Promise<{ qualified: n
           lte(leads.occurredAt, estDate),
         ),
       )
-      .orderBy(desc(leads.occurredAt))
+      // Last-touch credits the latest lead before the estimate; first-touch the earliest.
+      .orderBy(model === "first_touch" ? asc(leads.occurredAt) : desc(leads.occurredAt))
       .limit(5);
 
     const pick = candidates.find((c) => !claimedLeads.has(c.id));
-    if (!pick) continue;
+    if (!pick) {
+      // Repeat business: a WON estimate with no lead of its own inherits the
+      // contact's already-matched lead when it falls inside the customer window —
+      // the revenue accrues to the source that originally acquired the customer.
+      if (est.won && customerWindowDays > 0) {
+        const prior = contactKeys.map((k) => claimedByContact.get(k)).find(Boolean);
+        const age = prior ? estDate.getTime() - prior.leadAt.getTime() : -1;
+        if (prior && age >= 0 && age <= customerWindowDays * 86_400_000) {
+          await db
+            .update(leads)
+            .set({
+              salesValueCents: sql`coalesce(${leads.salesValueCents}, 0) + ${est.approved ?? 0}`,
+              status: "won",
+            })
+            .where(eq(leads.id, prior.leadId));
+          won++;
+        }
+      }
+      continue;
+    }
 
     claimedLeads.add(pick.id);
-    // Stage from the estimate state: won (approved) → won; cancelled → cancelled;
-    // declined/expired/rejected → lost; has a quote amount → quoted; estimate exists
-    // but no price yet → qualified.
+    for (const k of contactKeys) if (!claimedByContact.has(k)) claimedByContact.set(k, { leadId: pick.id, leadAt: pick.occurredAt });
+    // Stage from the estimate state: won (≥1 option approved) → won; cancelled →
+    // cancelled (estimate-level work_status — cancellation never reaches the option
+    // approval fields); lost (every decided option declined/expired) → lost; has a
+    // quote amount → quoted; estimate exists but no price yet → qualified.
     const s = (est.estStatus ?? "").toLowerCase();
     const status = est.won
       ? "won"
       : /cancel/.test(s)
         ? "cancelled"
-        : /declin|expir|reject|lost/.test(s)
+        : est.outcome === "lost"
           ? "lost"
           : (est.total ?? 0) > 0
             ? "quoted"
@@ -158,7 +202,9 @@ async function matchLeadsToEstimates(windowDays: number): Promise<{ qualified: n
       .set({
         hcpCustomerId: est.custId,
         hcpEstimateId: est.estId,
-        quoteValueCents: est.total || est.approved || null,
+        // Won → what was actually approved (multi-approval = add-ons, so the sum);
+        // otherwise the highest-value option (alternative bids, not a sum).
+        quoteValueCents: (est.won ? est.approved : null) || est.total || null,
         salesValueCents: est.won ? est.approved || 0 : null,
         status,
       })
@@ -307,6 +353,31 @@ async function rebuildRoiDaily(windowDays: number): Promise<number> {
       location: (s.location ?? "unknown") as RoiAcc["location"],
     });
     row.spendCents += s.spendCents ?? 0;
+  }
+
+  // Manually-entered monthly spend (LSA/GBP/print/…): spread each month's amount
+  // evenly over its days so non-API channels get CPL/ROAS rows alongside synced
+  // spend. Only days inside [since, today] land in this rebuild's window.
+  const windowMonthStart = `${sinceDate.slice(0, 7)}-01`;
+  const manualRows = await db
+    .select({ sourceId: manualSpend.sourceId, month: manualSpend.month, amountCents: manualSpend.amountCents })
+    .from(manualSpend)
+    .where(gte(manualSpend.month, windowMonthStart));
+
+  const todayDate = new Date().toISOString().slice(0, 10);
+  for (const m of manualRows) {
+    const [y, mo] = m.month.split("-").map(Number);
+    const daysInMonth = new Date(Date.UTC(y, mo, 0)).getUTCDate();
+    const base = Math.floor((m.amountCents ?? 0) / daysInMonth);
+    let remainder = (m.amountCents ?? 0) - base * daysInMonth;
+    for (let d = 1; d <= daysInMonth; d++) {
+      const dayCents = base + (remainder > 0 ? 1 : 0);
+      if (remainder > 0) remainder--;
+      const dateStr = `${m.month.slice(0, 7)}-${String(d).padStart(2, "0")}`;
+      if (dateStr < sinceDate || dateStr > todayDate || dayCents === 0) continue;
+      const row = bump({ date: dateStr, sourceId: m.sourceId, campaignId: null, location: "unknown" });
+      row.spendCents += dayCents;
+    }
   }
 
   // Full rebuild of the window.

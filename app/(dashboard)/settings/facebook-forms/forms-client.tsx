@@ -99,6 +99,7 @@ export function FormsClient() {
         </div>
       </div>
 
+      <div className="table-scroll">
       <table>
         <thead>
           <tr>
@@ -126,6 +127,7 @@ export function FormsClient() {
           ))}
         </tbody>
       </table>
+      </div>
 
       {rest.length > 0 && (
         <button

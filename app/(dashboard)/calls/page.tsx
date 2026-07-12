@@ -19,6 +19,8 @@ export default async function CallsPage() {
       durationSec: calls.durationSec,
       recordingUrl: calls.recordingUrl,
       intentLabel: calls.intentLabel,
+      summary: calls.summary,
+      selfReportedSource: calls.selfReportedSource,
       transcript: calls.transcript,
       spamScore: calls.spamScore,
       leadId: calls.leadId,
@@ -53,6 +55,7 @@ export default async function CallsPage() {
       {rows.length === 0 ? (
         <div className="empty">No calls yet. Once a tracking number is live, inbound calls land here.</div>
       ) : (
+        <div className="table-scroll">
         <table>
           <thead>
             <tr>
@@ -63,7 +66,7 @@ export default async function CallsPage() {
               <th>Recording</th>
               <th>Intent</th>
               <th>Lead?</th>
-              <th>Transcript</th>
+              <th>Summary</th>
             </tr>
           </thead>
           <tbody>
@@ -89,14 +92,26 @@ export default async function CallsPage() {
                   </td>
                   <td>{c.intentLabel ? <span className="badge">{c.intentLabel}</span> : <span className="muted">—</span>}</td>
                   <td><LeadToggle leadId={c.leadId} isLead={c.isLead} manual={c.isLeadManual ?? false} /></td>
-                  <td style={{ maxWidth: 300, color: "var(--muted)", fontSize: 12 }} title={c.transcript ?? ""}>
-                    {c.transcript ? c.transcript.slice(0, 90) + (c.transcript.length > 90 ? "…" : "") : "—"}
+                  <td style={{ maxWidth: 300, fontSize: 12 }} title={c.transcript ?? ""}>
+                    {c.summary ? (
+                      <span>{c.summary}</span>
+                    ) : c.transcript ? (
+                      <span className="muted">{c.transcript.slice(0, 90) + (c.transcript.length > 90 ? "…" : "")}</span>
+                    ) : (
+                      <span className="muted">—</span>
+                    )}
+                    {c.selfReportedSource && (
+                      <div className="muted" style={{ marginTop: 3, fontSize: 11 }}>
+                        heard via: <span className="badge info" style={{ fontSize: 10.5 }}>{c.selfReportedSource}</span>
+                      </div>
+                    )}
                   </td>
                 </tr>
               );
             })}
           </tbody>
         </table>
+        </div>
       )}
     </>
   );

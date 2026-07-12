@@ -57,12 +57,12 @@ export function SyncButton() {
         {busy === "all" ? "Syncing…" : "Run sync now"}
       </button>
       <button
-        onClick={() => post("/api/sync/all?days=90", "backfill")}
+        onClick={() => post("/api/sync/all?days=120", "backfill")}
         disabled={state === "running"}
         style={ghost}
-        title="One-time: pull 90 days of HousecallPro estimates + Facebook leads, then re-run matching/attribution"
+        title="One-time: re-pull 120 days of HousecallPro estimates + Facebook leads (full attribution lookback), then re-run matching/attribution — reclassifies estimates under the current won/lost/open rules"
       >
-        {busy === "backfill" ? "Backfilling…" : "Backfill & match (90d)"}
+        {busy === "backfill" ? "Backfilling…" : "Backfill & reclassify (120d)"}
       </button>
       {msg && (
         <span style={{ color: state === "error" ? "var(--danger)" : "var(--muted)", fontSize: 12 }}>{msg}</span>

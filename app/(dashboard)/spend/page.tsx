@@ -1,7 +1,8 @@
-import { desc, gte, sql } from "drizzle-orm";
+import { desc, eq, gte, sql } from "drizzle-orm";
 import { db } from "@/lib/db/client";
-import { adSpend, roiDaily, syncRuns } from "@/lib/db/schema";
+import { adSpend, manualSpend, roiDaily, sources, syncRuns } from "@/lib/db/schema";
 import { dateTime, dollars } from "@/lib/format";
+import { ManualSpend } from "./manual-spend";
 import { SyncButton } from "./sync-button";
 
 export const dynamic = "force-dynamic";
@@ -26,6 +27,22 @@ export default async function SpendPage() {
   const since = new Date(Date.now() - 30 * 86_400_000).toISOString().slice(0, 10);
 
   const runs = await db.select().from(syncRuns).orderBy(desc(syncRuns.startedAt)).limit(20);
+
+  const sourceRows = await db
+    .select({ id: sources.id, name: sources.displayName, key: sources.key })
+    .from(sources)
+    .orderBy(sources.key);
+  const manualRows = await db
+    .select({
+      sourceId: manualSpend.sourceId,
+      sourceName: sources.displayName,
+      month: manualSpend.month,
+      amountCents: manualSpend.amountCents,
+    })
+    .from(manualSpend)
+    .leftJoin(sources, eq(manualSpend.sourceId, sources.id))
+    .orderBy(desc(manualSpend.month))
+    .limit(24);
 
   // 30-day spend by platform (from ad_spend) + total revenue (from roi_daily).
   const byPlatform = await db
@@ -68,6 +85,11 @@ export default async function SpendPage() {
         <div className="card kpi accent"><div className="label">✦ ROAS</div><div className="value mono pos">{roas}</div></div>
       </div>
 
+      <ManualSpend
+        sources={sourceRows.map((s) => ({ id: s.id, name: s.name ?? s.key }))}
+        rows={manualRows.map((r) => ({ ...r, sourceName: r.sourceName ?? "—" }))}
+      />
+
       {byPlatform.length > 0 && (
         <>
           <h2 className="page-title" style={{ fontSize: 15, marginTop: 8 }}>Spend by platform</h2>
@@ -103,6 +125,7 @@ export default async function SpendPage() {
       {runs.length === 0 ? (
         <div className="empty">No sync runs recorded yet.</div>
       ) : (
+        <div className="table-scroll">
         <table>
           <thead>
             <tr>
@@ -131,6 +154,7 @@ export default async function SpendPage() {
             ))}
           </tbody>
         </table>
+        </div>
       )}
     </>
   );

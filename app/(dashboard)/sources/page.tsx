@@ -1,7 +1,8 @@
-import { desc, eq, gte, sql } from "drizzle-orm";
+import { and, desc, eq, gte, isNotNull, ne, or, sql } from "drizzle-orm";
+import type { AnyPgColumn } from "drizzle-orm/pg-core";
 import Link from "next/link";
 import { db } from "@/lib/db/client";
-import { calls, roiDaily, sources, trackingNumbers } from "@/lib/db/schema";
+import { calls, leads, roiDaily, sources, trackingNumbers } from "@/lib/db/schema";
 import { dollars } from "@/lib/format";
 import { TIMEFRAMES, pickDays, timeframeLabel } from "@/lib/timeframes";
 import { FormsClient } from "../settings/facebook-forms/forms-client";
@@ -37,6 +38,31 @@ export default async function SourcesPage({ searchParams }: { searchParams: Prom
     { leads: 0, quoted: 0, won: 0, spend: 0, revenue: 0 },
   );
   const maxRoas = Math.max(1, ...rows.map((r) => (r.spend > 0 ? r.revenue / r.spend : 0)));
+
+  // Breakdown dimensions (90d): landing page + keyword (captured on the lead by
+  // track.js / click-id enrichment) and the caller's self-reported source from
+  // call transcripts — the DNI-invisible channels (referrals, yard signs, trucks).
+  const bdSince = new Date(Date.now() - 90 * 86_400_000);
+  const leadOnly = or(ne(leads.type, "call"), eq(leads.isLead, true));
+  const breakdownOf = (col: AnyPgColumn) =>
+    db
+      .select({
+        value: sql<string | null>`${col}`,
+        leads: sql<number>`count(*)::int`,
+        won: sql<number>`count(*) filter (where ${leads.status} = 'won')::int`,
+        revenue: sql<number>`coalesce(sum(${leads.salesValueCents}) filter (where ${leads.status} = 'won'), 0)::int`,
+      })
+      .from(leads)
+      .where(and(gte(leads.occurredAt, bdSince), eq(leads.isSpam, false), leadOnly, isNotNull(col), ne(col, "")))
+      .groupBy(col)
+      .orderBy(desc(sql`count(*)`))
+      .limit(8);
+
+  const [byLanding, byKeyword, bySelfReported] = await Promise.all([
+    breakdownOf(leads.landingPage),
+    breakdownOf(leads.keyword),
+    breakdownOf(leads.selfReportedSource),
+  ]);
 
   // Tracking-number summary (capture channel).
   const [numAgg] = await db
@@ -76,7 +102,8 @@ export default async function SourcesPage({ searchParams }: { searchParams: Prom
           No source performance yet — populates once ad spend + HousecallPro estimates are syncing.
         </div>
       ) : (
-        <table style={{ marginBottom: 30 }}>
+        <div className="table-scroll" style={{ marginBottom: 30 }}>
+        <table>
           <thead>
             <tr>
               <th>Source</th>
@@ -124,7 +151,20 @@ export default async function SourcesPage({ searchParams }: { searchParams: Prom
             </tr>
           </tbody>
         </table>
+        </div>
       )}
+
+      {/* Breakdowns: landing pages, keywords, self-reported */}
+      <h2 className="page-title" style={{ fontSize: 16, marginBottom: 4 }}>Breakdowns</h2>
+      <p className="page-sub" style={{ marginBottom: 16 }}>
+        Last 90 days · landing pages &amp; keywords come from web tracking; “callers say” is the AI-extracted answer to
+        “how did you hear about us” — catches referrals, yard signs, and trucks that number-tracking can&apos;t see.
+      </p>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 14, marginBottom: 26 }}>
+        <BreakdownCard title="◧ Landing pages" rows={byLanding} empty="No landing pages captured yet — populates once track.js is live." />
+        <BreakdownCard title="⌕ Keywords" rows={byKeyword} empty="No keywords captured yet — populates from paid-search leads." />
+        <BreakdownCard title="☏ Callers say" rows={bySelfReported} empty="No self-reported sources yet — extracted from call transcripts." />
+      </div>
 
       {/* Capture channels */}
       <h2 className="page-title" style={{ fontSize: 16, marginBottom: 4 }}>Capture channels</h2>
@@ -147,4 +187,52 @@ export default async function SourcesPage({ searchParams }: { searchParams: Prom
       <FormsClient />
     </>
   );
+}
+
+function BreakdownCard({
+  title,
+  rows,
+  empty,
+}: {
+  title: string;
+  rows: Array<{ value: string | null; leads: number; won: number; revenue: number }>;
+  empty: string;
+}) {
+  return (
+    <div className="card">
+      <div className="card-head"><h3>{title}</h3><span className="muted">leads · won · revenue</span></div>
+      {rows.length === 0 ? (
+        <div className="empty" style={{ border: "none", padding: "20px 14px", fontSize: 12.5 }}>{empty}</div>
+      ) : (
+        <table style={{ border: "none", borderRadius: 0 }}>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.value ?? ""}>
+                <td style={{ maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 12.5 }} title={r.value ?? ""}>
+                  {displayValue(r.value)}
+                </td>
+                <td className="mono" style={{ width: 40 }}>{r.leads}</td>
+                <td style={{ width: 46 }}>{r.won > 0 ? <span className="badge win">{r.won}</span> : <span className="muted mono">0</span>}</td>
+                <td className="mono" style={{ textAlign: "right", width: 80 }}>{r.revenue > 0 ? dollars(r.revenue) : <span className="muted">—</span>}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+}
+
+/** Landing pages read better as paths; other values pass through. */
+function displayValue(v: string | null): string {
+  if (!v) return "—";
+  try {
+    if (v.startsWith("http")) {
+      const u = new URL(v);
+      return u.pathname === "/" ? u.hostname : u.pathname;
+    }
+  } catch {
+    /* not a URL — show raw */
+  }
+  return v;
 }

@@ -79,24 +79,47 @@ class GoogleAdsProvider implements SpendProvider {
     const cfg = await this.config();
     const since = new Date(Date.now() - sinceDays * 86_400_000).toISOString().slice(0, 10);
     const today = new Date().toISOString().slice(0, 10);
+    // channel_type segments LSA out of regular Search/PMax spend: Local Services
+    // campaigns are read-only in the Google Ads API but report cost like any other
+    // campaign, so LSA spend lands under platform google_lsa → source google/lsa.
     const gaql = `
-      SELECT campaign.id, campaign.name, segments.date,
+      SELECT campaign.id, campaign.name, campaign.advertising_channel_type, segments.date,
              metrics.impressions, metrics.clicks, metrics.cost_micros, metrics.conversions
       FROM campaign
       WHERE segments.date BETWEEN '${since}' AND '${today}'`;
 
-    const results = await this.searchStream(cfg, gaql);
-    return results.map((r) => ({
-      platform: "google" as const,
-      externalCampaignId: String(r.campaign?.id),
-      campaignName: r.campaign?.name,
-      date: r.segments?.date,
-      impressions: Number(r.metrics?.impressions ?? 0),
-      clicks: Number(r.metrics?.clicks ?? 0),
-      spendCents: Math.round(Number(r.metrics?.costMicros ?? 0) / 10_000),
-      conversions: Number(r.metrics?.conversions ?? 0),
-      raw: r,
-    }));
+    const rows: SpendRow[] = [];
+    for (const customerId of await this.spendCustomerIds(cfg)) {
+      const results = await this.searchStream({ ...cfg, customerId }, gaql);
+      rows.push(
+        ...results.map((r) => ({
+          platform: (r.campaign?.advertisingChannelType === "LOCAL_SERVICES" ? "google_lsa" : "google") as
+            | "google"
+            | "google_lsa",
+          externalCampaignId: String(r.campaign?.id),
+          campaignName: r.campaign?.name,
+          date: r.segments?.date,
+          impressions: Number(r.metrics?.impressions ?? 0),
+          clicks: Number(r.metrics?.clicks ?? 0),
+          spendCents: Math.round(Number(r.metrics?.costMicros ?? 0) / 10_000),
+          conversions: Number(r.metrics?.conversions ?? 0),
+          raw: r,
+        })),
+      );
+    }
+    return rows;
+  }
+
+  /**
+   * Accounts to read spend from: the main customer_id plus, when configured, the
+   * separate LSA account (`lsa_customer_id`) — LSA lives in its own customer
+   * account under the manager, so one query per account. De-duped in case both
+   * creds point at the same account.
+   */
+  private async spendCustomerIds(cfg: GoogleAdsConfig): Promise<string[]> {
+    const c = await getPlatformCreds("google_ads");
+    const lsa = (c.lsa_customer_id || "").replace(/-/g, "");
+    return [...new Set([cfg.customerId, lsa].filter(Boolean))] as string[];
   }
 
   /**
@@ -105,6 +128,10 @@ class GoogleAdsProvider implements SpendProvider {
    */
   async getLsaLeads({ sinceDays }: { sinceDays: number }): Promise<LsaLead[]> {
     const cfg = await this.config();
+    // local_services_lead only exists in the LSA customer account — use the
+    // dedicated lsa_customer_id when it's configured (else assume customer_id is it).
+    const c = await getPlatformCreds("google_ads");
+    if (c.lsa_customer_id) cfg.customerId = c.lsa_customer_id.replace(/-/g, "");
     const gaql = `
       SELECT local_services_lead.id, local_services_lead.contact_details,
              local_services_lead.lead_type, local_services_lead.lead_status,

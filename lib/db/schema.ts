@@ -56,6 +56,9 @@ export const leadStatusEnum = pgEnum("lead_status", [
   "spam",
   "duplicate",
 ]);
+// Option-approval outcome of an HCP estimate: won = ≥1 option approved; lost = every
+// decided option declined/expired; open = no decisions yet (or a mix).
+export const estimateOutcomeEnum = pgEnum("estimate_outcome", ["won", "lost", "open"]);
 export const touchTypeEnum = pgEnum("touch_type", ["first", "last", "linear"]);
 export const syncStatusEnum = pgEnum("sync_status", ["running", "success", "error"]);
 
@@ -165,6 +168,26 @@ export const adSpend = pgTable(
     uniqueIndex("ad_spend_platform_extid_date_uq").on(t.platform, t.externalCampaignId, t.date),
     index("ad_spend_date_idx").on(t.date),
   ],
+);
+
+// Manually-entered monthly spend for channels without an API sync (LSA until its
+// sync lands, GBP, print, yard signs, …) so every channel gets a CPL/ROAS row.
+// One row per (source, month); the ROI rollup spreads the amount evenly across
+// the month's days. `month` is stored as the first of the month.
+export const manualSpend = pgTable(
+  "manual_spend",
+  {
+    id: id(),
+    sourceId: text("source_id")
+      .notNull()
+      .references(() => sources.id),
+    month: date("month").notNull(),
+    amountCents: integer("amount_cents").notNull().default(0),
+    note: text("note"),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [uniqueIndex("manual_spend_source_month_uq").on(t.sourceId, t.month)],
 );
 
 // ── Tracking numbers / DNI ───────────────────────────────────────────────────
@@ -304,7 +327,8 @@ export const hcpJobs = pgTable(
 
 // HCP estimates — the ROI revenue event is an estimate the customer WON (approved),
 // not a completed job. `approved_amount_cents` is the value of the accepted option(s);
-// `total_amount_cents` is the full estimate (all options) for reference.
+// `total_amount_cents` is the quote value: the highest-value option (options are
+// usually alternative bids for the same work, so a sum would overstate the quote).
 export const hcpEstimates = pgTable(
   "hcp_estimates",
   {
@@ -313,6 +337,7 @@ export const hcpEstimates = pgTable(
     hcpCustomerId: text("hcp_customer_id").references(() => hcpCustomers.id),
     status: text("status"),
     won: boolean("won").notNull().default(false),
+    outcome: estimateOutcomeEnum("outcome").notNull().default("open"),
     totalAmountCents: integer("total_amount_cents").default(0),
     approvedAmountCents: integer("approved_amount_cents").default(0),
     // Customer contact embedded on the estimate itself (normalized) — matching keys
@@ -379,6 +404,9 @@ export const leads = pgTable(
     // not yet classified. The Leads inbox shows only leads (or non-call types).
     isLead: boolean("is_lead"),
     leadReason: text("lead_reason"), // short why (AI/keyword/manual) for the is_lead call
+    // Caller's self-reported source ("how did you hear about us"), extracted from the
+    // call transcript — shown alongside the DNI-attributed source as a cross-check.
+    selfReportedSource: text("self_reported_source"),
     isLeadManual: boolean("is_lead_manual").notNull().default(false), // human override — auto-classify won't touch it
     isFirstTime: boolean("is_first_time"),
     isDuplicate: boolean("is_duplicate").notNull().default(false),
@@ -417,6 +445,11 @@ export const calls = pgTable(
     transcriptProvider: text("transcript_provider"),
     transcriptConfidence: numeric("transcript_confidence", { precision: 4, scale: 3 }),
     intentLabel: text("intent_label"),
+    // AI one-liner of what the call was about, and the caller's own answer to
+    // "how did you hear about us" (verbatim-ish) — DNI-invisible channels like
+    // referrals/yard signs/truck wraps only ever surface here.
+    summary: text("summary"),
+    selfReportedSource: text("self_reported_source"),
     spamScore: numeric("spam_score", { precision: 4, scale: 3 }),
     voicemail: boolean("voicemail").default(false),
     createdAt: createdAt(),
