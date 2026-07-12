@@ -1,12 +1,13 @@
 import { and, desc, eq, gte, ne, or, sql } from "drizzle-orm";
+import type { ReactNode } from "react";
 import { db } from "@/lib/db/client";
-import { leads, sources } from "@/lib/db/schema";
+import { campaigns, leads, sources } from "@/lib/db/schema";
 import { dateTime, dollars } from "@/lib/format";
 import { formatPhoneDisplay } from "@/lib/phone";
 import { pickDays, timeframeLabel } from "@/lib/timeframes";
 import { LeadToggle } from "../lead-toggle";
 import { ViewControls } from "./view-controls";
-import { DIMS, TYPE_FILTERS, type Dim } from "./view";
+import { DIMS, parseGroups, type Dim } from "./view";
 
 export const dynamic = "force-dynamic";
 
@@ -17,6 +18,7 @@ const TYPE_META: Record<string, { ic: string; label: string }> = {
   lsa: { ic: "◎", label: "LSA" },
   manual: { ic: "✎", label: "Manual" },
 };
+
 function stageClass(status: string): string {
   if (status === "won") return "badge win";
   if (status === "quoted") return "badge info";
@@ -28,6 +30,7 @@ function stageClass(status: string): string {
 
 // ── Grouping / pivot ──────────────────────────────────────────────────────────
 const STAGE_ORDER = ["new", "qualified", "quoted", "won", "lost", "cancelled", "spam"];
+const DATE_DIMS: Dim[] = ["day", "week", "month"];
 
 interface Row {
   id: string;
@@ -37,6 +40,7 @@ interface Row {
   phone: string | null;
   email: string | null;
   sourceKey: string | null;
+  campaignName: string | null;
   location: string | null;
   sales: number | null;
   quote: number | null;
@@ -76,10 +80,13 @@ function weekKey(d: Date): string {
 function dimKey(r: Row, dim: Dim): string {
   switch (dim) {
     case "source": return r.sourceKey ?? "unattributed";
+    case "campaign": return r.campaignName ?? "no campaign";
     case "stage": return r.isSpam ? "spam" : r.status;
     case "type": return r.type;
     case "location": return r.location ?? "unknown";
+    case "day": return r.occurredAt.toISOString().slice(0, 10);
     case "week": return weekKey(r.occurredAt);
+    case "month": return r.occurredAt.toISOString().slice(0, 7);
   }
 }
 
@@ -88,9 +95,14 @@ function dimLabel(key: string, dim: Dim): string {
     case "type": return TYPE_META[key]?.label ?? key;
     case "location":
       return key === "edwardsville" ? "Edwardsville" : key === "ofallon" ? "O'Fallon" : "Unknown";
+    case "day":
+      return new Date(key + "T00:00:00Z").toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
     case "week":
       return "Week of " + new Date(key + "T00:00:00Z").toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
+    case "month":
+      return new Date(key + "-01T00:00:00Z").toLocaleDateString("en-US", { month: "short", year: "numeric", timeZone: "UTC" });
     case "source": return key === "unattributed" ? "Unattributed" : key;
+    case "campaign": return key === "no campaign" ? "No campaign" : key;
     default: return key;
   }
 }
@@ -109,7 +121,7 @@ function groupRows(rows: Row[], dim: Dim): Map<string, Row[]> {
 function orderKeys(groups: Map<string, Row[]>, dim: Dim): string[] {
   const keys = [...groups.keys()];
   if (dim === "stage") return keys.sort((a, b) => STAGE_ORDER.indexOf(a) - STAGE_ORDER.indexOf(b));
-  if (dim === "week") return keys.sort().reverse(); // recent weeks first
+  if (DATE_DIMS.includes(dim)) return keys.sort().reverse(); // recent first
   return keys.sort((a, b) => groups.get(b)!.length - groups.get(a)!.length || a.localeCompare(b));
 }
 
@@ -144,22 +156,16 @@ function GroupHeadLabel({ k, dim, a }: { k: string; dim: Dim; a: Agg }) {
 export default async function InboxPage({
   searchParams,
 }: {
-  searchParams: Promise<{ type?: string; by?: string; by2?: string; days?: string }>;
+  searchParams: Promise<{ g?: string; days?: string }>;
 }) {
-  const { type, by: byParam, by2: by2Param, days: daysParam } = await searchParams;
-  const validType = TYPE_FILTERS.some((f) => f.key === type) ? type : "";
-  const isDim = (v?: string): v is Dim => DIMS.some((d) => d.key === v);
-  const by = isDim(byParam) ? byParam : undefined;
-  const by2 = isDim(by2Param) && by2Param !== by && by ? by2Param : undefined;
+  const { g, days: daysParam } = await searchParams;
+  const groups = parseGroups(g);
   const days = pickDays(daysParam, 90);
   const since = new Date(Date.now() - days * 86_400_000);
 
   // A call only counts as a lead once classified (caller requested an estimate);
   // forms/FB/etc. are inherently leads. So the inbox = non-call types OR lead-calls.
   const leadOnly = or(ne(leads.type, "call"), eq(leads.isLead, true));
-  const typeCond = validType
-    ? and(gte(leads.occurredAt, since), eq(leads.type, validType as "call"), leadOnly)
-    : and(gte(leads.occurredAt, since), leadOnly);
 
   const rows: Row[] = await db
     .select({
@@ -170,6 +176,7 @@ export default async function InboxPage({
       phone: leads.phoneE164,
       email: leads.emailLc,
       sourceKey: sources.key,
+      campaignName: campaigns.name,
       location: leads.location,
       sales: leads.salesValueCents,
       quote: leads.quoteValueCents,
@@ -180,10 +187,11 @@ export default async function InboxPage({
     })
     .from(leads)
     .leftJoin(sources, eq(leads.sourceId, sources.id))
-    .where(typeCond)
+    .leftJoin(campaigns, eq(leads.campaignId, campaigns.id))
+    .where(and(gte(leads.occurredAt, since), leadOnly))
     .orderBy(desc(leads.occurredAt))
     // Grouped views aggregate, so they get the full window; the flat list stays short.
-    .limit(by ? 1000 : 200);
+    .limit(groups.length ? 1000 : 200);
 
   const [agg] = await db
     .select({
@@ -193,11 +201,6 @@ export default async function InboxPage({
     })
     .from(leads)
     .where(and(gte(leads.occurredAt, since), eq(leads.isSpam, false), leadOnly));
-
-  const primary = by ? groupRows(rows, by) : null;
-  const primaryKeys = primary && by ? orderKeys(primary, by) : [];
-  // Secondary key order is computed across ALL rows so the pivot columns line up.
-  const secondaryKeys = by2 ? orderKeys(groupRows(rows, by2), by2) : [];
 
   const leadRow = (r: Row) => {
     const t = TYPE_META[r.type] ?? { ic: "•", label: r.type };
@@ -222,6 +225,30 @@ export default async function InboxPage({
     );
   };
 
+  // Nested group sections: a header row per group at each level, lead rows at the leaves.
+  const renderLevel = (subset: Row[], dims: Dim[], depth: number, keyPrefix: string): ReactNode[] => {
+    if (!dims.length) return subset.map(leadRow);
+    const [dim, ...rest] = dims;
+    const m = groupRows(subset, dim);
+    return orderKeys(m, dim).flatMap((k) => {
+      const sub = m.get(k)!;
+      const a = aggregate(sub);
+      const rowKey = `${keyPrefix}/${dim}:${k}`;
+      return [
+        <tr key={rowKey} style={{ background: "var(--panel-2)" }}>
+          <td colSpan={6} style={depth > 0 ? { paddingLeft: 16 + depth * 18, fontSize: 12.5 } : undefined}>
+            {depth > 0 && <span style={{ color: "var(--faint)", marginRight: 7 }}>↳</span>}
+            <GroupHeadLabel k={k} dim={dim} a={a} />
+          </td>
+          <td className="mono" style={{ textAlign: "right", ...(depth > 0 ? { fontSize: 12.5 } : {}) }}>
+            <GroupValueSummary a={a} />
+          </td>
+        </tr>,
+        ...renderLevel(sub, rest, depth + 1, rowKey),
+      ];
+    });
+  };
+
   const tableHead = (
     <thead>
       <tr>
@@ -236,6 +263,68 @@ export default async function InboxPage({
     </thead>
   );
 
+  // Pivot matrix over the first two groupings.
+  const pivot = () => {
+    const [rowDim, colDim] = groups as [Dim, Dim];
+    const primary = groupRows(rows, rowDim);
+    const primaryKeys = orderKeys(primary, rowDim);
+    const colKeys = orderKeys(groupRows(rows, colDim), colDim);
+    return (
+      <div style={{ overflowX: "auto", marginBottom: 18 }}>
+        <table>
+          <thead>
+            <tr>
+              <th>{DIMS.find((d) => d.key === rowDim)!.label} ↓ · {DIMS.find((d) => d.key === colDim)!.label} →</th>
+              {colKeys.map((k) => <th key={k}>{dimLabel(k, colDim)}</th>)}
+              <th style={{ textAlign: "right" }}>Total</th>
+            </tr>
+          </thead>
+          <tbody>
+            {primaryKeys.map((pk) => {
+              const sub = groupRows(primary.get(pk)!, colDim);
+              const rowAgg = aggregate(primary.get(pk)!);
+              return (
+                <tr key={pk}>
+                  <td>{rowDim === "stage" ? <span className={stageClass(pk)}>{pk}</span> : <span style={{ fontWeight: 600 }}>{dimLabel(pk, rowDim)}</span>}</td>
+                  {colKeys.map((ck) => {
+                    const cell = sub.get(ck);
+                    if (!cell) return <td key={ck} className="mono" style={{ color: "var(--faint)" }}>—</td>;
+                    const a = aggregate(cell);
+                    const cents = a.salesCents || a.quoteCents;
+                    return (
+                      <td key={ck} className="mono">
+                        {a.count}
+                        {cents > 0 && (
+                          <div style={{ fontSize: 11, color: a.salesCents ? "var(--accent)" : "var(--muted)" }}>{dollars(cents)}</div>
+                        )}
+                      </td>
+                    );
+                  })}
+                  <td className="mono" style={{ textAlign: "right", fontWeight: 700 }}>
+                    {rowAgg.count}
+                    {(rowAgg.salesCents || rowAgg.quoteCents) > 0 && (
+                      <div style={{ fontSize: 11, fontWeight: 500, color: rowAgg.salesCents ? "var(--accent)" : "var(--muted)" }}>
+                        {dollars(rowAgg.salesCents || rowAgg.quoteCents)}
+                      </div>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+            <tr style={{ fontWeight: 700 }}>
+              <td>Total</td>
+              {colKeys.map((ck) => {
+                const a = aggregate(rows.filter((r) => dimKey(r, colDim) === ck));
+                return <td key={ck} className="mono">{a.count}</td>;
+              })}
+              <td className="mono" style={{ textAlign: "right" }}>{rows.length}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    );
+  };
+
   return (
     <>
       <div className="page-head">
@@ -246,109 +335,18 @@ export default async function InboxPage({
           </p>
         </div>
         <div className="controls">
-          <ViewControls type={validType ?? ""} by={by} by2={by2} days={days} />
+          <ViewControls groups={groups} days={days} />
         </div>
       </div>
 
       {rows.length === 0 ? (
-        <div className="empty">No leads captured yet{validType ? " for this filter" : ""}.</div>
-      ) : !by || !primary ? (
-        <table>
-          {tableHead}
-          <tbody>{rows.map(leadRow)}</tbody>
-        </table>
+        <div className="empty">No leads captured yet.</div>
       ) : (
         <>
-          {/* Pivot summary — rows = primary dim, columns = secondary dim */}
-          {by2 && (
-            <div style={{ overflowX: "auto", marginBottom: 18 }}>
-              <table>
-                <thead>
-                  <tr>
-                    <th>{DIMS.find((d) => d.key === by)!.label} ↓ · {DIMS.find((d) => d.key === by2)!.label} →</th>
-                    {secondaryKeys.map((k) => <th key={k}>{dimLabel(k, by2)}</th>)}
-                    <th style={{ textAlign: "right" }}>Total</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {primaryKeys.map((pk) => {
-                    const sub = groupRows(primary.get(pk)!, by2);
-                    const rowAgg = aggregate(primary.get(pk)!);
-                    return (
-                      <tr key={pk}>
-                        <td>{by === "stage" ? <span className={stageClass(pk)}>{pk}</span> : <span style={{ fontWeight: 600 }}>{dimLabel(pk, by)}</span>}</td>
-                        {secondaryKeys.map((sk) => {
-                          const cell = sub.get(sk);
-                          if (!cell) return <td key={sk} className="mono" style={{ color: "var(--faint)" }}>—</td>;
-                          const a = aggregate(cell);
-                          const cents = a.salesCents || a.quoteCents;
-                          return (
-                            <td key={sk} className="mono">
-                              {a.count}
-                              {cents > 0 && (
-                                <div style={{ fontSize: 11, color: a.salesCents ? "var(--accent)" : "var(--muted)" }}>{dollars(cents)}</div>
-                              )}
-                            </td>
-                          );
-                        })}
-                        <td className="mono" style={{ textAlign: "right", fontWeight: 700 }}>
-                          {rowAgg.count}
-                          {(rowAgg.salesCents || rowAgg.quoteCents) > 0 && (
-                            <div style={{ fontSize: 11, fontWeight: 500, color: rowAgg.salesCents ? "var(--accent)" : "var(--muted)" }}>
-                              {dollars(rowAgg.salesCents || rowAgg.quoteCents)}
-                            </div>
-                          )}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                  <tr style={{ fontWeight: 700 }}>
-                    <td>Total</td>
-                    {secondaryKeys.map((sk) => {
-                      const a = aggregate(rows.filter((r) => dimKey(r, by2) === sk));
-                      return <td key={sk} className="mono">{a.count}</td>;
-                    })}
-                    <td className="mono" style={{ textAlign: "right" }}>{rows.length}</td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          )}
-
-          {/* Grouped detail */}
+          {groups.length >= 2 && pivot()}
           <table>
             {tableHead}
-            <tbody>
-              {primaryKeys.map((pk) => {
-                const groupLeads = primary.get(pk)!;
-                const a = aggregate(groupLeads);
-                const head = (
-                  <tr key={`g:${pk}`} style={{ background: "var(--panel-2)" }}>
-                    <td colSpan={6}><GroupHeadLabel k={pk} dim={by} a={a} /></td>
-                    <td className="mono" style={{ textAlign: "right" }}><GroupValueSummary a={a} /></td>
-                  </tr>
-                );
-                if (!by2) return [head, ...groupLeads.map(leadRow)];
-                const sub = groupRows(groupLeads, by2);
-                return [
-                  head,
-                  ...secondaryKeys.filter((sk) => sub.has(sk)).flatMap((sk) => {
-                    const subLeads = sub.get(sk)!;
-                    const sa = aggregate(subLeads);
-                    return [
-                      <tr key={`g:${pk}:${sk}`} style={{ background: "var(--panel-2)" }}>
-                        <td colSpan={6} style={{ paddingLeft: 34, fontSize: 12.5 }}>
-                          <span style={{ color: "var(--faint)", marginRight: 7 }}>↳</span>
-                          <GroupHeadLabel k={sk} dim={by2} a={sa} />
-                        </td>
-                        <td className="mono" style={{ textAlign: "right", fontSize: 12.5 }}><GroupValueSummary a={sa} /></td>
-                      </tr>,
-                      ...subLeads.map(leadRow),
-                    ];
-                  }),
-                ];
-              })}
-            </tbody>
+            <tbody>{renderLevel(rows, groups, 0, "g")}</tbody>
           </table>
         </>
       )}

@@ -2,69 +2,72 @@
 
 import { useRouter } from "next/navigation";
 import { TIMEFRAMES } from "@/lib/timeframes";
-import { DIMS, TYPE_FILTERS, type Dim } from "./view";
+import { DIMS, MAX_GROUPS, type Dim } from "./view";
 
-/** Compact type + timeframe + grouping selectors — one row of dropdowns.
- *  Navigation is URL-driven like the rest of the page. */
-export function ViewControls({ type, by, by2, days }: { type: string; by?: Dim; by2?: Dim; days: number }) {
+/** Compact timeframe + grouping controls. Groupings are an editable list:
+ *  each active one is a chip (change via its select, remove via ×) and a
+ *  trailing "+ Group" select adds the next level. URL-driven (?g=a,b&days=N). */
+export function ViewControls({ groups, days }: { groups: Dim[]; days: number }) {
   const router = useRouter();
 
-  const nav = (next: Partial<{ type: string; by: string; by2: string; days: number }>) => {
-    const s = { type, by: by ?? "", by2: by2 ?? "", days, ...next };
+  const nav = (nextGroups: Dim[], nextDays: number = days) => {
     const q = new URLSearchParams();
-    if (s.type) q.set("type", s.type);
-    if (s.by) {
-      q.set("by", s.by);
-      if (s.by2 && s.by2 !== s.by) q.set("by2", s.by2);
-    }
-    if (s.days !== 90) q.set("days", String(s.days));
+    if (nextGroups.length) q.set("g", nextGroups.join(","));
+    if (nextDays !== 90) q.set("days", String(nextDays));
     const qs = q.toString();
     router.push(qs ? `/leads?${qs}` : "/leads");
   };
 
+  const label = (d: Dim) => DIMS.find((x) => x.key === d)!.label;
+  const unused = DIMS.filter((d) => !groups.includes(d.key));
+
   return (
     <>
       <select
-        className={`pill-select${type ? " on" : ""}`}
-        value={type}
-        onChange={(e) => nav({ type: e.target.value })}
-        aria-label="Type"
-      >
-        {TYPE_FILTERS.map((t) => (
-          <option key={t.key} value={t.key}>{t.label}</option>
-        ))}
-      </select>
-      <select
         className={`pill-select${days !== 90 ? " on" : ""}`}
         value={days}
-        onChange={(e) => nav({ days: Number(e.target.value) })}
+        onChange={(e) => nav(groups, Number(e.target.value))}
         aria-label="Timeframe"
       >
         {TIMEFRAMES.map((t) => (
           <option key={t.days} value={t.days}>◷ {t.label}</option>
         ))}
       </select>
-      <select
-        className={`pill-select${by ? " on" : ""}`}
-        value={by ?? ""}
-        onChange={(e) => nav({ by: e.target.value, by2: "" })}
-        aria-label="Group by"
-      >
-        <option value="">No grouping</option>
-        {DIMS.map((d) => (
-          <option key={d.key} value={d.key}>Group: {d.label}</option>
-        ))}
-      </select>
-      {by && (
+
+      {groups.map((g, i) => (
+        <span key={g} className="pill-select on" style={{ display: "inline-flex", alignItems: "center", padding: 0 }}>
+          <select
+            value={g}
+            onChange={(e) => nav(groups.map((x, j) => (j === i ? (e.target.value as Dim) : x)))}
+            aria-label={`Grouping ${i + 1}`}
+            style={{ background: "transparent", border: "none", color: "inherit", font: "inherit", padding: "7px 0 7px 10px", cursor: "pointer" }}
+          >
+            <option value={g}>{label(g)}</option>
+            {unused.map((d) => (
+              <option key={d.key} value={d.key}>{d.label}</option>
+            ))}
+          </select>
+          <button
+            onClick={() => nav(groups.filter((_, j) => j !== i))}
+            aria-label={`Remove ${label(g)} grouping`}
+            title="Remove grouping"
+            style={{ background: "none", border: "none", color: "inherit", cursor: "pointer", fontSize: 14, padding: "0 9px 0 5px", lineHeight: 1 }}
+          >
+            ×
+          </button>
+        </span>
+      ))}
+
+      {groups.length < MAX_GROUPS && (
         <select
-          className={`pill-select${by2 ? " on" : ""}`}
-          value={by2 ?? ""}
-          onChange={(e) => nav({ by2: e.target.value })}
-          aria-label="Then group by"
+          className="pill-select"
+          value=""
+          onChange={(e) => e.target.value && nav([...groups, e.target.value as Dim])}
+          aria-label="Add grouping"
         >
-          <option value="">then: —</option>
-          {DIMS.filter((d) => d.key !== by).map((d) => (
-            <option key={d.key} value={d.key}>then: {d.label}</option>
+          <option value="">+ Group</option>
+          {unused.map((d) => (
+            <option key={d.key} value={d.key}>{d.label}</option>
           ))}
         </select>
       )}
