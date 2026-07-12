@@ -4,6 +4,7 @@ import { db } from "@/lib/db/client";
 import { leads, sources } from "@/lib/db/schema";
 import { dateTime, dollars } from "@/lib/format";
 import { formatPhoneDisplay } from "@/lib/phone";
+import { TIMEFRAMES, pickDays, timeframeLabel } from "@/lib/timeframes";
 import { LeadToggle } from "../lead-toggle";
 
 export const dynamic = "force-dynamic";
@@ -157,20 +158,22 @@ function GroupHeadLabel({ k, dim, a }: { k: string; dim: Dim; a: Agg }) {
 export default async function InboxPage({
   searchParams,
 }: {
-  searchParams: Promise<{ type?: string; by?: string; by2?: string }>;
+  searchParams: Promise<{ type?: string; by?: string; by2?: string; days?: string }>;
 }) {
-  const { type, by: byParam, by2: by2Param } = await searchParams;
+  const { type, by: byParam, by2: by2Param, days: daysParam } = await searchParams;
   const validType = FILTERS.some((f) => f.key === type) ? type : "";
   const isDim = (v?: string): v is Dim => DIMS.some((d) => d.key === v);
   const by = isDim(byParam) ? byParam : undefined;
   const by2 = isDim(by2Param) && by2Param !== by && by ? by2Param : undefined;
-  const since = new Date(Date.now() - 90 * 86_400_000);
+  const days = pickDays(daysParam, 90);
+  const since = new Date(Date.now() - days * 86_400_000);
 
-  const href = (t: string, b?: Dim, b2?: Dim) => {
+  const href = (t: string, b?: Dim, b2?: Dim, d: number = days) => {
     const q = new URLSearchParams();
     if (t) q.set("type", t);
     if (b) q.set("by", b);
     if (b && b2) q.set("by2", b2);
+    if (d !== 90) q.set("days", String(d));
     const qs = q.toString();
     return qs ? `/leads?${qs}` : "/leads";
   };
@@ -264,7 +267,7 @@ export default async function InboxPage({
         <div>
           <h1 className="page-title">Inbox</h1>
           <p className="page-sub">
-            Real leads only — a call appears when the caller requested an estimate · {agg?.total ?? 0} leads · {agg?.quoted ?? 0} quoted · {agg?.won ?? 0} won · last 90 days
+            Real leads only — a call appears when the caller requested an estimate · {agg?.total ?? 0} leads · {agg?.quoted ?? 0} quoted · {agg?.won ?? 0} won · {timeframeLabel(days)}
           </p>
         </div>
         <div className="controls">
@@ -281,6 +284,19 @@ export default async function InboxPage({
         </div>
       </div>
 
+      <div className="controls" style={{ marginBottom: 8 }}>
+        <span className="muted" style={{ fontSize: 12, fontWeight: 600 }}>◷ Timeframe</span>
+        {TIMEFRAMES.map((t) => (
+          <Link
+            key={t.days}
+            href={href(validType ?? "", by, by2, t.days)}
+            className="pill"
+            style={days === t.days ? activePill : undefined}
+          >
+            {t.label}
+          </Link>
+        ))}
+      </div>
       <div className="controls" style={{ marginBottom: by ? 8 : 16 }}>
         <span className="muted" style={{ fontSize: 12, fontWeight: 600 }}>Group by</span>
         <Link href={href(validType ?? "")} className="pill" style={!by ? activePill : undefined}>None</Link>

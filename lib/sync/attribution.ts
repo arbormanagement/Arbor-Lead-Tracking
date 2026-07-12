@@ -27,11 +27,17 @@ import { withSyncRun } from "./run";
  *
  * Reuses the normalized phone_e164 / email_lc columns written by the HCP sync.
  */
-export async function runAttribution({ windowDays = 90 }: { windowDays?: number } = {}) {
+export async function runAttribution({
+  windowDays = 90,
+  // roi_daily is cheap to rebuild (a few rows per day), so it covers the longest
+  // dashboard timeframe — otherwise a lead re-derived late (e.g. an old estimate
+  // approved months after the lead) would never reach its roi_daily date row.
+  roiWindowDays = 365,
+}: { windowDays?: number; roiWindowDays?: number } = {}) {
   return withSyncRun("attribution.run", async () => {
     const matched = await matchLeadsToEstimates(windowDays);
     const touches = await rebuildAttributions();
-    const roiRows = await rebuildRoiDaily(windowDays);
+    const roiRows = await rebuildRoiDaily(roiWindowDays);
     return { qualifiedLeads: matched.qualified, wonLeads: matched.won, attributionTouches: touches, roiRows };
   });
 }
