@@ -170,6 +170,26 @@ export const adSpend = pgTable(
   ],
 );
 
+// Manually-entered monthly spend for channels without an API sync (LSA until its
+// sync lands, GBP, print, yard signs, …) so every channel gets a CPL/ROAS row.
+// One row per (source, month); the ROI rollup spreads the amount evenly across
+// the month's days. `month` is stored as the first of the month.
+export const manualSpend = pgTable(
+  "manual_spend",
+  {
+    id: id(),
+    sourceId: text("source_id")
+      .notNull()
+      .references(() => sources.id),
+    month: date("month").notNull(),
+    amountCents: integer("amount_cents").notNull().default(0),
+    note: text("note"),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [uniqueIndex("manual_spend_source_month_uq").on(t.sourceId, t.month)],
+);
+
 // ── Tracking numbers / DNI ───────────────────────────────────────────────────
 // User-managed number pools (channel buckets for DNI + organizing static numbers).
 // `key` is the stable identifier stored on tracking_numbers.pool.
@@ -381,6 +401,9 @@ export const leads = pgTable(
     // not yet classified. The Leads inbox shows only leads (or non-call types).
     isLead: boolean("is_lead"),
     leadReason: text("lead_reason"), // short why (AI/keyword/manual) for the is_lead call
+    // Caller's self-reported source ("how did you hear about us"), extracted from the
+    // call transcript — shown alongside the DNI-attributed source as a cross-check.
+    selfReportedSource: text("self_reported_source"),
     isLeadManual: boolean("is_lead_manual").notNull().default(false), // human override — auto-classify won't touch it
     isFirstTime: boolean("is_first_time"),
     isDuplicate: boolean("is_duplicate").notNull().default(false),
@@ -419,6 +442,11 @@ export const calls = pgTable(
     transcriptProvider: text("transcript_provider"),
     transcriptConfidence: numeric("transcript_confidence", { precision: 4, scale: 3 }),
     intentLabel: text("intent_label"),
+    // AI one-liner of what the call was about, and the caller's own answer to
+    // "how did you hear about us" (verbatim-ish) — DNI-invisible channels like
+    // referrals/yard signs/truck wraps only ever surface here.
+    summary: text("summary"),
+    selfReportedSource: text("self_reported_source"),
     spamScore: numeric("spam_score", { precision: 4, scale: 3 }),
     voicemail: boolean("voicemail").default(false),
     createdAt: createdAt(),
