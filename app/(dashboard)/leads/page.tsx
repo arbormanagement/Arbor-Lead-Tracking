@@ -4,8 +4,10 @@ import { db } from "@/lib/db/client";
 import { leads, sources } from "@/lib/db/schema";
 import { dateTime, dollars } from "@/lib/format";
 import { formatPhoneDisplay } from "@/lib/phone";
-import { TIMEFRAMES, pickDays, timeframeLabel } from "@/lib/timeframes";
+import { pickDays, timeframeLabel } from "@/lib/timeframes";
 import { LeadToggle } from "../lead-toggle";
+import { ViewControls } from "./view-controls";
+import { DIMS, type Dim } from "./view";
 
 export const dynamic = "force-dynamic";
 
@@ -33,14 +35,6 @@ function stageClass(status: string): string {
 }
 
 // ── Grouping / pivot ──────────────────────────────────────────────────────────
-type Dim = "source" | "stage" | "type" | "location" | "week";
-const DIMS: Array<{ key: Dim; label: string }> = [
-  { key: "source", label: "Source" },
-  { key: "stage", label: "Stage" },
-  { key: "type", label: "Type" },
-  { key: "location", label: "Location" },
-  { key: "week", label: "Week" },
-];
 const STAGE_ORDER = ["new", "qualified", "quoted", "won", "lost", "cancelled", "spam"];
 
 interface Row {
@@ -281,52 +275,10 @@ export default async function InboxPage({
               {f.label}
             </Link>
           ))}
+          <span style={{ width: 1, height: 22, background: "var(--border)" }} />
+          <ViewControls type={validType ?? ""} by={by} by2={by2} days={days} />
         </div>
       </div>
-
-      <div className="controls" style={{ marginBottom: 8 }}>
-        <span className="muted" style={{ fontSize: 12, fontWeight: 600 }}>◷ Timeframe</span>
-        {TIMEFRAMES.map((t) => (
-          <Link
-            key={t.days}
-            href={href(validType ?? "", by, by2, t.days)}
-            className="pill"
-            style={days === t.days ? activePill : undefined}
-          >
-            {t.label}
-          </Link>
-        ))}
-      </div>
-      <div className="controls" style={{ marginBottom: by ? 8 : 16 }}>
-        <span className="muted" style={{ fontSize: 12, fontWeight: 600 }}>Group by</span>
-        <Link href={href(validType ?? "")} className="pill" style={!by ? activePill : undefined}>None</Link>
-        {DIMS.map((d) => (
-          <Link
-            key={d.key}
-            href={href(validType ?? "", d.key, by2 === d.key ? undefined : by2)}
-            className="pill"
-            style={by === d.key ? activePill : undefined}
-          >
-            {d.label}
-          </Link>
-        ))}
-      </div>
-      {by && (
-        <div className="controls" style={{ marginBottom: 16 }}>
-          <span className="muted" style={{ fontSize: 12, fontWeight: 600 }}>then by</span>
-          <Link href={href(validType ?? "", by)} className="pill" style={!by2 ? activePill : undefined}>None</Link>
-          {DIMS.filter((d) => d.key !== by).map((d) => (
-            <Link
-              key={d.key}
-              href={href(validType ?? "", by, d.key)}
-              className="pill"
-              style={by2 === d.key ? activePill : undefined}
-            >
-              {d.label}
-            </Link>
-          ))}
-        </div>
-      )}
 
       {rows.length === 0 ? (
         <div className="empty">No leads captured yet{validType ? " for this filter" : ""}.</div>
