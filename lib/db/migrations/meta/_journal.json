@@ -99,6 +99,13 @@
       "when": 1783793868706,
       "tag": "0013_furry_wind_dancer",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1783897811252,
+      "tag": "0014_famous_valkyrie",
+      "breakpoints": true
     }
   ]
 }

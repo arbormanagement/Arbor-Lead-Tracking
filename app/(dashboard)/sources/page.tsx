@@ -4,14 +4,17 @@ import Link from "next/link";
 import { db } from "@/lib/db/client";
 import { calls, leads, roiDaily, sources, trackingNumbers } from "@/lib/db/schema";
 import { dollars } from "@/lib/format";
+import { TIMEFRAMES, pickDays, timeframeLabel } from "@/lib/timeframes";
 import { FormsClient } from "../settings/facebook-forms/forms-client";
 
 export const dynamic = "force-dynamic";
 
 const SRC_HUES = ["#2ea043", "#4c8dff", "#facc15", "#a371f7", "#e08a4c", "#8b98a5"];
 
-export default async function SourcesPage() {
-  const since = new Date(Date.now() - 30 * 86_400_000).toISOString().slice(0, 10);
+export default async function SourcesPage({ searchParams }: { searchParams: Promise<{ days?: string }> }) {
+  const { days: daysParam } = await searchParams;
+  const days = pickDays(daysParam, 30);
+  const since = new Date(Date.now() - days * 86_400_000).toISOString().slice(0, 10);
 
   // Performance by source (30d).
   const rows = await db
@@ -76,9 +79,21 @@ export default async function SourcesPage() {
       <div className="page-head">
         <div>
           <h1 className="page-title">Sources</h1>
-          <p className="page-sub">Where leads come from, how they perform, and which channels feed the inbox · last 30 days</p>
+          <p className="page-sub">Where leads come from, how they perform, and which channels feed the inbox · {timeframeLabel(days)}</p>
         </div>
-        <div className="controls"><span className="pill">◷ Last 30 days ▾</span></div>
+        <div className="controls">
+          <span className="muted" style={{ fontSize: 12, fontWeight: 600 }}>◷</span>
+          {TIMEFRAMES.map((t) => (
+            <Link
+              key={t.days}
+              href={t.days === 30 ? "/sources" : `/sources?days=${t.days}`}
+              className="pill"
+              style={days === t.days ? { color: "var(--accent)", borderColor: "var(--accent-line)", background: "var(--accent-soft)" } : undefined}
+            >
+              {t.label}
+            </Link>
+          ))}
+        </div>
       </div>
 
       {/* Performance by source */}

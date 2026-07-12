@@ -156,6 +156,8 @@ tbody tr:hover { background: var(--panel-2); }
 .btn.solid:hover { background: var(--accent-press); }
 .btn.ghost { background: transparent; }
 .pill { background: var(--panel); border: 1px solid var(--border); color: var(--muted); border-radius: var(--radius-sm); padding: 7px 12px; font-size: 12.5px; display: inline-flex; align-items: center; gap: 7px; cursor: pointer; }
+.pill-select { background: var(--panel); border: 1px solid var(--border); color: var(--muted); border-radius: var(--radius-sm); padding: 7px 10px; font-size: 12.5px; font-weight: 500; cursor: pointer; color-scheme: dark; }
+.pill-select.on { color: var(--accent); border-color: var(--accent-line); background: var(--accent-soft); }
 .controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 input, select, textarea { font: inherit; }
 

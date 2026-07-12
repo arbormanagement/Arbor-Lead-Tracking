@@ -29,11 +29,17 @@ import { withSyncRun } from "./run";
  *
  * Reuses the normalized phone_e164 / email_lc columns written by the HCP sync.
  */
-export async function runAttribution({ windowDays = 90 }: { windowDays?: number } = {}) {
+export async function runAttribution({
+  windowDays = 90,
+  // roi_daily is cheap to rebuild (a few rows per day), so it covers the longest
+  // dashboard timeframe — otherwise a lead re-derived late (e.g. an old estimate
+  // approved months after the lead) would never reach its roi_daily date row.
+  roiWindowDays = 365,
+}: { windowDays?: number; roiWindowDays?: number } = {}) {
   return withSyncRun("attribution.run", async () => {
     const matched = await matchLeadsToEstimates(windowDays);
     const touches = await rebuildAttributions();
-    const roiRows = await rebuildRoiDaily(windowDays);
+    const roiRows = await rebuildRoiDaily(roiWindowDays);
     return { qualifiedLeads: matched.qualified, wonLeads: matched.won, attributionTouches: touches, roiRows };
   });
 }
@@ -54,17 +60,41 @@ export async function runAttribution({ windowDays = 90 }: { windowDays?: number 
 async function matchLeadsToEstimates(windowDays: number): Promise<{ qualified: number; won: number }> {
   const model = await getSetting<string>("attribution_model", "last_touch");
   const customerWindowDays = await getSetting<number>("customer_window_days", 90);
-  // Clean rebuild: clear prior estimate links/values and reset the auto statuses.
-  await db
-    .update(leads)
-    .set({ hcpEstimateId: null, salesValueCents: null, quoteValueCents: null })
-    .where(eq(leads.isSpam, false));
+  const lookback = new Date(Date.now() - (windowDays + 30) * 86_400_000);
+
+  // Estimates worth (re)deriving from: recently created, OR changed in HCP
+  // recently no matter how old (late approval, cancellation, price edit —
+  // updated_at_hcp is HCP's own change stamp, refreshed by the HCP sync).
+  const scannedEstimates = or(
+    gte(hcpEstimates.createdAtHcp, lookback),
+    gte(hcpEstimates.updatedAtHcp, lookback),
+  );
+
+  // Clean rebuild — but only what the estimate scan below can re-derive:
+  // recent leads, plus older leads whose linked estimate just changed. Anything
+  // else keeps its last matched stage/value as frozen history rather than being
+  // wiped and never re-matched.
+  const resettable = and(
+    eq(leads.isSpam, false),
+    or(
+      gte(leads.occurredAt, lookback),
+      inArray(
+        leads.hcpEstimateId,
+        db.select({ id: hcpEstimates.id }).from(hcpEstimates).where(scannedEstimates),
+      ),
+    ),
+  );
+  // Status reset must run first — clearing hcp_estimate_id would break the
+  // linked-estimate arm of `resettable` for the second statement.
   await db
     .update(leads)
     .set({ status: "new" })
-    .where(and(eq(leads.isSpam, false), inArray(leads.status, ["won", "qualified", "quoted", "lost", "cancelled"])));
+    .where(and(resettable, inArray(leads.status, ["won", "qualified", "quoted", "lost", "cancelled"])));
+  await db
+    .update(leads)
+    .set({ hcpEstimateId: null, salesValueCents: null, quoteValueCents: null })
+    .where(resettable);
 
-  const lookback = new Date(Date.now() - (windowDays + 30) * 86_400_000);
   // Every estimate (created), won first so a won estimate claims its lead before a
   // merely-created one does.
   const estRows = await db
@@ -82,7 +112,7 @@ async function matchLeadsToEstimates(windowDays: number): Promise<{ qualified: n
       custEmail: hcpEstimates.customerEmailLc,
     })
     .from(hcpEstimates)
-    .where(gte(hcpEstimates.createdAtHcp, lookback))
+    .where(scannedEstimates)
     .orderBy(desc(hcpEstimates.won), desc(hcpEstimates.createdAtHcp));
 
   const claimedLeads = new Set<string>();
@@ -102,7 +132,11 @@ async function matchLeadsToEstimates(windowDays: number): Promise<{ qualified: n
       Boolean,
     ) as string[];
 
-    const windowStart = new Date(estDate.getTime() - windowDays * 86_400_000);
+    // Search back from the estimate's creation (the lead precedes the estimate),
+    // not from a possibly much-later approval — a late approval must still be
+    // able to re-claim the original lead.
+    const anchor = est.createdAtHcp && est.createdAtHcp < estDate ? est.createdAtHcp : estDate;
+    const windowStart = new Date(anchor.getTime() - windowDays * 86_400_000);
     const contactMatch =
       est.custPhone && est.custEmail
         ? or(eq(leads.phoneE164, est.custPhone), eq(leads.emailLc, est.custEmail))
