@@ -1,5 +1,4 @@
 import { and, desc, eq, gte, ne, or, sql } from "drizzle-orm";
-import Link from "next/link";
 import { db } from "@/lib/db/client";
 import { leads, sources } from "@/lib/db/schema";
 import { dateTime, dollars } from "@/lib/format";
@@ -7,7 +6,7 @@ import { formatPhoneDisplay } from "@/lib/phone";
 import { pickDays, timeframeLabel } from "@/lib/timeframes";
 import { LeadToggle } from "../lead-toggle";
 import { ViewControls } from "./view-controls";
-import { DIMS, type Dim } from "./view";
+import { DIMS, TYPE_FILTERS, type Dim } from "./view";
 
 export const dynamic = "force-dynamic";
 
@@ -18,13 +17,6 @@ const TYPE_META: Record<string, { ic: string; label: string }> = {
   lsa: { ic: "◎", label: "LSA" },
   manual: { ic: "✎", label: "Manual" },
 };
-const FILTERS = [
-  { key: "", label: "All" },
-  { key: "call", label: "Calls" },
-  { key: "web_form", label: "Forms" },
-  { key: "facebook_leadgen", label: "Facebook" },
-];
-
 function stageClass(status: string): string {
   if (status === "won") return "badge win";
   if (status === "quoted") return "badge info";
@@ -155,23 +147,12 @@ export default async function InboxPage({
   searchParams: Promise<{ type?: string; by?: string; by2?: string; days?: string }>;
 }) {
   const { type, by: byParam, by2: by2Param, days: daysParam } = await searchParams;
-  const validType = FILTERS.some((f) => f.key === type) ? type : "";
+  const validType = TYPE_FILTERS.some((f) => f.key === type) ? type : "";
   const isDim = (v?: string): v is Dim => DIMS.some((d) => d.key === v);
   const by = isDim(byParam) ? byParam : undefined;
   const by2 = isDim(by2Param) && by2Param !== by && by ? by2Param : undefined;
   const days = pickDays(daysParam, 90);
   const since = new Date(Date.now() - days * 86_400_000);
-
-  const href = (t: string, b?: Dim, b2?: Dim, d: number = days) => {
-    const q = new URLSearchParams();
-    if (t) q.set("type", t);
-    if (b) q.set("by", b);
-    if (b && b2) q.set("by2", b2);
-    if (d !== 90) q.set("days", String(d));
-    const qs = q.toString();
-    return qs ? `/leads?${qs}` : "/leads";
-  };
-  const activePill = { color: "var(--accent)", borderColor: "var(--accent-line)", background: "var(--accent-soft)" } as const;
 
   // A call only counts as a lead once classified (caller requested an estimate);
   // forms/FB/etc. are inherently leads. So the inbox = non-call types OR lead-calls.
@@ -265,17 +246,6 @@ export default async function InboxPage({
           </p>
         </div>
         <div className="controls">
-          {FILTERS.map((f) => (
-            <Link
-              key={f.key}
-              href={href(f.key, by, by2)}
-              className="pill"
-              style={validType === f.key ? activePill : undefined}
-            >
-              {f.label}
-            </Link>
-          ))}
-          <span style={{ width: 1, height: 22, background: "var(--border)" }} />
           <ViewControls type={validType ?? ""} by={by} by2={by2} days={days} />
         </div>
       </div>

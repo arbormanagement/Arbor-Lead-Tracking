@@ -2,17 +2,17 @@
 
 import { useRouter } from "next/navigation";
 import { TIMEFRAMES } from "@/lib/timeframes";
-import { DIMS, type Dim } from "./view";
+import { DIMS, TYPE_FILTERS, type Dim } from "./view";
 
-/** Compact timeframe + grouping selectors — one row of dropdowns instead of
- *  stacked pill rows. Navigation is URL-driven like the rest of the page. */
+/** Compact type + timeframe + grouping selectors — one row of dropdowns.
+ *  Navigation is URL-driven like the rest of the page. */
 export function ViewControls({ type, by, by2, days }: { type: string; by?: Dim; by2?: Dim; days: number }) {
   const router = useRouter();
 
-  const nav = (next: Partial<{ by: string; by2: string; days: number }>) => {
-    const s = { by: by ?? "", by2: by2 ?? "", days, ...next };
+  const nav = (next: Partial<{ type: string; by: string; by2: string; days: number }>) => {
+    const s = { type, by: by ?? "", by2: by2 ?? "", days, ...next };
     const q = new URLSearchParams();
-    if (type) q.set("type", type);
+    if (s.type) q.set("type", s.type);
     if (s.by) {
       q.set("by", s.by);
       if (s.by2 && s.by2 !== s.by) q.set("by2", s.by2);
@@ -24,6 +24,16 @@ export function ViewControls({ type, by, by2, days }: { type: string; by?: Dim; 
 
   return (
     <>
+      <select
+        className={`pill-select${type ? " on" : ""}`}
+        value={type}
+        onChange={(e) => nav({ type: e.target.value })}
+        aria-label="Type"
+      >
+        {TYPE_FILTERS.map((t) => (
+          <option key={t.key} value={t.key}>{t.label}</option>
+        ))}
+      </select>
       <select
         className={`pill-select${days !== 90 ? " on" : ""}`}
         value={days}
