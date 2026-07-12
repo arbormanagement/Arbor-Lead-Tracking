@@ -43,20 +43,38 @@ export async function runAttribution({ windowDays = 90 }: { windowDays?: number 
 async function matchLeadsToEstimates(windowDays: number): Promise<{ qualified: number; won: number }> {
   const lookback = new Date(Date.now() - (windowDays + 30) * 86_400_000);
 
-  // Clean rebuild — but only within the window the estimate scan below can
-  // re-derive. A lead older than the lookback can never be re-matched this run,
-  // so clearing it would wipe its stage/value permanently; instead those keep
-  // their last matched state as frozen history. (Leads inside the window still
-  // fully re-derive, so cancellations/approval changes in HCP propagate.)
-  const resettable = and(eq(leads.isSpam, false), gte(leads.occurredAt, lookback));
-  await db
-    .update(leads)
-    .set({ hcpEstimateId: null, salesValueCents: null, quoteValueCents: null })
-    .where(resettable);
+  // Estimates worth (re)deriving from: recently created, OR changed in HCP
+  // recently no matter how old (late approval, cancellation, price edit —
+  // updated_at_hcp is HCP's own change stamp, refreshed by the HCP sync).
+  const scannedEstimates = or(
+    gte(hcpEstimates.createdAtHcp, lookback),
+    gte(hcpEstimates.updatedAtHcp, lookback),
+  );
+
+  // Clean rebuild — but only what the estimate scan below can re-derive:
+  // recent leads, plus older leads whose linked estimate just changed. Anything
+  // else keeps its last matched stage/value as frozen history rather than being
+  // wiped and never re-matched.
+  const resettable = and(
+    eq(leads.isSpam, false),
+    or(
+      gte(leads.occurredAt, lookback),
+      inArray(
+        leads.hcpEstimateId,
+        db.select({ id: hcpEstimates.id }).from(hcpEstimates).where(scannedEstimates),
+      ),
+    ),
+  );
+  // Status reset must run first — clearing hcp_estimate_id would break the
+  // linked-estimate arm of `resettable` for the second statement.
   await db
     .update(leads)
     .set({ status: "new" })
     .where(and(resettable, inArray(leads.status, ["won", "qualified", "quoted", "lost", "cancelled"])));
+  await db
+    .update(leads)
+    .set({ hcpEstimateId: null, salesValueCents: null, quoteValueCents: null })
+    .where(resettable);
   // Every estimate (created), won first so a won estimate claims its lead before a
   // merely-created one does.
   const estRows = await db
@@ -73,7 +91,7 @@ async function matchLeadsToEstimates(windowDays: number): Promise<{ qualified: n
       custEmail: hcpEstimates.customerEmailLc,
     })
     .from(hcpEstimates)
-    .where(gte(hcpEstimates.createdAtHcp, lookback))
+    .where(scannedEstimates)
     .orderBy(desc(hcpEstimates.won), desc(hcpEstimates.createdAtHcp));
 
   const claimedLeads = new Set<string>();
@@ -86,7 +104,11 @@ async function matchLeadsToEstimates(windowDays: number): Promise<{ qualified: n
     const estDate = est.won ? est.approvedAtHcp ?? est.createdAtHcp : est.createdAtHcp;
     if (!estDate) continue;
 
-    const windowStart = new Date(estDate.getTime() - windowDays * 86_400_000);
+    // Search back from the estimate's creation (the lead precedes the estimate),
+    // not from a possibly much-later approval — a late approval must still be
+    // able to re-claim the original lead.
+    const anchor = est.createdAtHcp && est.createdAtHcp < estDate ? est.createdAtHcp : estDate;
+    const windowStart = new Date(anchor.getTime() - windowDays * 86_400_000);
     const contactMatch =
       est.custPhone && est.custEmail
         ? or(eq(leads.phoneE164, est.custPhone), eq(leads.emailLc, est.custEmail))

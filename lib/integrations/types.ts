@@ -64,6 +64,8 @@ export interface HcpEstimateDTO {
   address?: unknown;
   createdAtHcp?: Date | null;
   approvedAtHcp?: Date | null;
+  /** HCP's own updated_at — bumps on any change (approval, cancel, price edit). */
+  updatedAtHcp?: Date | null;
   raw?: unknown;
 }
 

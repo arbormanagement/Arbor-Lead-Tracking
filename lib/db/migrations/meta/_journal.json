@@ -85,6 +85,13 @@
       "when": 1783634317496,
       "tag": "0011_square_piledriver",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1783881765629,
+      "tag": "0012_complex_black_panther",
+      "breakpoints": true
     }
   ]
 }

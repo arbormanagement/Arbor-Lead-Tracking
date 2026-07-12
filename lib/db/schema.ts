@@ -324,6 +324,9 @@ export const hcpEstimates = pgTable(
     location: locationEnum("location").default("unknown"),
     createdAtHcp: timestamp("created_at_hcp", { withTimezone: true }),
     approvedAtHcp: timestamp("approved_at_hcp", { withTimezone: true }),
+    // HCP's own updated_at — lets attribution re-derive leads whose estimate
+    // changed long after creation (late approval, cancellation, price edit).
+    updatedAtHcp: timestamp("updated_at_hcp", { withTimezone: true }),
     raw: jsonb("raw"),
     syncedAt: timestamp("synced_at", { withTimezone: true }).notNull().defaultNow(),
     createdAt: createdAt(),

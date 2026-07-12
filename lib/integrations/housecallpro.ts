@@ -198,6 +198,7 @@ function mapEstimate(e: Record<string, unknown>): HcpEstimateDTO {
     address: e.address ?? null,
     createdAtHcp: parseDate(e.created_at),
     approvedAtHcp: won ? parseDate(e.updated_at ?? e.created_at) : null,
+    updatedAtHcp: parseDate(e.updated_at ?? e.created_at),
     raw: e,
   };
 }
