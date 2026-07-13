@@ -8,6 +8,7 @@
     { "path": "/api/cron/fbleads", "schedule": "9,24,39,54 * * * *" },
     { "path": "/api/cron/conversions", "schedule": "37 * * * *" },
     { "path": "/api/cron/spend", "schedule": "37 7 * * *" },
-    { "path": "/api/cron/lsa", "schedule": "47 7 * * *" }
+    { "path": "/api/cron/lsa", "schedule": "47 7 * * *" },
+    { "path": "/api/cron/twilio-fallback", "schedule": "52 * * * *" }
   ]
 }

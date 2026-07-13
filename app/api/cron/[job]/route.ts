@@ -7,6 +7,7 @@ import { syncLsaLeads } from "@/lib/sync/lsa";
 import { syncConversions } from "@/lib/sync/conversions";
 import { syncFacebookLeads } from "@/lib/sync/facebook-leads";
 import { releaseExpired } from "@/lib/dni/assign";
+import { backfillVoiceFallback } from "@/lib/twilio/numbers";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -43,6 +44,10 @@ export async function GET(req: Request, { params }: { params: Promise<{ job: str
         return Response.json({ ok: true, job, result: await syncConversions({ sinceDays: 60 }) });
       case "fbleads":
         return Response.json({ ok: true, job, result: await syncFacebookLeads() });
+      case "twilio-fallback":
+        // Self-healing: re-assert every tracking number's Twilio voice fallback
+        // (outage protection) so no number can drift or be missed by a manual path.
+        return Response.json({ ok: true, job, result: await backfillVoiceFallback() });
       // Convenience aggregates so a single daily cron can do the revenue→ROI chain.
       case "revenue": {
         const hcp = await syncHcp();

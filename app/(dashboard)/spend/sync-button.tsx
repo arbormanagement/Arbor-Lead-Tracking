@@ -4,21 +4,22 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 
 /**
- * Manual trigger for the data sync (HCP → spend → attribution). Useful before the
- * Inngest cron is wired at deploy, and for validating credentials as they land.
+ * Manual trigger for the data sync (HCP → spend → attribution) — same chain the
+ * hourly crons run, for when you don't want to wait. One-time maintenance jobs
+ * (historical backfill `/api/sync/all?days=N`, Twilio fallback
+ * `/api/sync/twilio-fallback`) stay available as endpoints; the fallback also
+ * self-heals via its hourly cron, so neither needs a button here.
  */
 export function SyncButton() {
   const router = useRouter();
   const [state, setState] = useState<"idle" | "running" | "done" | "error">("idle");
   const [msg, setMsg] = useState("");
-  const [busy, setBusy] = useState<null | "all" | "backfill" | "fallback">(null);
 
-  async function post(url: string, label: "all" | "backfill" | "fallback") {
+  async function run() {
     setState("running");
-    setBusy(label);
     setMsg("");
     try {
-      const res = await fetch(url, { method: "POST" });
+      const res = await fetch("/api/sync/all", { method: "POST" });
       const body = await res.json();
       if (!res.ok || body.ok === false) throw new Error(body.error || "sync failed");
       setState("done");
@@ -27,8 +28,6 @@ export function SyncButton() {
     } catch (e) {
       setState("error");
       setMsg(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusy(null);
     }
   }
 
@@ -41,36 +40,11 @@ export function SyncButton() {
     fontWeight: 700,
     cursor: "pointer",
   } as const;
-  const ghost = {
-    padding: "8px 14px",
-    borderRadius: 8,
-    border: "1px solid var(--border)",
-    background: "transparent",
-    color: "var(--text)",
-    fontWeight: 600,
-    cursor: "pointer",
-  } as const;
 
   return (
     <div style={{ marginBottom: 16, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-      <button onClick={() => post("/api/sync/all", "all")} disabled={state === "running"} style={primary}>
-        {busy === "all" ? "Syncing…" : "Run sync now"}
-      </button>
-      <button
-        onClick={() => post("/api/sync/all?days=120", "backfill")}
-        disabled={state === "running"}
-        style={ghost}
-        title="One-time: re-pull 120 days of HousecallPro estimates + Facebook leads (full attribution lookback), then re-run matching/attribution — reclassifies estimates under the current won/lost/open rules"
-      >
-        {busy === "backfill" ? "Backfilling…" : "Backfill & reclassify (120d)"}
-      </button>
-      <button
-        onClick={() => post("/api/sync/twilio-fallback", "fallback")}
-        disabled={state === "running"}
-        style={ghost}
-        title="Point every tracking number's Twilio voice fallback at its forward destination, so calls still connect (untracked) even if the app is completely unreachable. One-time for existing numbers; new numbers get it automatically."
-      >
-        {busy === "fallback" ? "Protecting…" : "Set call fallback"}
+      <button onClick={run} disabled={state === "running"} style={primary}>
+        {state === "running" ? "Syncing…" : "Run sync now"}
       </button>
       {msg && (
         <span style={{ color: state === "error" ? "var(--danger)" : "var(--muted)", fontSize: 12 }}>{msg}</span>
