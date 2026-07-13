@@ -16,7 +16,14 @@ const NAV: Array<{ href: string; label: string; ic: string; section?: string }> 
 
 export function SidebarNav() {
   const path = usePathname();
-  const isActive = (href: string) => (href === "/" ? path === "/" : path === href || path.startsWith(href + "/"));
+
+  // Most-specific match wins: a nav item is active only if it's the longest
+  // href that prefixes the current path. Without this, /settings/integrations
+  // would light up both "Settings" (via startsWith) and "Integrations".
+  const matchLen = (href: string) =>
+    href === "/" ? (path === "/" ? 1 : -1) : path === href || path.startsWith(href + "/") ? href.length : -1;
+  const best = Math.max(...NAV.map((n) => matchLen(n.href)));
+  const isActive = (href: string) => best >= 0 && matchLen(href) === best;
 
   return (
     <nav className="nav">
