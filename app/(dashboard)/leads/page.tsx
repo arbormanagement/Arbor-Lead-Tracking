@@ -1,7 +1,7 @@
 import { and, desc, eq, gte, ne, or, sql } from "drizzle-orm";
 import type { ReactNode } from "react";
 import { db } from "@/lib/db/client";
-import { campaigns, leads, sources } from "@/lib/db/schema";
+import { campaigns, leads, roiDaily, sources } from "@/lib/db/schema";
 import { dateTime, dollars } from "@/lib/format";
 import { formatPhoneDisplay } from "@/lib/phone";
 import { pickDays, timeframeLabel } from "@/lib/timeframes";
@@ -39,12 +39,16 @@ interface Row {
   name: string | null;
   phone: string | null;
   email: string | null;
+  sourceId: string | null;
   sourceKey: string | null;
   campaignName: string | null;
   selfReportedSource: string | null;
   location: string | null;
   sales: number | null;
   quote: number | null;
+  /** Allocated acquisition cost: the source's spend for the lead's calendar month
+   *  divided by that source's lead count that month (null when unknowable). */
+  costCents: number | null;
   occurredAt: Date;
   isSpam: boolean | null;
   isLead: boolean | null;
@@ -57,16 +61,18 @@ interface Agg {
   wonCount: number;
   quoteCents: number;
   salesCents: number;
+  costCents: number;
 }
 
 function aggregate(rows: Row[]): Agg {
-  const a: Agg = { count: 0, quotedCount: 0, wonCount: 0, quoteCents: 0, salesCents: 0 };
+  const a: Agg = { count: 0, quotedCount: 0, wonCount: 0, quoteCents: 0, salesCents: 0, costCents: 0 };
   for (const r of rows) {
     a.count++;
     if ((r.quote ?? 0) > 0) a.quotedCount++;
     if (r.status === "won") a.wonCount++;
     a.quoteCents += r.quote ?? 0;
     a.salesCents += r.sales ?? 0;
+    a.costCents += r.costCents ?? 0;
   }
   return a;
 }
@@ -149,6 +155,7 @@ function GroupHeadLabel({ k, dim, a }: { k: string; dim: Dim; a: Agg }) {
         {a.count} {a.count === 1 ? "lead" : "leads"}
         {a.quotedCount > 0 && ` · ${a.quotedCount} quoted`}
         {a.wonCount > 0 && ` · ${a.wonCount} won`}
+        {a.costCents > 0 && ` · ${dollars(a.costCents)} ad cost`}
       </span>
     </>
   );
@@ -168,7 +175,7 @@ export default async function InboxPage({
   // forms/FB/etc. are inherently leads. So the inbox = non-call types OR lead-calls.
   const leadOnly = or(ne(leads.type, "call"), eq(leads.isLead, true));
 
-  const rows: Row[] = await db
+  const fetched = await db
     .select({
       id: leads.id,
       type: leads.type,
@@ -176,6 +183,7 @@ export default async function InboxPage({
       name: leads.name,
       phone: leads.phoneE164,
       email: leads.emailLc,
+      sourceId: leads.sourceId,
       sourceKey: sources.key,
       campaignName: campaigns.name,
       selfReportedSource: leads.selfReportedSource,
@@ -194,6 +202,38 @@ export default async function InboxPage({
     .orderBy(desc(leads.occurredAt))
     // Grouped views aggregate, so they get the full window; the flat list stays short.
     .limit(groups.length ? 1000 : 200);
+
+  // Allocated cost per lead: (source's spend that calendar month) ÷ (that source's
+  // leads that month), both from roi_daily — which already folds in synced ad spend
+  // AND manual monthly spend. Ad platforms bill per click/impression, not per lead,
+  // so a per-lead price can only ever be an allocation; month × source is the
+  // stable, WhatConverts-style cut.
+  const monthExpr = sql<string>`left(${roiDaily.date}::text, 7)`;
+  const sinceMonth = since.toISOString().slice(0, 7) + "-01";
+  const costRows = await db
+    .select({
+      sourceId: roiDaily.sourceId,
+      month: monthExpr,
+      spend: sql<number>`coalesce(sum(${roiDaily.spendCents}),0)::int`,
+      leadsCount: sql<number>`coalesce(sum(${roiDaily.leadsCount}),0)::int`,
+    })
+    .from(roiDaily)
+    .where(gte(roiDaily.date, sinceMonth))
+    .groupBy(roiDaily.sourceId, monthExpr);
+
+  const cplBySourceMonth = new Map<string, number>();
+  for (const c of costRows) {
+    if (c.sourceId && c.spend > 0 && c.leadsCount > 0) {
+      cplBySourceMonth.set(`${c.sourceId}|${c.month}`, Math.round(c.spend / c.leadsCount));
+    }
+  }
+  const rows: Row[] = fetched.map((r) => ({
+    ...r,
+    costCents:
+      !r.isSpam && r.sourceId
+        ? cplBySourceMonth.get(`${r.sourceId}|${r.occurredAt.toISOString().slice(0, 7)}`) ?? null
+        : null,
+  }));
 
   const [agg] = await db
     .select({
@@ -226,6 +266,9 @@ export default async function InboxPage({
         </td>
         <td><span className={r.isSpam ? "badge bad" : stageClass(r.status)}>{r.isSpam ? "spam" : r.status}</span></td>
         <td>{r.type === "call" ? <LeadToggle leadId={r.id} isLead={r.isLead} manual={r.isLeadManual ?? false} /> : <span className="muted" style={{ fontSize: 12 }}>✓</span>}</td>
+        <td className="mono muted" style={{ textAlign: "right" }} title="Allocated: source's spend that month ÷ its leads that month">
+          {r.costCents != null ? dollars(r.costCents) : "—"}
+        </td>
         <td className="mono" style={{ textAlign: "right" }}>
           {r.sales ? <span style={{ color: "var(--accent)", fontWeight: 700 }}>{dollars(r.sales)}</span>
             : r.quote ? <span className="muted">{dollars(r.quote)} quoted</span> : "—"}
@@ -245,7 +288,7 @@ export default async function InboxPage({
       const rowKey = `${keyPrefix}/${dim}:${k}`;
       return [
         <tr key={rowKey} style={{ background: "var(--panel-2)" }}>
-          <td colSpan={6} style={depth > 0 ? { paddingLeft: 16 + depth * 18, fontSize: 12.5 } : undefined}>
+          <td colSpan={7} style={depth > 0 ? { paddingLeft: 16 + depth * 18, fontSize: 12.5 } : undefined}>
             {depth > 0 && <span style={{ color: "var(--faint)", marginRight: 7 }}>↳</span>}
             <GroupHeadLabel k={k} dim={dim} a={a} />
           </td>
@@ -267,6 +310,7 @@ export default async function InboxPage({
         <th>Source</th>
         <th>Stage</th>
         <th>Lead?</th>
+        <th style={{ textAlign: "right" }} title="Allocated: source's spend that month ÷ its leads that month">Cost</th>
         <th style={{ textAlign: "right" }}>Value</th>
       </tr>
     </thead>
