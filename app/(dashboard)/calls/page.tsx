@@ -1,4 +1,5 @@
 import { desc, eq, sql } from "drizzle-orm";
+import Link from "next/link";
 import { db } from "@/lib/db/client";
 import { calls, leads } from "@/lib/db/schema";
 import { dateTime, durationLabel } from "@/lib/format";
@@ -77,7 +78,13 @@ export default async function CallsPage() {
               return (
                 <tr key={c.id}>
                   <td className="muted mono" style={{ whiteSpace: "nowrap" }}>{dateTime(c.createdAt)}</td>
-                  <td style={{ fontWeight: 600 }}>{formatPhoneDisplay(c.fromNumber)}</td>
+                  <td style={{ fontWeight: 600 }}>
+                    {c.leadId ? (
+                      <Link href={`/leads/${c.leadId}`} className="rowlink">{formatPhoneDisplay(c.fromNumber)}</Link>
+                    ) : (
+                      formatPhoneDisplay(c.fromNumber)
+                    )}
+                  </td>
                   <td>
                     <span className={c.answered ? "badge win" : voicemail ? "badge warn" : "badge"}>{status}</span>
                     {spam && <span className="badge bad" style={{ marginLeft: 5 }}>spam</span>}
