@@ -11,9 +11,9 @@ export function SyncButton() {
   const router = useRouter();
   const [state, setState] = useState<"idle" | "running" | "done" | "error">("idle");
   const [msg, setMsg] = useState("");
-  const [busy, setBusy] = useState<null | "all" | "backfill">(null);
+  const [busy, setBusy] = useState<null | "all" | "backfill" | "fallback">(null);
 
-  async function post(url: string, label: "all" | "backfill") {
+  async function post(url: string, label: "all" | "backfill" | "fallback") {
     setState("running");
     setBusy(label);
     setMsg("");
@@ -63,6 +63,14 @@ export function SyncButton() {
         title="One-time: re-pull 120 days of HousecallPro estimates + Facebook leads (full attribution lookback), then re-run matching/attribution — reclassifies estimates under the current won/lost/open rules"
       >
         {busy === "backfill" ? "Backfilling…" : "Backfill & reclassify (120d)"}
+      </button>
+      <button
+        onClick={() => post("/api/sync/twilio-fallback", "fallback")}
+        disabled={state === "running"}
+        style={ghost}
+        title="Point every tracking number's Twilio voice fallback at its forward destination, so calls still connect (untracked) even if the app is completely unreachable. One-time for existing numbers; new numbers get it automatically."
+      >
+        {busy === "fallback" ? "Protecting…" : "Set call fallback"}
       </button>
       {msg && (
         <span style={{ color: state === "error" ? "var(--danger)" : "var(--muted)", fontSize: 12 }}>{msg}</span>

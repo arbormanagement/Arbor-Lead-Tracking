@@ -3,6 +3,7 @@ import { db } from "@/lib/db/client";
 import { trackingNumbers } from "@/lib/db/schema";
 import { getTwilioClient, getTwilioConfig } from "./client";
 import { env } from "@/lib/env";
+import { getDefaultForwardNumber } from "@/lib/routing";
 import type { locationEnum, numberStatusEnum } from "@/lib/db/schema";
 
 type Pool = string; // pools.key (user-managed)
@@ -72,6 +73,42 @@ async function webhookBase(): Promise<string> {
 }
 
 /**
+ * Voice fallback: Twilio-hosted TwiML (the "forward" twimlet) that answers and
+ * dials the destination with NO dependency on this app — Twilio invokes it only
+ * when the primary voice webhook errors or is unreachable, so a full app outage
+ * degrades to a plain (untracked) forwarded call instead of a dropped one.
+ */
+function voiceFallbackFor(destination: string): { voiceFallbackUrl: string; voiceFallbackMethod: "GET" } {
+  return {
+    voiceFallbackUrl: `https://twimlets.com/forward?PhoneNumber=${encodeURIComponent(destination)}`,
+    voiceFallbackMethod: "GET",
+  };
+}
+
+/**
+ * Point every active tracking number's voice fallback at its forward destination
+ * (or the account default). Idempotent — safe to re-run after changing routing.
+ */
+export async function backfillVoiceFallback() {
+  const client = await getTwilioClient();
+  const defaultForward = await getDefaultForwardNumber();
+  const rows = await db.select().from(trackingNumbers).where(eq(trackingNumbers.status, "active"));
+
+  let updated = 0;
+  const errors: string[] = [];
+  for (const row of rows) {
+    if (!row.twilioSid) continue;
+    try {
+      await client.incomingPhoneNumbers(row.twilioSid).update(voiceFallbackFor(row.forwardDestination ?? defaultForward));
+      updated++;
+    } catch (err) {
+      errors.push(`${row.phoneNumber}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+  return { numbers: rows.length, updated, errors };
+}
+
+/**
  * Provision (buy) or import a Twilio number into a pool: point its voice +
  * status webhooks at this app and record a `tracking_numbers` row. Recording
  * callbacks are set per-call in the dial TwiML (`lib/twilio/twiml.ts`), not here.
@@ -82,6 +119,7 @@ export async function provisionNumber(opts: ProvisionOpts) {
   const config = {
     voiceUrl: `${base}/voice`,
     voiceMethod: "POST" as const,
+    ...voiceFallbackFor(opts.forwardDestination ?? (await getDefaultForwardNumber())),
     statusCallback: `${base}/status`,
     statusCallbackMethod: "POST" as const,
     friendlyName: opts.friendlyName ?? `arbor:${opts.pool}`,
@@ -175,6 +213,19 @@ export async function updateNumber(
     .set({ ...patch, updatedAt: new Date() })
     .where(eq(trackingNumbers.id, id))
     .returning();
+
+  // Keep the Twilio-side voice fallback pointed at the new forward destination.
+  // Best-effort: the fallback is a safety net, so a Twilio hiccup here must not
+  // fail the routing edit itself.
+  if (row?.twilioSid && patch.forwardDestination !== undefined) {
+    try {
+      const client = await getTwilioClient();
+      const dest = row.forwardDestination ?? (await getDefaultForwardNumber());
+      await client.incomingPhoneNumbers(row.twilioSid).update(voiceFallbackFor(dest));
+    } catch (err) {
+      console.error("[twilio] voice-fallback update failed (routing saved)", err);
+    }
+  }
   return row;
 }
 
