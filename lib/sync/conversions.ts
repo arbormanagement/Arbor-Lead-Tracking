@@ -1,6 +1,6 @@
 import { and, eq, gte, inArray, sql } from "drizzle-orm";
 import { db } from "@/lib/db/client";
-import { conversionExports, leads } from "@/lib/db/schema";
+import { conversionExports, facebookLeads, leads } from "@/lib/db/schema";
 import { getPlatformCreds } from "@/lib/credentials";
 import { googleAds, type ClickConversionInput } from "@/lib/integrations/google-ads";
 import { facebook, type CapiEvent } from "@/lib/integrations/facebook";
@@ -9,11 +9,13 @@ import { withSyncRun } from "./run";
 
 /**
  * conversions.export — closed-loop feedback. Finds qualified/won leads that came
- * from a paid click (gclid → Google Ads, fbclid → Meta) and reports the conversion
- * (with its dollar value) back to the ad platform so bidding can optimize toward
- * won revenue. Only ad-originated leads have a click id, so organic/GBP leads are
- * correctly never uploaded. Idempotent via `conversion_exports` (unique per
- * lead+platform+event); a row only reaches 'sent' once, so retries never double-count.
+ * from a paid click (gclid → Google Ads, fbclid → Meta) OR a Meta lead-gen form
+ * (leadgen_id → Meta CAPI "Conversion Leads" matching — form leads never have a
+ * click id) and reports the conversion (with its dollar value) back to the ad
+ * platform so bidding can optimize toward won revenue. Organic/GBP leads have
+ * neither identifier and are correctly never uploaded. Idempotent via
+ * `conversion_exports` (unique per lead+platform+event); a row only reaches
+ * 'sent' once, so retries never double-count.
  *
  * Gated: each destination runs only when its credentials + targets are configured
  * (Google conversion-action ids, Meta pixel id) — so this no-ops until wired.
@@ -26,7 +28,7 @@ interface Task {
   event: EventKind;
   valueCents: number;
   identifier: string;
-  identifierType: "gclid" | "fbclid";
+  identifierType: "gclid" | "fbclid" | "leadgen_id";
   occurredAt: Date;
   leadType: string;
   phoneE164: string | null;
@@ -60,6 +62,7 @@ export async function syncConversions({ sinceDays = 60, limit = 500 }: { sinceDa
         status: leads.status,
         gclid: leads.gclid,
         fbclid: leads.fbclid,
+        fbLeadgenId: facebookLeads.fbLeadgenId,
         phoneE164: leads.phoneE164,
         emailLc: leads.emailLc,
         quoteValueCents: leads.quoteValueCents,
@@ -67,6 +70,7 @@ export async function syncConversions({ sinceDays = 60, limit = 500 }: { sinceDa
         occurredAt: leads.occurredAt,
       })
       .from(leads)
+      .leftJoin(facebookLeads, eq(facebookLeads.leadId, leads.id))
       .where(
         and(
           inArray(leads.status, ["qualified", "quoted", "won"]),
@@ -97,9 +101,15 @@ export async function syncConversions({ sinceDays = 60, limit = 500 }: { sinceDa
           tasks.push({ ...base, platform: "google", event: e.event, valueCents: e.valueCents, identifier: l.gclid, identifierType: "gclid" });
         }
       }
-      if (facebookOn && l.fbclid) {
+      // Website-click leads match by fbclid; lead-form leads by Meta's leadgen id.
+      const fbId: { identifier: string; identifierType: "fbclid" | "leadgen_id" } | null = l.fbclid
+        ? { identifier: l.fbclid, identifierType: "fbclid" }
+        : l.fbLeadgenId
+          ? { identifier: l.fbLeadgenId, identifierType: "leadgen_id" }
+          : null;
+      if (facebookOn && fbId) {
         for (const e of events) {
-          tasks.push({ ...base, platform: "facebook", event: e.event, valueCents: e.valueCents, identifier: l.fbclid, identifierType: "fbclid" });
+          tasks.push({ ...base, platform: "facebook", event: e.event, valueCents: e.valueCents, ...fbId });
         }
       }
     }
@@ -175,7 +185,8 @@ export async function syncConversions({ sinceDays = 60, limit = 500 }: { sinceDa
             eventId: `${t.leadId}:${t.event}`,
             emailHash: hashEmail(t.emailLc),
             phoneHash: hashPhone(t.phoneE164),
-            fbc: `fb.1.${t.occurredAt.getTime()}.${t.identifier}`,
+            fbc: t.identifierType === "fbclid" ? `fb.1.${t.occurredAt.getTime()}.${t.identifier}` : undefined,
+            leadgenId: t.identifierType === "leadgen_id" ? t.identifier : undefined,
             valueDollars: t.valueCents / 100,
           };
         });
