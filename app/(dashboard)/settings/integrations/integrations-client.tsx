@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 
-interface FieldStatus {
+export interface FieldStatus {
   key: string;
   label: string;
   secret: boolean;
@@ -10,30 +10,20 @@ interface FieldStatus {
   source: "db" | "env" | null;
   last4: string | null;
 }
-interface Field {
+export interface Field {
   key: string;
   label: string;
   secret: boolean;
   placeholder: string;
 }
-interface Platform {
+export interface Platform {
   platform: string;
   label: string;
   fields: Field[];
   status: FieldStatus[];
 }
 
-export function IntegrationsClient({ platforms, canSave }: { platforms: Platform[]; canSave: boolean }) {
-  return (
-    <div style={{ display: "grid", gap: 16 }}>
-      {platforms.map((p) => (
-        <PlatformCard key={p.platform} platform={p} canSave={canSave} />
-      ))}
-    </div>
-  );
-}
-
-function PlatformCard({ platform, canSave }: { platform: Platform; canSave: boolean }) {
+export function PlatformCard({ platform, canSave }: { platform: Platform; canSave: boolean }) {
   const [values, setValues] = useState<Record<string, string>>({});
   const [status, setStatus] = useState<FieldStatus[]>(platform.status);
   const [saving, setSaving] = useState(false);
