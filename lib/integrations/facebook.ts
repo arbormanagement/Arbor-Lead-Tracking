@@ -116,6 +116,14 @@ class FacebookProvider implements SpendProvider {
         em: e.emailHash ? [e.emailHash] : undefined,
         ph: e.phoneHash ? [e.phoneHash] : undefined,
         fbc: e.fbc,
+        // Lead-gen form submissions match by Meta's own lead id (Conversion Leads
+        // / CRM integration) — they have no click id. Integer per the CAPI spec;
+        // fall back to the raw string if it would overflow a JS safe integer.
+        lead_id: e.leadgenId
+          ? Number.isSafeInteger(Number(e.leadgenId))
+            ? Number(e.leadgenId)
+            : e.leadgenId
+          : undefined,
       }),
       custom_data: { value: e.valueDollars, currency: e.currency ?? "USD" },
     }));
@@ -290,7 +298,8 @@ export interface CapiEvent {
   eventId: string; // dedup key
   emailHash?: string | null;
   phoneHash?: string | null;
-  fbc?: string; // fb.1.<ts>.<fbclid>
+  fbc?: string; // fb.1.<ts>.<fbclid> — website-click leads
+  leadgenId?: string; // Meta leadgen id — lead-form leads (no click id exists)
   valueDollars: number;
   currency?: string;
 }
