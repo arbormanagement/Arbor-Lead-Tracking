@@ -7,6 +7,7 @@ import { syncLsaLeads } from "@/lib/sync/lsa";
 import { syncConversions } from "@/lib/sync/conversions";
 import { syncFacebookLeads } from "@/lib/sync/facebook-leads";
 import { releaseExpired } from "@/lib/dni/assign";
+import { backfillVoiceFallback } from "@/lib/twilio/numbers";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -36,6 +37,10 @@ export async function POST(_req: Request, { params }: { params: Promise<{ job: s
       case "reaper":
         await releaseExpired();
         return Response.json({ ok: true, result: "released expired leases" });
+      case "twilio-fallback":
+        // Point every tracking number's Twilio voice fallback at its forward
+        // destination, so calls still connect if the app is ever unreachable.
+        return Response.json({ ok: true, result: await backfillVoiceFallback() });
       case "transcribe":
         return Response.json({ ok: true, result: await syncTranscriptions({ limit: 25 }) });
       case "lsa":
