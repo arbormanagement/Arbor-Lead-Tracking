@@ -23,7 +23,9 @@ const base = () => env.TWILIO_VOICE_WEBHOOK_BASE ?? `${env.APP_BASE_URL}/api/twi
 
 /**
  * Build the inbound-call TwiML: optional recording notice → dial the destination
- * with dual-channel recording and a whisper, then voicemail on no-answer.
+ * with dual-channel recording and a whisper. Voicemail on no-answer is served by
+ * the dial `action` callback (`/api/twilio/status` → `voicemailTwiml`) — TwiML
+ * after a <Dial> with an action URL never executes, so it can't live here.
  *
  * IL/MO are mixed-consent states; we play a recording notice to stay safe.
  */
@@ -59,7 +61,12 @@ export function forwardTwiml(opts: ForwardOptions): string {
     dial.number(opts.destination);
   }
 
-  // Fell through (no answer) — take a voicemail.
+  return vr.toString();
+}
+
+/** Voicemail played when the dial leg didn't connect (no-answer/busy/failed). */
+export function voicemailTwiml(): string {
+  const vr = new VoiceResponse();
   vr.say(
     { voice: "Polly.Joanna" },
     "Sorry, we couldn't connect you. Please leave a message after the tone and we'll call you right back.",
@@ -71,7 +78,6 @@ export function forwardTwiml(opts: ForwardOptions): string {
     recordingStatusCallbackEvent: ["completed"],
   });
   vr.hangup();
-
   return vr.toString();
 }
 
