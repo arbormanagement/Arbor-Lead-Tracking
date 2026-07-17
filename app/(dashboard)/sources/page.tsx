@@ -2,10 +2,9 @@ import { and, desc, eq, gte, isNotNull, ne, or, sql } from "drizzle-orm";
 import type { AnyPgColumn } from "drizzle-orm/pg-core";
 import Link from "next/link";
 import { db } from "@/lib/db/client";
-import { calls, leads, roiDaily, sources, trackingNumbers } from "@/lib/db/schema";
+import { leads, roiDaily, sources } from "@/lib/db/schema";
 import { dollars } from "@/lib/format";
 import { TIMEFRAMES, pickDays, timeframeLabel } from "@/lib/timeframes";
-import { FormsClient } from "../settings/facebook-forms/forms-client";
 
 export const dynamic = "force-dynamic";
 
@@ -64,22 +63,12 @@ export default async function SourcesPage({ searchParams }: { searchParams: Prom
     breakdownOf(leads.selfReportedSource),
   ]);
 
-  // Tracking-number summary (capture channel).
-  const [numAgg] = await db
-    .select({
-      total: sql<number>`count(*)::int`,
-      active: sql<number>`count(*) filter (where ${trackingNumbers.status} = 'active')::int`,
-      pool: sql<number>`count(*) filter (where not ${trackingNumbers.isStatic} and ${trackingNumbers.status} = 'active')::int`,
-    })
-    .from(trackingNumbers);
-  const [callCount] = await db.select({ n: sql<number>`count(*)::int` }).from(calls);
-
   return (
     <>
       <div className="page-head">
         <div>
           <h1 className="page-title">Sources</h1>
-          <p className="page-sub">Where leads come from, how they perform, and which channels feed the inbox · {timeframeLabel(days)}</p>
+          <p className="page-sub">Where leads come from and how they perform · {timeframeLabel(days)}</p>
         </div>
         <div className="controls">
           <span className="muted" style={{ fontSize: 12, fontWeight: 600 }}>◷</span>
@@ -165,26 +154,6 @@ export default async function SourcesPage({ searchParams }: { searchParams: Prom
         <BreakdownCard title="⌕ Keywords" rows={byKeyword} empty="No keywords captured yet — populates from paid-search leads." />
         <BreakdownCard title="☏ Callers say" rows={bySelfReported} empty="No self-reported sources yet — extracted from call transcripts." />
       </div>
-
-      {/* Capture channels */}
-      <h2 className="page-title" style={{ fontSize: 16, marginBottom: 4 }}>Capture channels</h2>
-      <p className="page-sub" style={{ marginBottom: 16 }}>The sources that feed leads into the inbox.</p>
-
-      <div className="cards" style={{ marginBottom: 22 }}>
-        <Link href="/numbers" className="card pad" style={{ display: "block" }}>
-          <div className="label">☎ Call tracking →</div>
-          <div className="value" style={{ fontSize: 20 }}>{numAgg?.active ?? 0} active</div>
-          <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>{numAgg?.pool ?? 0} in website pool · {callCount?.n ?? 0} calls tracked</div>
-        </Link>
-        <Link href="/settings/integrations" className="card pad" style={{ display: "block" }}>
-          <div className="label">✉ Web forms →</div>
-          <div className="value" style={{ fontSize: 20 }}>track.js</div>
-          <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>install on arbor-mgmt.com to capture web-form leads</div>
-        </Link>
-      </div>
-
-      <h3 style={{ fontSize: 14, fontWeight: 650, margin: "8px 0 12px" }}>ⓕ Facebook lead forms</h3>
-      <FormsClient />
     </>
   );
 }

@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useState } from "react";
 
 function getCookie(name: string): string | null {
@@ -82,8 +83,8 @@ export function DniTestClient() {
           </a>
           <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
             Call this from your phone → it should ring the forward destination, then appear in{" "}
-            <a href="/leads" style={{ color: "var(--accent)" }}>/leads</a> and{" "}
-            <a href="/calls" style={{ color: "var(--accent)" }}>/calls</a>.
+            <Link href="/leads" style={{ color: "var(--accent)" }}>/leads</Link> and{" "}
+            <Link href="/calls" style={{ color: "var(--accent)" }}>/calls</Link>.
           </div>
         </div>
       )}
