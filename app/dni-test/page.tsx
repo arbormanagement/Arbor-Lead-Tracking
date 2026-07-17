@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import Link from "next/link";
 import { classifySource } from "@/lib/attribution/classify";
 import { DniTestClient } from "./dni-test-client";
 
@@ -97,7 +98,7 @@ export default async function DniTestPage({ searchParams }: { searchParams: Prom
       <p className="muted" style={{ fontSize: 12, marginTop: 20, lineHeight: 1.6 }}>
         <strong>How to run it:</strong> pick a source preset above → confirm the number swaps and
         the expected source matches → call the swapped number from your phone → open{" "}
-        <a href="/leads" style={{ color: "var(--accent)" }}>/leads</a> and confirm the call landed with that source.
+        <Link href="/leads" style={{ color: "var(--accent)" }}>/leads</Link> and confirm the call landed with that source.
         Repeat with a different preset to prove each channel. CallRail is untouched — this page isn’t on
         arbor-mgmt.com and only swaps its own <code>data-arbor-phone</code> element.
       </p>
