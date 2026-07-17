@@ -369,7 +369,7 @@ export default async function InboxPage({
     <>
       <div className="page-head">
         <div>
-          <h1 className="page-title">Inbox</h1>
+          <h1 className="page-title">Leads</h1>
           <p className="page-sub">
             Real leads only — a call appears when the caller requested an estimate · {agg?.total ?? 0} leads · {agg?.quoted ?? 0} quoted · {agg?.won ?? 0} won · {timeframeLabel(days)}
           </p>
