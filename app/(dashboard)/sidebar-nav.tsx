@@ -5,8 +5,8 @@ import { usePathname } from "next/navigation";
 
 const NAV: Array<{ href: string; label: string; ic: string; section?: string }> = [
   { href: "/", label: "Overview", ic: "◧" },
-  { href: "/leads", label: "Inbox", ic: "✉" },
   { href: "/calls", label: "Calls", ic: "☎" },
+  { href: "/leads", label: "Leads", ic: "✉" },
   { href: "/sources", label: "Sources", ic: "◈" },
   { href: "/numbers", label: "Numbers", ic: "#" },
   { href: "/settings", label: "Settings", ic: "⚙", section: "Admin" },
