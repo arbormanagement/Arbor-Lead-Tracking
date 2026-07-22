@@ -22,16 +22,18 @@ export async function POST(_req: Request, { params }: { params: Promise<{ job: s
   if (!session) return Response.json({ error: "unauthorized" }, { status: 401 });
 
   const { job } = await params;
-  // Optional full-backfill override: POST /api/sync/hcp?days=30 forces an explicit
-  // window (bypasses the incremental watermark). Omit for the default incremental pull.
-  const daysParam = new URL(_req.url).searchParams.get("days");
-  const hcpDays = daysParam ? Number(daysParam) : undefined;
+  // Optional full-backfill override: ?days=N forces an explicit window on the jobs
+  // that support it (spend, hcp, fbleads — and the whole `all` chain). Omit for the
+  // default incremental pull. Spend defaults to a rolling 7-day re-pull (platforms
+  // restate); a backfill only heals history, day-to-day gaps self-heal.
+  const daysParam = Number(new URL(_req.url).searchParams.get("days"));
+  const days = Number.isFinite(daysParam) && daysParam > 0 ? Math.floor(daysParam) : undefined;
   try {
     switch (job) {
       case "spend":
-        return Response.json({ ok: true, result: await syncSpend({ sinceDays: 7 }) });
+        return Response.json({ ok: true, result: await syncSpend(days ? { sinceDays: days } : {}) });
       case "hcp":
-        return Response.json({ ok: true, result: await syncHcp(hcpDays ? { sinceDays: hcpDays } : {}) });
+        return Response.json({ ok: true, result: await syncHcp(days ? { sinceDays: days } : {}) });
       case "attribution":
         return Response.json({ ok: true, result: await runAttribution({ windowDays: 90 }) });
       case "reaper":
@@ -48,16 +50,16 @@ export async function POST(_req: Request, { params }: { params: Promise<{ job: s
       case "conversions":
         return Response.json({ ok: true, result: await syncConversions({ sinceDays: 60 }) });
       case "fbleads":
-        return Response.json({ ok: true, result: await syncFacebookLeads(daysParam ? { sinceDays: Number(daysParam) } : {}) });
+        return Response.json({ ok: true, result: await syncFacebookLeads(days ? { sinceDays: days } : {}) });
       case "all": {
         // Ingest leads (fbleads) + revenue (hcp) BEFORE attribution so newly-pulled
-        // leads/estimates get matched in the same run. `?days=N` widens hcp + fbleads
-        // for a historical backfill; attribution + conversions follow.
+        // leads/estimates get matched in the same run. `?days=N` widens hcp, fbleads
+        // AND spend for a historical backfill; attribution + conversions follow.
         const transcribe = await syncTranscriptions({ limit: 25 });
         const lsa = await syncLsaLeads({ sinceDays: 30 });
-        const fbleads = await syncFacebookLeads(daysParam ? { sinceDays: Number(daysParam) } : {});
-        const hcp = await syncHcp(hcpDays ? { sinceDays: hcpDays } : {});
-        const spend = await syncSpend({ sinceDays: 7 });
+        const fbleads = await syncFacebookLeads(days ? { sinceDays: days } : {});
+        const hcp = await syncHcp(days ? { sinceDays: days } : {});
+        const spend = await syncSpend(days ? { sinceDays: days } : {});
         const attribution = await runAttribution({ windowDays: 90 });
         const conversions = await syncConversions({ sinceDays: 60 });
         return Response.json({ ok: true, result: { transcribe, lsa, fbleads, hcp, spend, attribution, conversions } });
