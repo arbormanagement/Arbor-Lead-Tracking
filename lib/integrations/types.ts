@@ -77,7 +77,9 @@ export interface HcpEstimateDTO {
 
 export interface SpendProvider {
   readonly name: string;
-  /** Daily spend across active campaigns for a rolling window (default 7 days). */
+  /** ad_spend.platform values this provider writes — used for cold-start detection. */
+  readonly platforms: SpendRow["platform"][];
+  /** Daily spend across active campaigns for a rolling window. */
   getDailySpend(opts: { sinceDays: number }): Promise<SpendRow[]>;
 }
 

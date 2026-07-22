@@ -53,6 +53,7 @@ async function getPageAccessToken(cfg: FbConfig): Promise<string> {
 
 class FacebookProvider implements SpendProvider {
   readonly name = "facebook:direct";
+  readonly platforms: SpendRow["platform"][] = ["facebook"];
 
   async getDailySpend({ sinceDays }: { sinceDays: number }): Promise<SpendRow[]> {
     const cfg = await fbConfig();

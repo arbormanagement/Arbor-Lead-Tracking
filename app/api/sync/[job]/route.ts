@@ -22,10 +22,10 @@ export async function POST(_req: Request, { params }: { params: Promise<{ job: s
   if (!session) return Response.json({ error: "unauthorized" }, { status: 401 });
 
   const { job } = await params;
-  // Optional full-backfill override: ?days=N forces an explicit window on the jobs
-  // that support it (spend, hcp, fbleads — and the whole `all` chain). Omit for the
-  // default incremental pull. Spend defaults to a rolling 7-day re-pull (platforms
-  // restate); a backfill only heals history, day-to-day gaps self-heal.
+  // Optional window override: ?days=N forces an explicit window on the jobs that
+  // support it (spend, hcp, fbleads — and the whole `all` chain). Omit for the
+  // defaults: spend is fully self-healing (rolling re-pull + automatic cold-start
+  // history backfill — see lib/sync/spend.ts), so the override is rarely needed.
   const daysParam = Number(new URL(_req.url).searchParams.get("days"));
   const days = Number.isFinite(daysParam) && daysParam > 0 ? Math.floor(daysParam) : undefined;
   try {

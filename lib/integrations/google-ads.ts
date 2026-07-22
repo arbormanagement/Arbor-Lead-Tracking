@@ -22,6 +22,7 @@ interface GoogleAdsConfig {
 
 class GoogleAdsProvider implements SpendProvider {
   readonly name = "google_ads:direct";
+  readonly platforms: SpendRow["platform"][] = ["google", "google_lsa"];
 
   private async config(): Promise<GoogleAdsConfig> {
     const c = await getPlatformCreds("google_ads");
