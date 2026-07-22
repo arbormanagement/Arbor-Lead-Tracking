@@ -1,45 +1,120 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray, lt, sql } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { adSpend, campaigns } from "@/lib/db/schema";
-import { activeSpendProviders, type SpendRow } from "@/lib/integrations";
+import { activeSpendProviders, type SpendProvider, type SpendRow } from "@/lib/integrations";
 import { withSyncRun } from "./run";
 
+/** Rolling re-pull window: wide enough that platform restatements (≤28d on Meta)
+ *  and multi-day outages (expired token noticed late) self-heal without manual
+ *  intervention. Re-pulling is idempotent (unique on platform+campaign+date). */
+const ROLLING_DAYS = 35;
+/** Deep window for the automatic cold-start backfill. */
+const HISTORY_DAYS = 365;
+
 /**
- * spend.sync.daily — pull a rolling window of daily campaign spend from every
- * configured ad platform and upsert into `ad_spend`. Re-pulling the window each
- * run is idempotent (unique on platform+campaign+date) and self-heals missed runs
- * and platform restatements.
+ * spend.sync.daily — pull daily campaign spend from every configured ad platform
+ * and upsert into `ad_spend`. Self-healing by design, no manual backfills:
+ * normal runs re-pull a rolling ROLLING_DAYS window (restatements, missed runs),
+ * and a provider with no history older than that window gets an automatic
+ * HISTORY_DAYS cold-start pull — spend from before syncing was first enabled is
+ * captured without anyone triggering it. An explicit `sinceDays` (the /api/sync
+ * ?days=N override) bypasses the window choice.
  */
-export async function syncSpend({ sinceDays = 7 }: { sinceDays?: number } = {}) {
+export async function syncSpend({ sinceDays }: { sinceDays?: number } = {}) {
   return withSyncRun("spend.sync.daily", async () => {
     const providers = await activeSpendProviders();
     let upserted = 0;
-    const byProvider: Record<string, number> = {};
+    const byProvider: Record<string, string> = {};
 
     for (const provider of providers) {
-      const rows = await provider.getDailySpend({ sinceDays });
-      for (const row of rows) {
-        await upsertSpendRow(row);
-        upserted++;
-      }
-      byProvider[provider.name] = rows.length;
+      const days = sinceDays ?? ((await hasHistory(provider)) ? ROLLING_DAYS : HISTORY_DAYS);
+      const rows = await provider.getDailySpend({ sinceDays: days });
+      upserted += await upsertSpendRows(rows);
+      byProvider[provider.name] = `${rows.length} rows (${days}d window)`;
     }
 
     return { providers: providers.map((p) => p.name), upserted, byProvider };
   });
 }
 
-async function upsertSpendRow(row: SpendRow) {
-  // Ensure the campaign dimension exists so spend links to a campaign.
-  let campaignId: string | null = null;
-  if (row.externalCampaignId && row.externalCampaignId !== "undefined") {
+/** True once the provider's platforms have any spend row older than the rolling
+ *  window — i.e. history has been captured and the rolling re-pull suffices.
+ *  An ad account genuinely younger than the window just re-pulls deep; harmless. */
+async function hasHistory(provider: SpendProvider): Promise<boolean> {
+  const cutoff = new Date(Date.now() - ROLLING_DAYS * 86_400_000).toISOString().slice(0, 10);
+  const [row] = await db
+    .select({ n: sql<number>`count(*)::int` })
+    .from(adSpend)
+    .where(and(inArray(adSpend.platform, provider.platforms), lt(adSpend.date, cutoff)));
+  return (row?.n ?? 0) > 0;
+}
+
+/** Batched upsert — deep windows are hundreds of rows per campaign, so per-row
+ *  round trips over Neon HTTP would blow the function's time budget. */
+async function upsertSpendRows(rows: SpendRow[]): Promise<number> {
+  if (rows.length === 0) return 0;
+  // Defensive dedupe on the conflict key: a multi-row upsert errors if two rows
+  // in one statement hit the same (platform, campaign, date).
+  const byKey = new Map<string, SpendRow>();
+  for (const r of rows) byKey.set(`${r.platform}|${r.externalCampaignId}|${r.date}`, r);
+  const unique = [...byKey.values()];
+
+  const campaignIds = await ensureCampaigns(unique);
+
+  const CHUNK = 200;
+  for (let i = 0; i < unique.length; i += CHUNK) {
+    const chunk = unique.slice(i, i + CHUNK);
+    await db
+      .insert(adSpend)
+      .values(
+        chunk.map((row) => ({
+          date: row.date,
+          platform: row.platform,
+          campaignId: campaignIds.get(`${row.platform}|${row.externalCampaignId}`) ?? null,
+          externalCampaignId: row.externalCampaignId,
+          impressions: row.impressions,
+          clicks: row.clicks,
+          spendCents: row.spendCents,
+          conversions: String(row.conversions),
+          source: `direct:${row.platform}`,
+          raw: row.raw,
+        })),
+      )
+      .onConflictDoUpdate({
+        target: [adSpend.platform, adSpend.externalCampaignId, adSpend.date],
+        set: {
+          campaignId: sql`excluded.campaign_id`,
+          impressions: sql`excluded.impressions`,
+          clicks: sql`excluded.clicks`,
+          spendCents: sql`excluded.spend_cents`,
+          conversions: sql`excluded.conversions`,
+          raw: sql`excluded.raw`,
+          updatedAt: new Date(),
+        },
+      });
+  }
+  return unique.length;
+}
+
+/** Ensure the campaign dimension exists for every distinct campaign in the pull,
+ *  so spend links to a campaign. Returns `${platform}|${externalCampaignId}` → id. */
+async function ensureCampaigns(rows: SpendRow[]): Promise<Map<string, string>> {
+  const distinct = new Map<string, SpendRow>();
+  for (const row of rows) {
+    if (row.externalCampaignId && row.externalCampaignId !== "undefined") {
+      distinct.set(`${row.platform}|${row.externalCampaignId}`, row);
+    }
+  }
+
+  const ids = new Map<string, string>();
+  for (const [key, row] of distinct) {
     const [existing] = await db
       .select({ id: campaigns.id })
       .from(campaigns)
-      .where(and(eq(campaigns.platform, row.platform), eq(campaigns.externalCampaignId, row.externalCampaignId)))
+      .where(and(eq(campaigns.platform, row.platform), eq(campaigns.externalCampaignId, row.externalCampaignId!)))
       .limit(1);
     if (existing) {
-      campaignId = existing.id;
+      ids.set(key, existing.id);
       if (row.campaignName) {
         await db.update(campaigns).set({ name: row.campaignName }).where(eq(campaigns.id, existing.id));
       }
@@ -52,34 +127,8 @@ async function upsertSpendRow(row: SpendRow) {
           name: row.campaignName,
         })
         .returning({ id: campaigns.id });
-      campaignId = created.id;
+      ids.set(key, created.id);
     }
   }
-
-  await db
-    .insert(adSpend)
-    .values({
-      date: row.date,
-      platform: row.platform,
-      campaignId,
-      externalCampaignId: row.externalCampaignId,
-      impressions: row.impressions,
-      clicks: row.clicks,
-      spendCents: row.spendCents,
-      conversions: String(row.conversions),
-      source: `direct:${row.platform}`,
-      raw: row.raw,
-    })
-    .onConflictDoUpdate({
-      target: [adSpend.platform, adSpend.externalCampaignId, adSpend.date],
-      set: {
-        campaignId,
-        impressions: row.impressions,
-        clicks: row.clicks,
-        spendCents: row.spendCents,
-        conversions: String(row.conversions),
-        raw: row.raw,
-        updatedAt: new Date(),
-      },
-    });
+  return ids;
 }
