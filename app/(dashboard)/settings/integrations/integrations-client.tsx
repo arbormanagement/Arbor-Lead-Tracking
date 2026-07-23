@@ -32,8 +32,32 @@ export function PlatformCard({ platform, canSave }: { platform: Platform; canSav
   const [pixels, setPixels] = useState<{ id: string; name: string }[] | null>(null);
   const [pixelMsg, setPixelMsg] = useState("");
   const [pixelLoading, setPixelLoading] = useState(false);
+  const [convActions, setConvActions] = useState<{ id: string; name: string; category: string | null }[] | null>(null);
+  const [convMsg, setConvMsg] = useState("");
+  const [convLoading, setConvLoading] = useState(false);
 
   const statusFor = (key: string) => status.find((s) => s.key === key);
+
+  async function findConvActions() {
+    setConvLoading(true);
+    setConvMsg("");
+    try {
+      const res = await fetch("/api/settings/google-ads/conversion-actions");
+      const body = await res.json().catch(() => ({}));
+      if (body.ok && Array.isArray(body.actions)) {
+        setConvActions(body.actions);
+        if (body.actions.length === 0)
+          setConvMsg("No enabled import (upload) conversion actions in the account — create them in Google Ads first, or paste an ID manually.");
+        else setConvMsg("Pick an action for each event, then hit Save. Only import (upload) actions are listed — other types can't receive offline conversions.");
+      } else {
+        setConvMsg(body.error ? `Couldn't fetch — ${body.error}` : "Couldn't fetch — save the Google Ads credentials first.");
+      }
+    } catch {
+      setConvMsg("Network error");
+    } finally {
+      setConvLoading(false);
+    }
+  }
 
   async function findPixels() {
     setPixelLoading(true);
@@ -124,6 +148,7 @@ export function PlatformCard({ platform, canSave }: { platform: Platform; canSav
             ? `${st.source === "db" ? "saved" : "env"} · ${f.secret ? "••••" : ""}${st.last4 ?? ""}`
             : "not set";
           const isPixel = platform.platform === "facebook" && f.key === "conversions_pixel_id";
+          const isConvAction = platform.platform === "google_ads" && f.key.startsWith("conversion_action_");
           return (
             <div key={f.key} style={{ display: "grid", gridTemplateColumns: "200px 1fr", gap: 10, alignItems: "center" }}>
               <label style={{ color: "var(--muted)", fontSize: 13 }}>
@@ -143,6 +168,33 @@ export function PlatformCard({ platform, canSave }: { platform: Platform; canSav
                   style={input}
                   autoComplete="off"
                 />
+                {isConvAction && (
+                  <div style={{ marginTop: 6 }}>
+                    <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                      {convActions === null ? (
+                        <button type="button" onClick={findConvActions} disabled={convLoading} style={btn("ghost")}>
+                          {convLoading ? "Loading…" : "Choose from account"}
+                        </button>
+                      ) : convActions.length > 0 ? (
+                        <select
+                          value={values[f.key] ?? ""}
+                          onChange={(e) => setValues((v) => ({ ...v, [f.key]: e.target.value }))}
+                          style={{ ...input, width: "auto" }}
+                        >
+                          <option value="">Select a conversion action…</option>
+                          {convActions.map((a) => (
+                            <option key={a.id} value={a.id}>
+                              {a.name} ({a.id})
+                            </option>
+                          ))}
+                        </select>
+                      ) : null}
+                    </div>
+                    {f.key === "conversion_action_won" && convMsg && (
+                      <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 5 }}>{convMsg}</div>
+                    )}
+                  </div>
+                )}
                 {isPixel && (
                   <div style={{ marginTop: 6 }}>
                     <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>

@@ -20,20 +20,24 @@ can optimize toward **won revenue**, not just raw lead volume.
 - **Gated:** each destination runs only when configured (below). Until then the job
   no-ops with `skipped: "No conversion export destinations configured"`.
 
-## Setup — Google Ads (DEFERRED, per Justin 2026-07)
+## Setup — Google Ads
 
-Not yet done. When ready:
-
-1. **Create two conversion actions** (type *Import* / `UPLOAD_CLICKS`), created as
-   **Secondary / observe-only** first so they don't disturb current bidding:
-   - **"Arbor Qualified Lead"** — category `QUALIFIED_LEAD`, value = transaction-specific.
-   - **"Arbor Won Estimate"** — category `CONVERTED_LEAD`, value = transaction-specific.
-   After creating, re-check `googleads_list_campaign_conversion_goals` on the primary
-   campaign (23633267649) to confirm no goal flipped to biddable.
-2. **Also planned:** a dedicated **Submit-Form** conversion action to send web-form
+1. ✅ **Conversion actions created 2026-07-23** (type `UPLOAD_CLICKS`, secondary /
+   observe-only, one-per-click, 90-day click lookback, transaction-specific values):
+   - **"Estimate Created"** — category `QUALIFIED_LEAD`, id `7695123530` (fires on
+     lead status qualified/quoted, value = quote amount).
+   - **"Estimate Won"** — category `CONVERTED_LEAD`, id `7695519049` (fires on won,
+     value = approved amount).
+   Verified after creation: `primaryForGoal=false` on both, and the primary
+   campaign's (23633267649) new `QUALIFIED_LEAD`/`CONVERTED_LEAD` goals are
+   **not** biddable — existing bidding untouched.
+2. **Still planned:** a dedicated **Submit-Form** conversion action to send web-form
    leads to Google Ads (separate from the phone-call ones CallRail currently feeds).
-3. Enter the two action IDs (or full resource names) in **Settings → Integrations →
-   Google Ads**: *Conv. action — Qualified Lead* and *Conv. action — Won Estimate*.
+3. **TODO:** in **Settings → Integrations → Google Ads**, hit **Choose from
+   account** under the conversion-action fields and pick **Estimate Created**
+   (`7695123530`) for *Qualified Lead* and **Estimate Won** (`7695519049`) for
+   *Won Estimate* — the picker lists the account's import (upload) actions via
+   `/api/settings/google-ads/conversion-actions`. Manual ID paste still works.
    Leaving one blank disables just that event.
 4. **No new token needed** — the Ads OAuth scope (`adwords`) is already read+write;
    the existing refresh token can upload. Developer token must have Standard access.
