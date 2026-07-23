@@ -44,7 +44,8 @@ export default async function OverviewPage() {
   const spend = daily.reduce((s, d) => s + d.spend, 0);
   const revenue = daily.reduce((s, d) => s + d.revenue, 0);
   const roas = spend > 0 ? (revenue / spend).toFixed(1) + "×" : "—";
-  const cpl = quoted > 0 && spend > 0 ? dollars(Math.round(spend / quoted)) : "—";
+  // Ads-Manager-style CPL: spend ÷ captured leads (not per-quoted).
+  const cpl = captured > 0 && spend > 0 ? dollars(Math.round(spend / captured)) : "—";
 
   // Top sources by revenue.
   const top = await db
@@ -102,7 +103,7 @@ export default async function OverviewPage() {
         <div className="card kpi"><div className="label">◐ Ad spend</div><div className="value mono">{dollars(spend)}</div></div>
         <div className="card kpi"><div className="label">◈ Revenue (won est.)</div><div className="value mono">{dollars(revenue)}</div></div>
         <div className="card kpi accent"><div className="label">✦ ROAS</div><div className="value mono pos">{roas}</div></div>
-        <div className="card kpi"><div className="label">☎ Cost / quoted lead</div><div className="value mono">{cpl}</div></div>
+        <div className="card kpi"><div className="label" title="Spend ÷ captured leads — matches Ads Manager">☎ Cost / lead</div><div className="value mono">{cpl}</div></div>
       </div>
 
       {/* Chart + top sources */}
