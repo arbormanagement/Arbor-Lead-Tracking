@@ -39,4 +39,4 @@ Edwardsville + O'Fallon). WhatConverts-style. Single-tenant. Owner: Justin
 - IL/MO mixed-consent recording → recording notice is played to callers.
 - E.164 normalization is load-bearing for lead↔HCP matching/ROI.
 - MCP is a hard dependency for spend/revenue — use Inngest retries + rolling re-pulls.
-- Spend sync is self-healing (`lib/sync/spend.ts`): rolling 35-day re-pull (platforms restate) + automatic 365-day cold-start backfill, keyed `(platform, external_campaign_id, date)`. No manual backfills.
+- Spend sync is self-healing (`lib/sync/spend.ts`): rolling 35-day re-pull (platforms restate) + automatic cold-start backfill reaching to each platform's earliest lead (≤365d — spend with no leads to match is deliberately not fetched), keyed `(platform, external_campaign_id, date)`. No manual backfills.
