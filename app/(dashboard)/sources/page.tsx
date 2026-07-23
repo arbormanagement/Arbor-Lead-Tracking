@@ -14,6 +14,8 @@ export default async function SourcesPage({ searchParams }: { searchParams: Prom
   const { days: daysParam } = await searchParams;
   const days = pickDays(daysParam, 30);
   const since = new Date(Date.now() - days * 86_400_000).toISOString().slice(0, 10);
+  const sinceDate = new Date(Date.now() - days * 86_400_000);
+  const leadOnly = or(ne(leads.type, "call"), eq(leads.isLead, true));
 
   // Performance by source (30d).
   const rows = await db
@@ -21,7 +23,7 @@ export default async function SourcesPage({ searchParams }: { searchParams: Prom
       key: sources.key,
       name: sources.displayName,
       leads: sql<number>`coalesce(sum(${roiDaily.leadsCount}),0)::int`,
-      quoted: sql<number>`coalesce(sum(${roiDaily.qualifiedCount}),0)::int`,
+      qualified: sql<number>`coalesce(sum(${roiDaily.qualifiedCount}),0)::int`,
       won: sql<number>`coalesce(sum(${roiDaily.wonCount}),0)::int`,
       spend: sql<number>`coalesce(sum(${roiDaily.spendCents}),0)::int`,
       revenue: sql<number>`coalesce(sum(${roiDaily.revenueCents}),0)::int`,
@@ -32,9 +34,26 @@ export default async function SourcesPage({ searchParams }: { searchParams: Prom
     .groupBy(sources.key, sources.displayName)
     .orderBy(desc(sql`coalesce(sum(${roiDaily.revenueCents}),0)`));
 
+  // Cancelled per source — not tracked in roi_daily, so count from leads directly
+  // (same non-spam + lead-only filters the rollup uses).
+  const cancelledRows = await db
+    .select({ key: sources.key, n: sql<number>`count(*)::int` })
+    .from(leads)
+    .leftJoin(sources, eq(leads.sourceId, sources.id))
+    .where(and(gte(leads.occurredAt, sinceDate), eq(leads.isSpam, false), leadOnly, eq(leads.status, "cancelled")))
+    .groupBy(sources.key);
+  const cancelledByKey = new Map<string | null, number>(cancelledRows.map((c) => [c.key ?? null, c.n]));
+
   const totals = rows.reduce(
-    (a, r) => ({ leads: a.leads + r.leads, quoted: a.quoted + r.quoted, won: a.won + r.won, spend: a.spend + r.spend, revenue: a.revenue + r.revenue }),
-    { leads: 0, quoted: 0, won: 0, spend: 0, revenue: 0 },
+    (a, r) => ({
+      leads: a.leads + r.leads,
+      qualified: a.qualified + r.qualified,
+      won: a.won + r.won,
+      cancelled: a.cancelled + (cancelledByKey.get(r.key ?? null) ?? 0),
+      spend: a.spend + r.spend,
+      revenue: a.revenue + r.revenue,
+    }),
+    { leads: 0, qualified: 0, won: 0, cancelled: 0, spend: 0, revenue: 0 },
   );
   const maxRoas = Math.max(1, ...rows.map((r) => (r.spend > 0 ? r.revenue / r.spend : 0)));
 
@@ -42,7 +61,6 @@ export default async function SourcesPage({ searchParams }: { searchParams: Prom
   // track.js / click-id enrichment) and the caller's self-reported source from
   // call transcripts — the DNI-invisible channels (referrals, yard signs, trucks).
   const bdSince = new Date(Date.now() - 90 * 86_400_000);
-  const leadOnly = or(ne(leads.type, "call"), eq(leads.isLead, true));
   const breakdownOf = (col: AnyPgColumn) =>
     db
       .select({
@@ -97,25 +115,28 @@ export default async function SourcesPage({ searchParams }: { searchParams: Prom
             <tr>
               <th>Source</th>
               <th title="Every tracked lead">Leads</th>
-              <th title="An estimate with a price was sent">Quoted</th>
+              <th title="An estimate was created in HousecallPro">Qualified</th>
               <th title="Estimate approved">Won</th>
+              <th title="Estimate or job cancelled">Cancelled</th>
               <th>Spend</th>
               <th title="Value of won estimates">Revenue</th>
-              <th title="Cost per quoted lead">CPL</th>
+              <th title="Cost per lead: spend ÷ captured leads — matches Ads Manager">CPL</th>
               <th style={{ width: 150 }}>ROAS</th>
             </tr>
           </thead>
           <tbody>
             {rows.map((r, i) => {
-              const cpl = r.quoted && r.spend ? dollars(Math.round(r.spend / r.quoted)) : "—";
+              const cancelled = cancelledByKey.get(r.key ?? null) ?? 0;
+              const cpl = r.leads && r.spend ? dollars(Math.round(r.spend / r.leads)) : "—";
               const roasNum = r.spend ? r.revenue / r.spend : 0;
               const roas = r.spend ? roasNum.toFixed(1) + "×" : r.revenue > 0 ? "organic" : "—";
               return (
                 <tr key={r.key ?? `u${i}`}>
                   <td><span className="src"><span className="dot" style={{ background: SRC_HUES[i % SRC_HUES.length] }} />{r.name ?? r.key ?? "Unattributed"}</span></td>
                   <td className="mono">{r.leads}</td>
-                  <td className="mono">{r.quoted}</td>
+                  <td className="mono">{r.qualified}</td>
                   <td>{r.won > 0 ? <span className="badge win">{r.won}</span> : <span className="muted mono">0</span>}</td>
+                  <td className="mono muted">{cancelled}</td>
                   <td className="mono muted">{dollars(r.spend)}</td>
                   <td className="mono">{r.revenue > 0 ? dollars(r.revenue) : <span className="muted">—</span>}</td>
                   <td className="mono muted">{cpl}</td>
@@ -131,11 +152,12 @@ export default async function SourcesPage({ searchParams }: { searchParams: Prom
             <tr style={{ fontWeight: 700 }}>
               <td>Total</td>
               <td className="mono">{totals.leads}</td>
-              <td className="mono">{totals.quoted}</td>
+              <td className="mono">{totals.qualified}</td>
               <td className="mono">{totals.won}</td>
+              <td className="mono muted">{totals.cancelled}</td>
               <td className="mono muted">{dollars(totals.spend)}</td>
               <td className="mono">{dollars(totals.revenue)}</td>
-              <td className="mono muted">{totals.quoted && totals.spend ? dollars(Math.round(totals.spend / totals.quoted)) : "—"}</td>
+              <td className="mono muted">{totals.leads && totals.spend ? dollars(Math.round(totals.spend / totals.leads)) : "—"}</td>
               <td className="mono" style={{ color: "var(--accent)" }}>{totals.spend ? (totals.revenue / totals.spend).toFixed(1) + "×" : "—"}</td>
             </tr>
           </tbody>
