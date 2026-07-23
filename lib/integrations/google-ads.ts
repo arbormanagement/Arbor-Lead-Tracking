@@ -162,6 +162,27 @@ class GoogleAdsProvider implements SpendProvider {
   }
 
   /**
+   * Enabled import (`UPLOAD_CLICKS`) conversion actions — the only valid OCI
+   * upload targets — so Settings → Integrations can offer a pick-list instead of
+   * hand-pasted ids.
+   */
+  async listConversionActions(): Promise<ConversionActionOption[]> {
+    const cfg = await this.config();
+    const gaql = `
+      SELECT conversion_action.id, conversion_action.name, conversion_action.category
+      FROM conversion_action
+      WHERE conversion_action.status = 'ENABLED'
+        AND conversion_action.type = 'UPLOAD_CLICKS'
+      ORDER BY conversion_action.name`;
+    const results = await this.searchStream(cfg, gaql);
+    return results.map((r) => ({
+      id: String(r.conversionAction?.id ?? ""),
+      name: String(r.conversionAction?.name ?? ""),
+      category: r.conversionAction?.category ?? null,
+    }));
+  }
+
+  /**
    * Offline Conversion Import: upload gclid-matched conversions (closed-loop
    * feedback so Smart Bidding can optimize toward won revenue). Uploads ONE
    * conversion per request — at our volume that's fine, and it gives clean
@@ -222,6 +243,12 @@ function normalizeConversionAction(action: string, customerId: string): string {
   const a = action.trim();
   if (a.startsWith("customers/")) return a;
   return `customers/${customerId}/conversionActions/${a.replace(/[^0-9]/g, "")}`;
+}
+
+export interface ConversionActionOption {
+  id: string;
+  name: string;
+  category: string | null;
 }
 
 export interface ClickConversionInput {

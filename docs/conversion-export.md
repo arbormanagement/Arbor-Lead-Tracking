@@ -33,9 +33,12 @@ can optimize toward **won revenue**, not just raw lead volume.
    **not** biddable — existing bidding untouched.
 2. **Still planned:** a dedicated **Submit-Form** conversion action to send web-form
    leads to Google Ads (separate from the phone-call ones CallRail currently feeds).
-3. **TODO:** enter the two action IDs above in **Settings → Integrations →
-   Google Ads**: *Conv. action — Qualified Lead* = `7695123530`, *Conv. action —
-   Won Estimate* = `7695519049`. Leaving one blank disables just that event.
+3. **TODO:** in **Settings → Integrations → Google Ads**, hit **Choose from
+   account** under the conversion-action fields and pick **Estimate Created**
+   (`7695123530`) for *Qualified Lead* and **Estimate Won** (`7695519049`) for
+   *Won Estimate* — the picker lists the account's import (upload) actions via
+   `/api/settings/google-ads/conversion-actions`. Manual ID paste still works.
+   Leaving one blank disables just that event.
 4. **No new token needed** — the Ads OAuth scope (`adwords`) is already read+write;
    the existing refresh token can upload. Developer token must have Standard access.
 
