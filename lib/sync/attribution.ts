@@ -255,7 +255,9 @@ async function rebuildAttributions(): Promise<number> {
 }
 
 // ── 3. roi_daily rollup ──────────────────────────────────────────────────────
-const PLATFORM_SOURCE_KEY: Record<string, string> = {
+/** ad_spend platform → source key, so spend (which carries platform) can roll up.
+ *  Also used by the spend sync to anchor cold-start backfills to lead history. */
+export const PLATFORM_SOURCE_KEY: Record<string, string> = {
   google: "google/cpc",
   google_lsa: "google/lsa",
   facebook: "facebook/paid",

@@ -1,24 +1,27 @@
 import { and, eq, inArray, lt, sql } from "drizzle-orm";
 import { db } from "@/lib/db/client";
-import { adSpend, campaigns } from "@/lib/db/schema";
+import { adSpend, campaigns, leads, sources } from "@/lib/db/schema";
 import { activeSpendProviders, type SpendProvider, type SpendRow } from "@/lib/integrations";
+import { PLATFORM_SOURCE_KEY } from "./attribution";
 import { withSyncRun } from "./run";
 
 /** Rolling re-pull window: wide enough that platform restatements (≤28d on Meta)
  *  and multi-day outages (expired token noticed late) self-heal without manual
  *  intervention. Re-pulling is idempotent (unique on platform+campaign+date). */
 const ROLLING_DAYS = 35;
-/** Deep window for the automatic cold-start backfill. */
-const HISTORY_DAYS = 365;
+/** Hard ceiling for the automatic cold-start backfill. */
+const MAX_HISTORY_DAYS = 365;
 
 /**
  * spend.sync.daily — pull daily campaign spend from every configured ad platform
  * and upsert into `ad_spend`. Self-healing by design, no manual backfills:
  * normal runs re-pull a rolling ROLLING_DAYS window (restatements, missed runs),
  * and a provider with no history older than that window gets an automatic
- * HISTORY_DAYS cold-start pull — spend from before syncing was first enabled is
- * captured without anyone triggering it. An explicit `sinceDays` (the /api/sync
- * ?days=N override) bypasses the window choice.
+ * cold-start pull reaching back to ITS OWN earliest lead — spend without leads
+ * to match against is deliberately not fetched (it would only pollute ROI with
+ * unmatched history), so each platform backfills exactly the span its lead data
+ * covers. An explicit `sinceDays` (the /api/sync ?days=N override) bypasses the
+ * window choice.
  */
 export async function syncSpend({ sinceDays }: { sinceDays?: number } = {}) {
   return withSyncRun("spend.sync.daily", async () => {
@@ -27,7 +30,7 @@ export async function syncSpend({ sinceDays }: { sinceDays?: number } = {}) {
     const byProvider: Record<string, string> = {};
 
     for (const provider of providers) {
-      const days = sinceDays ?? ((await hasHistory(provider)) ? ROLLING_DAYS : HISTORY_DAYS);
+      const days = sinceDays ?? ((await hasHistory(provider)) ? ROLLING_DAYS : await coldStartDays(provider));
       const rows = await provider.getDailySpend({ sinceDays: days });
       upserted += await upsertSpendRows(rows);
       byProvider[provider.name] = `${rows.length} rows (${days}d window)`;
@@ -35,6 +38,22 @@ export async function syncSpend({ sinceDays }: { sinceDays?: number } = {}) {
 
     return { providers: providers.map((p) => p.name), upserted, byProvider };
   });
+}
+
+/** Cold-start depth: back to the provider's earliest lead (its sources' first
+ *  captured lead), clamped to [ROLLING_DAYS, MAX_HISTORY_DAYS]. No leads yet →
+ *  stay on the rolling window; there is nothing for older spend to match. */
+async function coldStartDays(provider: SpendProvider): Promise<number> {
+  const keys = provider.platforms.map((p) => PLATFORM_SOURCE_KEY[p]).filter(Boolean);
+  if (keys.length === 0) return ROLLING_DAYS;
+  const [row] = await db
+    .select({ first: sql<string | null>`min(${leads.occurredAt})::date::text` })
+    .from(leads)
+    .innerJoin(sources, eq(leads.sourceId, sources.id))
+    .where(inArray(sources.key, keys));
+  if (!row?.first) return ROLLING_DAYS;
+  const days = Math.ceil((Date.now() - new Date(row.first).getTime()) / 86_400_000) + 1;
+  return Math.min(MAX_HISTORY_DAYS, Math.max(ROLLING_DAYS, days));
 }
 
 /** True once the provider's platforms have any spend row older than the rolling
