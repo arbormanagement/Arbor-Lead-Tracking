@@ -52,7 +52,7 @@ form tracking on the website, and any notification emails/webhooks people rely o
 | Number type | Decision |
 |---|---|
 | Published in hard-to-change places (GBP, print, wraps, signs) or meaningful repeat-call volume | **Port to Twilio**, keep same digits |
-| Website DNI pool numbers | **Port to Twilio as *static* legacy numbers** (forward → office). 60-day CallRail analysis (2026-07-24, see addendum) found real saved-number callbacks to pool numbers — callers re-dialing the same pool number days to weeks later from their phone history. Do **not** put ported pool numbers into the app's rotation: a saved-number callback arriving while that number is leased to another visitor would mis-attribute to that visitor's session. Buy fresh numbers for the app's own pool instead. |
+| Website DNI pool numbers | **Port to Twilio and use them AS the app's DNI rotation** (decided by Justin 2026-07-24). 60-day CallRail analysis (see addendum) found real saved-number callbacks to pool numbers, so the numbers get ported rather than released — and keeping them in rotation means no new numbers to buy and the same digits customers saved. Accepted trade-off: a saved-number callback still **always connects** (the voice webhook forwards independently of lease state) but lands unattributed, or mis-attributed to the visitor holding the lease at that moment (~2% of pool calls in the 60-day window). |
 | Low/zero volume, nowhere published | Let die with the account |
 
 ## Step 1 — Stand up the Twilio side in parallel
@@ -61,10 +61,13 @@ For each static source in the inventory, provision (or prepare to import) a
 tracking number in **Numbers → Add** (search-by-digits flow already mimics
 CallRail): matching area code (618), forward → office, whisper + recording +
 consent notice on (IL/MO mixed-consent — already handled), mapped to the right
-source and location. Build the DNI pool (start ~4–6 numbers; `LEASE_MINUTES=30`
-leases recycle fast) for the website rotation — **buy these fresh**; the ported
-CallRail pool numbers stay out of the rotation and come in as static legacy
-numbers (source: website/legacy, forward → office) via the import flow.
+source and location. The DNI pool for the website rotation = **the 5 ported
+CallRail pool numbers**, imported as non-static pool members via the import
+flow once their ports complete (`LEASE_MINUTES=30` leases recycle fast, so 5
+numbers is a workable pool size — expand with bought numbers later only if
+`/api/dni/assign` starts hitting the exhaustion fallback). Note this sequences
+the website DNI cutover (Step 5) **after** the pool ports land, since the app
+has no rotation numbers until then.
 
 Verify per number with a live test call: whisper plays, call connects, recording +
 transcription land, lead is created with the right source, spam scoring runs.
@@ -198,8 +201,10 @@ line for the app's forwarding).
 | +1 618 350 4451 | GBP O'Fallon | 59 | gbp (ofallon) |
 | +1 618 414 5907 | Google Call-Only Ads | 48 | google_ads (call-only) |
 
-**DNI pool numbers (5, "Website pool" session tracker) — port as static
-legacy, do NOT add to the app rotation:**
+**DNI pool numbers (5, "Website pool" session tracker) — port and reuse as
+the app's own DNI rotation (Justin's call, 2026-07-24 — accepted the
+attribution trade-off on saved-number callbacks; calls themselves always
+connect):**
 
 | Number | 60-day calls |
 |---|---|
