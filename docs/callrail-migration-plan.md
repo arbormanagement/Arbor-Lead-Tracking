@@ -23,6 +23,11 @@ Guiding rules:
 
 ## Step 0 — Inventory CallRail (no changes yet)
 
+> **Status 2026-07-24:** number + volume inventory DONE via the CallRail API —
+> see the addendum at the bottom. Still open from the checklist below: the
+> "everywhere it is published" audit for print/directories/email signatures,
+> and the integrations inventory.
+
 Build a spreadsheet of every CallRail tracking number with, per number:
 
 1. **The number itself** and its **forwarding destination** (expect office
@@ -47,7 +52,7 @@ form tracking on the website, and any notification emails/webhooks people rely o
 | Number type | Decision |
 |---|---|
 | Published in hard-to-change places (GBP, print, wraps, signs) or meaningful repeat-call volume | **Port to Twilio**, keep same digits |
-| Website DNI pool numbers | **Don't port** — the app's own Twilio pool replaces them |
+| Website DNI pool numbers | **Port to Twilio as *static* legacy numbers** (forward → office). 60-day CallRail analysis (2026-07-24, see addendum) found real saved-number callbacks to pool numbers — callers re-dialing the same pool number days to weeks later from their phone history. Do **not** put ported pool numbers into the app's rotation: a saved-number callback arriving while that number is leased to another visitor would mis-attribute to that visitor's session. Buy fresh numbers for the app's own pool instead. |
 | Low/zero volume, nowhere published | Let die with the account |
 
 ## Step 1 — Stand up the Twilio side in parallel
@@ -57,7 +62,9 @@ tracking number in **Numbers → Add** (search-by-digits flow already mimics
 CallRail): matching area code (618), forward → office, whisper + recording +
 consent notice on (IL/MO mixed-consent — already handled), mapped to the right
 source and location. Build the DNI pool (start ~4–6 numbers; `LEASE_MINUTES=30`
-leases recycle fast) for the website rotation.
+leases recycle fast) for the website rotation — **buy these fresh**; the ported
+CallRail pool numbers stay out of the rotation and come in as static legacy
+numbers (source: website/legacy, forward → office) via the import flow.
 
 Verify per number with a live test call: whisper plays, call connects, recording +
 transcription land, lead is created with the right source, spam scoring runs.
@@ -98,7 +105,9 @@ the numbers keep working in CallRail the entire time.
 1. Request port-out info from CallRail support (they provide the account/LOA
    details; they do not block ports, but the account **must stay active and paid**
    until every port completes).
-2. Submit port-in requests in the Twilio console for every "port" number.
+2. Submit port-in requests in the Twilio console for every "port" number —
+   per the 2026-07-24 inventory that is **all 10 active numbers** (5 static
+   trackers + 5 DNI pool numbers; see addendum).
 3. The moment a port completes, run the app's **import-number** flow
    (`importPhoneNumber` in the add-number UI) for it: attach the voice webhook,
    map it to its historical source (e.g. the ported GBP number → `gbp` source),
@@ -168,3 +177,56 @@ new Twilio number, which needs no port):
 - All "port" numbers live in Twilio and attributed to correct sources.
 - Google Ads bidding fed only by the app's conversion actions.
 - Archive export saved.
+
+---
+
+## Addendum — CallRail number inventory & direct-dial evidence (2026-07-24)
+
+60-day analysis (2026-05-25 → 2026-07-24) of all 1,193 inbound CallRail calls,
+pulled via the API. Account `ACCbc8f5e5591f44e42bd49924ee68c858f`, company
+`COM5b472d2f8bb648f4b62ee5095e3af772`. All active numbers forward to
++1 618 205 9924 at CallRail's edge (office +1 618 836 8004 is the business
+line for the app's forwarding).
+
+**Active static trackers (5) — port, keep source mapping:**
+
+| Number | CallRail tracker | 60-day calls | App source on import |
+|---|---|---|---|
+| +1 618 205 3094 | "Direct" (website static/fallback) | 378 | website/direct |
+| +1 618 366 9977 | Google Local Service Ads | 291 | lsa |
+| +1 618 368 2902 | GBP Edwardsville | 229 | gbp (edwardsville) |
+| +1 618 350 4451 | GBP O'Fallon | 59 | gbp (ofallon) |
+| +1 618 414 5907 | Google Call-Only Ads | 48 | google_ads (call-only) |
+
+**DNI pool numbers (5, "Website pool" session tracker) — port as static
+legacy, do NOT add to the app rotation:**
+
+| Number | 60-day calls |
+|---|---|
+| +1 618 205 9820 | 44 |
+| +1 618 350 4871 | 37 |
+| +1 618 681 5764 | 36 |
+| +1 618 352 2730 | 27 |
+| +1 618 350 4252 | 26 |
+
+Pool total: 170 calls (~14% of all inbound). 31% of pool calls were repeat
+callers (`first_call: false`).
+
+**Why the pool numbers get ported** — saved-number callbacks observed in just
+60 days (caller re-dials the *same* pool number on a later day, which a 5-number
+random rotation makes ~1-in-5 unlikely per revisit, so repeats are near-certain
+redials from phone history):
+
+- +1 618 656 8752: six calls to +1 618 205 9820 across 2026-06-22 → 07-13
+- +1 618 520 6677: same pool number on 06-09 and 42 days later on 07-21
+- +1 604 332 1798: same pool number on 05-28 and 06-17 (20 days apart)
+- +1 618 530 6759: same pool number on consecutive days
+
+That's ~2% of pool calls / <1% of total volume in a 60-day window — but the
+window understates the tail (a number saved in March can be dialed in
+September), the callers are by definition interested or existing customers,
+and porting 5 numbers is cheap insurance. Releasing them hands those callbacks
+to whoever CallRail recycles the numbers to.
+
+**Disabled CallRail trackers** (Yelp, old GMB, old website-pool, Matt Brooks,
+etc.) hold no numbers — nothing to port there.
