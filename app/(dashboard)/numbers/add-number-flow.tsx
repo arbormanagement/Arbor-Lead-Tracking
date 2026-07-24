@@ -13,16 +13,23 @@ interface Available {
   friendlyName: string;
   locality: string | null;
   region: string | null;
+  /** Import mode only: the number's current voice webhook (non-null = routed elsewhere). */
+  voiceUrl?: string | null;
 }
 
 /**
- * CallRail-style "add a tracking number": search Twilio inventory → pick the
- * actual digits → name it for a source + set where it forwards / the whisper →
- * buy. Posts to /api/numbers/available (search) and /api/numbers (purchase).
+ * CallRail-style "add a tracking number", two ways in: buy (search Twilio
+ * inventory → pick the actual digits) or import a number already owned in the
+ * Twilio account (e.g. just ported in from CallRail). Both share the same
+ * configure step. Posts to /api/numbers/available (search), /api/numbers/importable
+ * (owned list), and /api/numbers (provision).
  */
 export function AddNumberFlow({ sources, officeDefault }: { sources: SourceOpt[]; officeDefault: string }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
+
+  // Buy a new number, or import one already owned in the Twilio account.
+  const [acquire, setAcquire] = useState<"buy" | "import">("buy");
 
   // Search
   const [tollFree, setTollFree] = useState(false);
@@ -66,6 +73,27 @@ export function AddNumberFlow({ sources, officeDefault }: { sources: SourceOpt[]
     }
   }
 
+  async function loadOwned() {
+    setSearching(true);
+    setMsg(null);
+    setResults(null);
+    setSelected(null);
+    const res = await fetch("/api/numbers/importable");
+    const body = await res.json().catch(() => ({}));
+    setSearching(false);
+    if (res.ok && body.ok) {
+      setResults(body.numbers.map((n: { phoneNumber: string; friendlyName: string; voiceUrl: string | null }) => ({
+        ...n,
+        locality: null,
+        region: null,
+      })));
+      if (!body.numbers.length)
+        setMsg({ ok: false, text: "No untracked numbers in the Twilio account — a ported number appears here once its port completes." });
+    } else {
+      setMsg({ ok: false, text: body.error || "Couldn't load owned numbers" });
+    }
+  }
+
   async function buy() {
     if (!selected) return;
     setBuying(true);
@@ -75,7 +103,9 @@ export function AddNumberFlow({ sources, officeDefault }: { sources: SourceOpt[]
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        purchasePhoneNumber: selected.phoneNumber,
+        ...(acquire === "import"
+          ? { importPhoneNumber: selected.phoneNumber }
+          : { purchasePhoneNumber: selected.phoneNumber }),
         // Pools no longer drive DNI (single shared rotation) — bucket everything in "reserved".
         pool: "reserved",
         isStatic,
@@ -132,31 +162,68 @@ export function AddNumberFlow({ sources, officeDefault }: { sources: SourceOpt[]
         </button>
       </div>
 
-      {/* Step 1 — search inventory */}
-      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-end" }}>
-        <label style={{ display: "flex", gap: 6, alignItems: "center", color: "var(--muted)" }}>
-          <input type="checkbox" checked={tollFree} onChange={(e) => setTollFree(e.target.checked)} />
-          toll-free
-        </label>
-        {!tollFree && (
-          <div>
-            <span style={label}>Area code</span>
-            <input value={areaCode} onChange={(e) => setAreaCode(e.target.value)} style={{ ...input, width: 90 }} />
-          </div>
-        )}
-        <div>
-          <span style={label}>Contains (optional)</span>
-          <input
-            value={contains}
-            onChange={(e) => setContains(e.target.value)}
-            placeholder="e.g. 8004 or TREE"
-            style={{ ...input, width: 140 }}
-          />
-        </div>
-        <button onClick={search} disabled={searching} style={solidBtn}>
-          {searching ? "Searching…" : "Search numbers"}
-        </button>
+      {/* Step 0 — buy new vs import owned */}
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
+        <ModeCard
+          active={acquire === "buy"}
+          onClick={() => {
+            setAcquire("buy");
+            setResults(null);
+            setSelected(null);
+            setMsg(null);
+          }}
+          title="Buy a new number"
+          desc="Search Twilio inventory by area code or digit pattern and pick the exact number."
+        />
+        <ModeCard
+          active={acquire === "import"}
+          onClick={() => {
+            setAcquire("import");
+            setResults(null);
+            setSelected(null);
+            setMsg(null);
+          }}
+          title="Import a number you own"
+          desc="A number already in the Twilio account — e.g. one just ported in from CallRail. Importing points its calls at this app."
+        />
       </div>
+
+      {/* Step 1 — search inventory / list owned numbers */}
+      {acquire === "buy" ? (
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-end" }}>
+          <label style={{ display: "flex", gap: 6, alignItems: "center", color: "var(--muted)" }}>
+            <input type="checkbox" checked={tollFree} onChange={(e) => setTollFree(e.target.checked)} />
+            toll-free
+          </label>
+          {!tollFree && (
+            <div>
+              <span style={label}>Area code</span>
+              <input value={areaCode} onChange={(e) => setAreaCode(e.target.value)} style={{ ...input, width: 90 }} />
+            </div>
+          )}
+          <div>
+            <span style={label}>Contains (optional)</span>
+            <input
+              value={contains}
+              onChange={(e) => setContains(e.target.value)}
+              placeholder="e.g. 8004 or TREE"
+              style={{ ...input, width: 140 }}
+            />
+          </div>
+          <button onClick={search} disabled={searching} style={solidBtn}>
+            {searching ? "Searching…" : "Search numbers"}
+          </button>
+        </div>
+      ) : (
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+          <button onClick={loadOwned} disabled={searching} style={solidBtn}>
+            {searching ? "Loading…" : "Load my Twilio numbers"}
+          </button>
+          <span style={{ fontSize: 12, color: "var(--muted)" }}>
+            Shows voice-capable numbers in the account that aren&apos;t tracked yet.
+          </span>
+        </div>
+      )}
 
       {/* Step 2 — pick the actual number */}
       {results && results.length > 0 && (
@@ -178,8 +245,12 @@ export function AddNumberFlow({ sources, officeDefault }: { sources: SourceOpt[]
                 }}
               >
                 <div style={{ fontWeight: 700 }}>{formatPhoneDisplay(n.phoneNumber)}</div>
-                <div style={{ fontSize: 11, color: "var(--muted)" }}>
-                  {[n.locality, n.region].filter(Boolean).join(", ") || "US"}
+                <div style={{ fontSize: 11, color: n.voiceUrl ? "var(--warn, #d19a00)" : "var(--muted)" }}>
+                  {acquire === "import"
+                    ? n.voiceUrl
+                      ? "⚠ currently routed elsewhere — importing repoints it here"
+                      : n.friendlyName || "unconfigured — safe to import"
+                    : [n.locality, n.region].filter(Boolean).join(", ") || "US"}
                 </div>
               </button>
             );
@@ -287,7 +358,11 @@ export function AddNumberFlow({ sources, officeDefault }: { sources: SourceOpt[]
               </span>
             )}
             <button onClick={buy} disabled={buying} style={solidBtn}>
-              {buying ? "Buying…" : `Buy ${formatPhoneDisplay(selected.phoneNumber)}`}
+              {buying
+                ? acquire === "import"
+                  ? "Importing…"
+                  : "Buying…"
+                : `${acquire === "import" ? "Import" : "Buy"} ${formatPhoneDisplay(selected.phoneNumber)}`}
             </button>
           </div>
         </div>

@@ -108,6 +108,33 @@ export async function backfillVoiceFallback() {
   return { numbers: rows.length, updated, errors };
 }
 
+export interface ImportableNumber {
+  phoneNumber: string;
+  friendlyName: string;
+  /** Current voice webhook, if any — non-null means the number is routed
+   *  somewhere already (possibly another service) and importing repoints it. */
+  voiceUrl: string | null;
+}
+
+/**
+ * Voice-capable numbers already owned in the Twilio account but not yet tracked
+ * by the app — the candidates for the Numbers → Add "import" path (e.g. a number
+ * just ported in from CallRail).
+ */
+export async function listImportableNumbers(): Promise<ImportableNumber[]> {
+  const client = await getTwilioClient();
+  const owned = await client.incomingPhoneNumbers.list({ limit: 200 });
+  const tracked = await db.select({ phone: trackingNumbers.phoneNumber }).from(trackingNumbers);
+  const trackedSet = new Set(tracked.map((t) => t.phone));
+  return owned
+    .filter((n) => !trackedSet.has(n.phoneNumber) && n.capabilities?.voice !== false)
+    .map((n) => ({
+      phoneNumber: n.phoneNumber,
+      friendlyName: n.friendlyName ?? "",
+      voiceUrl: n.voiceUrl || null,
+    }));
+}
+
 /**
  * Provision (buy) or import a Twilio number into a pool: point its voice +
  * status webhooks at this app and record a `tracking_numbers` row. Recording
