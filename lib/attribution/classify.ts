@@ -52,6 +52,18 @@ export function classifySource(p: TouchParams): Classification {
   return { sourceKey: "direct", medium: "none" };
 }
 
+/**
+ * Ad id from utm_content — only on paid-classified traffic, and only when it's a
+ * plausible platform ad id (all digits). Google's {creative} and Meta's {{ad.id}}
+ * both expand to numeric ids; anything else (email A/B labels, un-expanded
+ * "{creative}" from a misconfigured template) is noise and is dropped.
+ */
+export function adIdFromUtmContent(content: string | null | undefined, sourceKey: string | null | undefined): string | null {
+  if (!content) return null;
+  if (sourceKey !== "google/cpc" && sourceKey !== "facebook/paid") return null;
+  return /^\d{5,25}$/.test(content) ? content : null;
+}
+
 function hostOf(url: string): string | null {
   try {
     return new URL(url).hostname.replace(/^www\./, "");

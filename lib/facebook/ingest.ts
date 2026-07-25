@@ -36,6 +36,7 @@ export async function ingestFacebookLead(detail: FbLeadDetail): Promise<boolean>
       sourceId,
       medium: "paid",
       campaignId,
+      externalAdId: detail.adId ?? null,
       occurredAt,
     })
     .returning({ id: leads.id });

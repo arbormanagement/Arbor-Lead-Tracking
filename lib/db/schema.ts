@@ -297,6 +297,7 @@ export const numberAssignments = pgTable(
     medium: text("medium"),
     campaign: text("campaign"),
     keyword: text("keyword"),
+    content: text("content"), // utm_content — carries the platform ad id for per-ad ROAS
     gclid: text("gclid"),
     fbclid: text("fbclid"),
     landingPage: text("landing_page"),
@@ -420,6 +421,11 @@ export const leads = pgTable(
     medium: text("medium"),
     campaignId: text("campaign_id").references(() => campaigns.id),
     keyword: text("keyword"),
+    // The platform's ad id — stamped on the click URL via utm_content ({creative}
+    // on Google, {{ad.id}} on Meta; see docs/ad-level-tracking.md) or carried
+    // natively on FB lead-gen submissions. Joins ad_spend_ads.external_ad_id for
+    // per-ad ROAS.
+    externalAdId: text("external_ad_id"),
     gclid: text("gclid"),
     fbclid: text("fbclid"),
     landingPage: text("landing_page"),
@@ -458,6 +464,7 @@ export const leads = pgTable(
     index("leads_email_idx").on(t.emailLc),
     index("leads_source_idx").on(t.sourceId),
     index("leads_status_idx").on(t.status),
+    index("leads_external_ad_idx").on(t.externalAdId),
   ],
 );
 

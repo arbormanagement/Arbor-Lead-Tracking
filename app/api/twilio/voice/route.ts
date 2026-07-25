@@ -8,6 +8,7 @@ import {
   spamRules,
   trackingNumbers,
 } from "@/lib/db/schema";
+import { adIdFromUtmContent } from "@/lib/attribution/classify";
 import { validateTwilioSignature, parseTwilioForm } from "@/lib/twilio/signature";
 import { getDefaultForwardNumber } from "@/lib/routing";
 import {
@@ -66,6 +67,7 @@ export async function POST(req: Request) {
     //    the most-recent (active or recently-released) session lease.
     let sourceKey: string | null = null;
     let assignmentId: string | null = null;
+    let lease: typeof numberAssignments.$inferSelect | null = null;
 
     if (tn.isStatic && tn.staticSourceId) {
       const [src] = await db
@@ -90,17 +92,18 @@ export async function POST(req: Request) {
       if (assignment) {
         assignmentId = assignment.id;
         sourceKey = assignment.source ?? null;
+        lease = assignment;
       }
     }
 
     // 3) Spam pre-check (hard rules only — keep it fast).
     if (fromE164 && (await isHardSpam(fromE164))) {
-      await recordCall({ callSid, fromE164, tn, assignmentId, sourceKey, destination, status: "rejected_spam" });
+      await recordCall({ callSid, fromE164, tn, assignmentId, lease, sourceKey, destination, status: "rejected_spam" });
       return xmlResponse(rejectTwiml());
     }
 
     // 4) Persist the call + lead immediately (status callbacks fill in the rest).
-    await recordCall({ callSid, fromE164, tn, assignmentId, sourceKey, destination, status: "ringing" });
+    await recordCall({ callSid, fromE164, tn, assignmentId, lease, sourceKey, destination, status: "ringing" });
 
     // 5) Forward with an optional pre-call message + whisper + (optional) recording.
     //    All three are per-number overrides. The greeting is independent of recording
@@ -142,11 +145,12 @@ async function recordCall(args: {
   fromE164: string | null;
   tn: typeof trackingNumbers.$inferSelect;
   assignmentId: string | null;
+  lease: typeof numberAssignments.$inferSelect | null;
   sourceKey: string | null;
   destination: string;
   status: string;
 }) {
-  const { callSid, fromE164, tn, assignmentId, sourceKey, destination, status } = args;
+  const { callSid, fromE164, tn, assignmentId, lease, sourceKey, destination, status } = args;
 
   // Resolve source id (best-effort) for the denormalized lead row.
   let sourceId: string | null = null;
@@ -166,6 +170,9 @@ async function recordCall(args: {
     isFirstTime = prior.length === 0;
   }
 
+  // A pooled call carries its lease's frozen session attribution onto the lead
+  // (keyword, click ids, ad id, session linkage) — this is what gives calls
+  // per-ad/keyword reporting. Static-number calls have none of this.
   const [lead] = await db
     .insert(leads)
     .values({
@@ -173,6 +180,14 @@ async function recordCall(args: {
       status: status === "rejected_spam" ? "spam" : "new",
       phoneE164: fromE164,
       sourceId,
+      medium: lease?.medium ?? undefined,
+      keyword: lease?.keyword ?? undefined,
+      externalAdId: adIdFromUtmContent(lease?.content, lease?.source),
+      gclid: lease?.gclid ?? undefined,
+      fbclid: lease?.fbclid ?? undefined,
+      landingPage: lease?.landingPage ?? undefined,
+      visitorId: lease?.visitorId ?? undefined,
+      webSessionId: lease?.webSessionId ?? undefined,
       location: tn.location ?? "unknown",
       isSpam: status === "rejected_spam",
       isFirstTime,

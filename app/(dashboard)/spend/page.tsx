@@ -1,7 +1,7 @@
-import { and, desc, eq, gte, isNotNull, sql } from "drizzle-orm";
+import { and, desc, eq, gte, isNotNull, ne, or, sql } from "drizzle-orm";
 import Link from "next/link";
 import { db } from "@/lib/db/client";
-import { adSpend, adSpendAds, campaigns, facebookLeads, leads, manualSpend, roiDaily, sources, syncRuns } from "@/lib/db/schema";
+import { adSpend, adSpendAds, campaigns, leads, manualSpend, roiDaily, sources, syncRuns } from "@/lib/db/schema";
 import { dateTime, dollars } from "@/lib/format";
 import { TIMEFRAMES, pickDays, timeframeLabel } from "@/lib/timeframes";
 import { ManualSpend } from "./manual-spend";
@@ -121,20 +121,22 @@ export default async function SpendPage({ searchParams }: { searchParams: Promis
     .groupBy(adSpendAds.platform, adSpendAds.externalCampaignId, adSpendAds.externalAdId)
     .orderBy(desc(sql`coalesce(sum(${adSpendAds.spendCents}),0)`));
 
-  // Captured leads per Facebook ad — lead-gen submissions carry the ad id, so
-  // the FB drill-down can show real leads/won/revenue per individual ad.
-  const fbAdLeads = await db
+  // Captured leads/won/revenue per ad — leads carry the platform ad id (FB
+  // lead-gen natively; Google/FB web + DNI calls via utm_content, see
+  // docs/ad-level-tracking.md). Joined to spend below for per-ad ROAS. Same
+  // non-spam + lead-only filters the ROI rollup uses.
+  const leadOnly = or(ne(leads.type, "call"), eq(leads.isLead, true));
+  const perAdLeads = await db
     .select({
-      adId: facebookLeads.fbAdId,
+      adId: leads.externalAdId,
       leads: sql<number>`count(*)::int`,
       won: sql<number>`count(*) filter (where ${leads.status} = 'won')::int`,
       revenue: sql<number>`coalesce(sum(${leads.salesValueCents}) filter (where ${leads.status} = 'won'),0)::int`,
     })
-    .from(facebookLeads)
-    .leftJoin(leads, eq(facebookLeads.leadId, leads.id))
-    .where(and(isNotNull(facebookLeads.fbAdId), gte(facebookLeads.createdTime, sinceDate)))
-    .groupBy(facebookLeads.fbAdId);
-  const fbLeadsByAd = new Map(fbAdLeads.map((r) => [r.adId, r]));
+    .from(leads)
+    .where(and(isNotNull(leads.externalAdId), gte(leads.occurredAt, sinceDate), eq(leads.isSpam, false), leadOnly))
+    .groupBy(leads.externalAdId);
+  const leadsByAd = new Map(perAdLeads.map((r) => [r.adId, r]));
 
   // Group platform → campaign for the drill-down (already spend-sorted).
   const platforms = new Map<string, Map<string, { name: string; ads: AdRow[] }>>();
@@ -214,8 +216,9 @@ export default async function SpendPage({ searchParams }: { searchParams: Promis
 
       <h2 className="page-title" style={{ fontSize: 15 }}>Individual ads</h2>
       <p className="page-sub" style={{ marginBottom: 14 }}>
-        Per-ad performance ({label}) — expand a campaign to see its ads. Facebook rows include captured
-        leads per ad; Google LSA and Performance Max report at campaign level only.
+        Per-ad performance ({label}) — expand a campaign to see its ads. Leads/Revenue/ROAS need the ad id on
+        the click URL (<code>utm_content</code> tracking template — see <code>docs/ad-level-tracking.md</code>);
+        FB lead-gen ads carry it natively. Google LSA and Performance Max report at campaign level only.
       </p>
       {adRows.length === 0 ? (
         <div className="empty" style={{ marginBottom: 24 }}>
@@ -230,7 +233,6 @@ export default async function SpendPage({ searchParams }: { searchParams: Promis
                 (a, r) => ({ spend: a.spend + r.spend, clicks: a.clicks + r.clicks, impressions: a.impressions + r.impressions }),
                 { spend: 0, clicks: 0, impressions: 0 },
               );
-              const isFb = platform === "facebook";
               return (
                 <details key={campaignKey} className="card" style={{ marginBottom: 8, padding: 0 }}>
                   <summary style={{ cursor: "pointer", display: "flex", alignItems: "center", gap: 12, padding: "10px 14px", listStyle: "none" }}>
@@ -249,15 +251,17 @@ export default async function SpendPage({ searchParams }: { searchParams: Promis
                           <th style={{ textAlign: "right" }}>Clicks</th>
                           <th style={{ textAlign: "right" }} title="Cost per click">CPC</th>
                           <th style={{ textAlign: "right" }} title="Platform-reported conversions">Conv.</th>
-                          {isFb && <th style={{ textAlign: "right" }} title="Lead-gen submissions captured from this ad">Leads</th>}
-                          {isFb && <th style={{ textAlign: "right" }} title="Won-estimate revenue from this ad's leads">Revenue</th>}
+                          <th style={{ textAlign: "right" }} title="Captured leads attributed to this ad">Leads</th>
+                          <th style={{ textAlign: "right" }} title="Won-estimate revenue from this ad's leads">Revenue</th>
                           <th style={{ textAlign: "right" }}>Spend</th>
+                          <th style={{ textAlign: "right" }} title="Won-estimate revenue ÷ this ad's spend">ROAS</th>
                         </tr>
                       </thead>
                       <tbody>
                         {c.ads.map((ad) => {
-                          const fb = isFb ? fbLeadsByAd.get(ad.externalAdId) : undefined;
+                          const st = leadsByAd.get(ad.externalAdId);
                           const cpc = ad.clicks > 0 ? dollars(Math.round(ad.spend / ad.clicks)) : "—";
+                          const roas = st && st.revenue > 0 && ad.spend > 0 ? (st.revenue / ad.spend).toFixed(1) + "×" : "—";
                           const paused = ad.adStatus && !["ENABLED", "ACTIVE"].includes(ad.adStatus);
                           return (
                             <tr key={ad.externalAdId}>
@@ -282,13 +286,12 @@ export default async function SpendPage({ searchParams }: { searchParams: Promis
                               <td className="mono" style={{ textAlign: "right" }}>{ad.clicks.toLocaleString()}</td>
                               <td className="mono muted" style={{ textAlign: "right" }}>{cpc}</td>
                               <td className="mono muted" style={{ textAlign: "right" }}>{ad.conversions ? ad.conversions.toFixed(1) : "—"}</td>
-                              {isFb && <td className="mono" style={{ textAlign: "right" }}>{fb?.leads ?? 0}</td>}
-                              {isFb && (
-                                <td className="mono" style={{ textAlign: "right" }}>
-                                  {fb && fb.revenue > 0 ? dollars(fb.revenue) : <span className="muted">—</span>}
-                                </td>
-                              )}
+                              <td className="mono" style={{ textAlign: "right" }}>{st?.leads ?? <span className="muted">0</span>}</td>
+                              <td className="mono" style={{ textAlign: "right" }}>
+                                {st && st.revenue > 0 ? dollars(st.revenue) : <span className="muted">—</span>}
+                              </td>
                               <td className="mono" style={{ textAlign: "right", fontWeight: 600 }}>{dollars(ad.spend)}</td>
+                              <td className="mono" style={{ textAlign: "right", fontWeight: 700, color: roas === "—" ? "var(--muted)" : "var(--accent)" }}>{roas}</td>
                             </tr>
                           );
                         })}

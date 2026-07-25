@@ -10,6 +10,8 @@ export interface AttributionSnapshot {
   medium?: string | null;
   campaign?: string | null;
   keyword?: string | null;
+  /** utm_content — carries the platform ad id ({creative} / {{ad.id}}). */
+  content?: string | null;
   gclid?: string | null;
   fbclid?: string | null;
   landingPage?: string | null;
@@ -88,10 +90,10 @@ export async function leaseNumber(snap: AttributionSnapshot, sid: string, vid: s
     ins AS (
       INSERT INTO number_assignments
         (id, tracking_number_id, web_session_id, visitor_id, assigned_at, expires_at,
-         source, medium, campaign, keyword, gclid, fbclid, landing_page, created_at)
+         source, medium, campaign, keyword, content, gclid, fbclid, landing_page, created_at)
       SELECT ${id}, tn_id, ${sid}, ${vid}, now(), now() + make_interval(mins => ${LEASE_MINUTES}),
          ${snap.source ?? null}, ${snap.medium ?? null}, ${snap.campaign ?? null}, ${snap.keyword ?? null},
-         ${snap.gclid ?? null}, ${snap.fbclid ?? null}, ${snap.landingPage ?? null}, now()
+         ${snap.content ?? null}, ${snap.gclid ?? null}, ${snap.fbclid ?? null}, ${snap.landingPage ?? null}, now()
       FROM picked
       RETURNING id AS assignment_id, tracking_number_id
     )

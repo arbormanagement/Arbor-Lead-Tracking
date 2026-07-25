@@ -2,7 +2,7 @@ import { eq } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@/lib/db/client";
 import { formSubmissions, leads, sources, visitors, webSessions } from "@/lib/db/schema";
-import { classifySource } from "@/lib/attribution/classify";
+import { adIdFromUtmContent, classifySource } from "@/lib/attribution/classify";
 import { normalizeEmail, normalizePhone } from "@/lib/phone";
 
 export const runtime = "nodejs";
@@ -133,6 +133,27 @@ export async function POST(req: Request) {
 
   // 3) Form submission → web_form lead.
   if (parsed.event === "form_submit" && form) {
+    // The form page usually has no utm/click params (the visitor navigated there
+    // from the ad's landing page, so this event classifies as an internal
+    // referral) — prefer the session's frozen last-touch attribution, falling
+    // back to whatever arrived on this event. This is what lets gclid/keyword/
+    // ad-id survive multi-page journeys.
+    const [sess] = await db
+      .select({
+        source: webSessions.source,
+        medium: webSessions.medium,
+        content: webSessions.content,
+        term: webSessions.term,
+        gclid: webSessions.gclid,
+        fbclid: webSessions.fbclid,
+        derivedSourceId: webSessions.derivedSourceId,
+      })
+      .from(webSessions)
+      .where(eq(webSessions.id, sid))
+      .limit(1);
+    const leadSourceKey = sess?.source ?? cls.sourceKey;
+    const adContent = utm.content ?? sess?.content ?? undefined;
+
     const c = mapFormFields(form.fields);
     const [lead] = await db
       .insert(leads)
@@ -144,10 +165,12 @@ export async function POST(req: Request) {
         phoneE164: normalizePhone(c.phone),
         emailLc: normalizeEmail(c.email),
         message: c.message,
-        sourceId,
-        medium: utm.medium ?? cls.medium,
-        gclid: click.gclid,
-        fbclid: click.fbclid,
+        sourceId: sess?.derivedSourceId ?? sourceId,
+        medium: sess?.medium ?? utm.medium ?? cls.medium,
+        keyword: utm.term ?? sess?.term ?? null,
+        externalAdId: adIdFromUtmContent(adContent, leadSourceKey),
+        gclid: click.gclid ?? sess?.gclid,
+        fbclid: click.fbclid ?? sess?.fbclid,
         landingPage: form.pageUrl ?? url,
         referrer,
         location,

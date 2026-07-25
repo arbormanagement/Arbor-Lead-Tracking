@@ -31,6 +31,7 @@ const Body = z.object({
       medium: z.string().max(256).optional(),
       campaign: z.string().max(256).optional(),
       term: z.string().max(256).optional(),
+      content: z.string().max(256).optional(),
     })
     .partial()
     .optional(),
@@ -86,6 +87,7 @@ export async function POST(req: Request) {
       medium: utm.medium ?? cls.medium,
       campaign: utm.campaign,
       keyword: utm.term,
+      content: utm.content,
       gclid: click.gclid,
       fbclid: click.fbclid,
       landingPage: url,
