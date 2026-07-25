@@ -1,5 +1,5 @@
 import { getPlatformCreds } from "@/lib/credentials";
-import type { SpendProvider, SpendRow } from "./types";
+import type { AdSpendRow, SpendProvider, SpendRow } from "./types";
 
 /**
  * Direct Google Ads client over REST (no heavy SDK). Credentials come from the
@@ -109,6 +109,51 @@ class GoogleAdsProvider implements SpendProvider {
       );
     }
     return rows;
+  }
+
+  /**
+   * Ad-level drill-down: one row per ad per day from `ad_group_ad`. Only the main
+   * account is queried — LSA is profile-based (no ads) and stays campaign-level,
+   * as does PMax (asset groups don't surface through ad_group_ad). RSAs usually
+   * have no ad.name, so the display name falls back to the first headlines.
+   */
+  async getDailyAdSpend({ sinceDays }: { sinceDays: number }): Promise<AdSpendRow[]> {
+    const cfg = await this.config();
+    const since = new Date(Date.now() - sinceDays * 86_400_000).toISOString().slice(0, 10);
+    const today = new Date().toISOString().slice(0, 10);
+    const gaql = `
+      SELECT campaign.id, campaign.name, ad_group.id, ad_group.name,
+             ad_group_ad.ad.id, ad_group_ad.ad.name, ad_group_ad.ad.type,
+             ad_group_ad.status, ad_group_ad.ad.responsive_search_ad.headlines,
+             segments.date, metrics.impressions, metrics.clicks,
+             metrics.cost_micros, metrics.conversions
+      FROM ad_group_ad
+      WHERE segments.date BETWEEN '${since}' AND '${today}'`;
+    const results = await this.searchStream(cfg, gaql);
+
+    return results.map((r) => {
+      const ad = r.adGroupAd?.ad ?? {};
+      const headlines: string[] = (ad.responsiveSearchAd?.headlines ?? [])
+        .map((h: { text?: string }) => h.text)
+        .filter(Boolean);
+      return {
+        platform: "google" as const,
+        externalCampaignId: String(r.campaign?.id),
+        campaignName: r.campaign?.name,
+        externalGroupId: r.adGroup?.id ? String(r.adGroup.id) : undefined,
+        groupName: r.adGroup?.name,
+        externalAdId: String(ad.id),
+        adName: ad.name || headlines.slice(0, 2).join(" | ") || `${ad.type ?? "AD"} ${ad.id}`,
+        adStatus: r.adGroupAd?.status,
+        creativeTitle: headlines.join(" · ") || undefined,
+        date: r.segments?.date,
+        impressions: Number(r.metrics?.impressions ?? 0),
+        clicks: Number(r.metrics?.clicks ?? 0),
+        spendCents: Math.round(Number(r.metrics?.costMicros ?? 0) / 10_000),
+        conversions: Number(r.metrics?.conversions ?? 0),
+        raw: r,
+      };
+    });
   }
 
   /**

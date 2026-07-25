@@ -23,6 +23,30 @@ export interface SpendRow {
   raw?: unknown;
 }
 
+/** One platform/ad/day of spend — the drill-down one level below SpendRow. */
+export interface AdSpendRow {
+  platform: SpendRow["platform"];
+  externalCampaignId: string;
+  campaignName?: string;
+  /** Ad group (Google) / ad set (Facebook) containing the ad. */
+  externalGroupId?: string;
+  groupName?: string;
+  externalAdId: string;
+  adName?: string;
+  adStatus?: string;
+  /** Creative preview — thumbnail on FB; Google RSAs carry headline text instead. */
+  creativeThumbUrl?: string;
+  creativeTitle?: string;
+  creativeBody?: string;
+  /** ISO date YYYY-MM-DD. */
+  date: string;
+  impressions: number;
+  clicks: number;
+  spendCents: number;
+  conversions: number;
+  raw?: unknown;
+}
+
 export interface HcpCustomerDTO {
   hcpCustomerId: string;
   firstName?: string | null;
@@ -81,6 +105,8 @@ export interface SpendProvider {
   readonly platforms: SpendRow["platform"][];
   /** Daily spend across active campaigns for a rolling window. */
   getDailySpend(opts: { sinceDays: number }): Promise<SpendRow[]>;
+  /** Optional ad-level drill-down for the same window (not every platform has ads). */
+  getDailyAdSpend?(opts: { sinceDays: number }): Promise<AdSpendRow[]>;
 }
 
 export interface RevenueProvider {

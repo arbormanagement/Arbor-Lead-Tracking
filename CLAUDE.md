@@ -40,3 +40,4 @@ Edwardsville + O'Fallon). WhatConverts-style. Single-tenant. Owner: Justin
 - E.164 normalization is load-bearing for lead↔HCP matching/ROI.
 - MCP is a hard dependency for spend/revenue — use Inngest retries + rolling re-pulls.
 - Spend sync is self-healing (`lib/sync/spend.ts`): rolling 35-day re-pull (platforms restate) + automatic cold-start backfill reaching to each platform's earliest lead (≤365d — spend with no leads to match is deliberately not fetched), keyed `(platform, external_campaign_id, date)`. No manual backfills.
+- Ad-level drill-down (`ad_spend_ads`, keyed `(platform, external_ad_id, date)`) syncs alongside campaign spend — Google `ad_group_ad` + FB `level=ad` insights with creative previews. Visibility only; ROI/attribution stays campaign-level. LSA/PMax have no per-ad rows.

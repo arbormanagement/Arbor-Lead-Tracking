@@ -1,5 +1,5 @@
 import { getPlatformCreds } from "@/lib/credentials";
-import type { SpendProvider, SpendRow } from "./types";
+import type { AdSpendRow, SpendProvider, SpendRow } from "./types";
 
 /**
  * Direct Facebook/Instagram Marketing API client. Credentials come from the in-app
@@ -90,6 +90,103 @@ class FacebookProvider implements SpendProvider {
       next = body.paging?.next ?? null;
     }
     return rows;
+  }
+
+  /**
+   * Ad-level drill-down: same Insights call at `level=ad` (one row per ad per
+   * day), then a single paginated pull of the account's ads to attach creative
+   * previews (thumbnail, headline, body). Creative lookup is best-effort — a
+   * failure just leaves the metrics without a thumbnail.
+   */
+  async getDailyAdSpend({ sinceDays }: { sinceDays: number }): Promise<AdSpendRow[]> {
+    const cfg = await fbConfig();
+    const since = new Date(Date.now() - sinceDays * 86_400_000).toISOString().slice(0, 10);
+    const until = new Date().toISOString().slice(0, 10);
+
+    const url = new URL(`https://graph.facebook.com/${cfg.apiVersion}/${cfg.adAccountId}/insights`);
+    url.searchParams.set("level", "ad");
+    url.searchParams.set("time_increment", "1");
+    url.searchParams.set(
+      "fields",
+      "campaign_id,campaign_name,adset_id,adset_name,ad_id,ad_name,impressions,clicks,spend,actions",
+    );
+    url.searchParams.set("time_range", JSON.stringify({ since, until }));
+    url.searchParams.set("limit", "500");
+    url.searchParams.set("access_token", cfg.accessToken);
+
+    const rows: AdSpendRow[] = [];
+    let next: string | null = url.toString();
+    for (let guard = 0; next && guard < 50; guard++) {
+      const res = await fetch(next, { signal: AbortSignal.timeout(60_000) });
+      if (!res.ok) throw new Error(`Facebook ${res.status}: ${await res.text()}`);
+      const body = (await res.json()) as { data?: Array<Record<string, any>>; paging?: { next?: string } };
+      for (const r of body.data ?? []) {
+        rows.push({
+          platform: "facebook",
+          externalCampaignId: String(r.campaign_id),
+          campaignName: r.campaign_name,
+          externalGroupId: r.adset_id ? String(r.adset_id) : undefined,
+          groupName: r.adset_name,
+          externalAdId: String(r.ad_id),
+          adName: r.ad_name,
+          date: r.date_start,
+          impressions: Number(r.impressions ?? 0),
+          clicks: Number(r.clicks ?? 0),
+          spendCents: Math.round(Number(r.spend ?? 0) * 100),
+          conversions: sumLeadActions(r.actions),
+          raw: r,
+        });
+      }
+      next = body.paging?.next ?? null;
+    }
+
+    const creatives = await this.listAdCreatives(cfg);
+    for (const row of rows) {
+      const c = creatives.get(row.externalAdId);
+      if (!c) continue;
+      row.adStatus = c.status ?? row.adStatus;
+      row.creativeThumbUrl = c.thumbUrl;
+      row.creativeTitle = c.title;
+      row.creativeBody = c.body;
+    }
+    return rows;
+  }
+
+  /**
+   * Creative preview per ad on the account (one paginated listing, not per-ad
+   * fetches). Best-effort: any error returns what was collected so far.
+   */
+  private async listAdCreatives(
+    cfg: FbConfig,
+  ): Promise<Map<string, { status?: string; thumbUrl?: string; title?: string; body?: string }>> {
+    const out = new Map<string, { status?: string; thumbUrl?: string; title?: string; body?: string }>();
+    try {
+      const first = new URL(`https://graph.facebook.com/${cfg.apiVersion}/${cfg.adAccountId}/ads`);
+      first.searchParams.set("fields", "id,status,creative{thumbnail_url,title,body}");
+      first.searchParams.set("limit", "200");
+      first.searchParams.set("access_token", cfg.accessToken);
+      let next: string | null = first.toString();
+      for (let guard = 0; next && guard < 25; guard++) {
+        const res = await fetch(next, { signal: AbortSignal.timeout(60_000) });
+        if (!res.ok) break;
+        const body = (await res.json()) as {
+          data?: Array<{ id: string; status?: string; creative?: { thumbnail_url?: string; title?: string; body?: string } }>;
+          paging?: { next?: string };
+        };
+        for (const a of body.data ?? []) {
+          out.set(String(a.id), {
+            status: a.status,
+            thumbUrl: a.creative?.thumbnail_url,
+            title: a.creative?.title,
+            body: a.creative?.body,
+          });
+        }
+        next = body.paging?.next ?? null;
+      }
+    } catch {
+      // best effort — metrics still land without previews
+    }
+    return out;
   }
 
   /**

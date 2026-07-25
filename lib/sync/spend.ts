@@ -1,7 +1,7 @@
 import { and, eq, inArray, lt, sql } from "drizzle-orm";
 import { db } from "@/lib/db/client";
-import { adSpend, campaigns, leads, sources } from "@/lib/db/schema";
-import { activeSpendProviders, type SpendProvider, type SpendRow } from "@/lib/integrations";
+import { adSpend, adSpendAds, campaigns, leads, sources } from "@/lib/db/schema";
+import { activeSpendProviders, type AdSpendRow, type SpendProvider, type SpendRow } from "@/lib/integrations";
 import { PLATFORM_SOURCE_KEY } from "./attribution";
 import { withSyncRun } from "./run";
 
@@ -33,7 +33,14 @@ export async function syncSpend({ sinceDays }: { sinceDays?: number } = {}) {
       const days = sinceDays ?? ((await hasHistory(provider)) ? ROLLING_DAYS : await coldStartDays(provider));
       const rows = await provider.getDailySpend({ sinceDays: days });
       upserted += await upsertSpendRows(rows);
-      byProvider[provider.name] = `${rows.length} rows (${days}d window)`;
+      // Ad-level drill-down (same window, same self-healing re-pull) where the
+      // provider supports it. Campaign rows stay the source of truth for ROI.
+      let adRows = 0;
+      if (provider.getDailyAdSpend) {
+        adRows = await upsertAdSpendRows(await provider.getDailyAdSpend({ sinceDays: days }));
+        upserted += adRows;
+      }
+      byProvider[provider.name] = `${rows.length} campaign + ${adRows} ad rows (${days}d window)`;
     }
 
     return { providers: providers.map((p) => p.name), upserted, byProvider };
@@ -115,10 +122,72 @@ async function upsertSpendRows(rows: SpendRow[]): Promise<number> {
   return unique.length;
 }
 
+/** Same batched-upsert shape for the ad-level table, keyed (platform, ad, date). */
+async function upsertAdSpendRows(rows: AdSpendRow[]): Promise<number> {
+  if (rows.length === 0) return 0;
+  const byKey = new Map<string, AdSpendRow>();
+  for (const r of rows) byKey.set(`${r.platform}|${r.externalAdId}|${r.date}`, r);
+  const unique = [...byKey.values()];
+
+  const campaignIds = await ensureCampaigns(unique);
+
+  const CHUNK = 100;
+  for (let i = 0; i < unique.length; i += CHUNK) {
+    const chunk = unique.slice(i, i + CHUNK);
+    await db
+      .insert(adSpendAds)
+      .values(
+        chunk.map((row) => ({
+          date: row.date,
+          platform: row.platform,
+          campaignId: campaignIds.get(`${row.platform}|${row.externalCampaignId}`) ?? null,
+          externalCampaignId: row.externalCampaignId,
+          externalGroupId: row.externalGroupId ?? null,
+          groupName: row.groupName ?? null,
+          externalAdId: row.externalAdId,
+          adName: row.adName ?? null,
+          adStatus: row.adStatus ?? null,
+          creativeThumbUrl: row.creativeThumbUrl ?? null,
+          creativeTitle: row.creativeTitle ?? null,
+          creativeBody: row.creativeBody ?? null,
+          impressions: row.impressions,
+          clicks: row.clicks,
+          spendCents: row.spendCents,
+          conversions: String(row.conversions),
+          source: `direct:${row.platform}`,
+          raw: row.raw,
+        })),
+      )
+      .onConflictDoUpdate({
+        target: [adSpendAds.platform, adSpendAds.externalAdId, adSpendAds.date],
+        set: {
+          campaignId: sql`excluded.campaign_id`,
+          externalCampaignId: sql`excluded.external_campaign_id`,
+          externalGroupId: sql`excluded.external_group_id`,
+          groupName: sql`excluded.group_name`,
+          adName: sql`excluded.ad_name`,
+          adStatus: sql`excluded.ad_status`,
+          creativeThumbUrl: sql`excluded.creative_thumb_url`,
+          creativeTitle: sql`excluded.creative_title`,
+          creativeBody: sql`excluded.creative_body`,
+          impressions: sql`excluded.impressions`,
+          clicks: sql`excluded.clicks`,
+          spendCents: sql`excluded.spend_cents`,
+          conversions: sql`excluded.conversions`,
+          raw: sql`excluded.raw`,
+          updatedAt: new Date(),
+        },
+      });
+  }
+  return unique.length;
+}
+
 /** Ensure the campaign dimension exists for every distinct campaign in the pull,
  *  so spend links to a campaign. Returns `${platform}|${externalCampaignId}` → id. */
-async function ensureCampaigns(rows: SpendRow[]): Promise<Map<string, string>> {
-  const distinct = new Map<string, SpendRow>();
+async function ensureCampaigns(
+  rows: Array<Pick<SpendRow, "platform" | "externalCampaignId" | "campaignName">>,
+): Promise<Map<string, string>> {
+  const distinct = new Map<string, Pick<SpendRow, "platform" | "externalCampaignId" | "campaignName">>();
   for (const row of rows) {
     if (row.externalCampaignId && row.externalCampaignId !== "undefined") {
       distinct.set(`${row.platform}|${row.externalCampaignId}`, row);

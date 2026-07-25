@@ -170,6 +170,43 @@ export const adSpend = pgTable(
   ],
 );
 
+// Per-ad daily spend — the drill-down one level below `ad_spend` (Google
+// ad_group_ad rows, Facebook level=ad insights). Visibility only: ROI and
+// attribution keep rolling up at campaign level. Creative fields are
+// denormalized for display; FB thumbnail URLs are signed/expiring and get
+// refreshed on every sync.
+export const adSpendAds = pgTable(
+  "ad_spend_ads",
+  {
+    id: id(),
+    date: date("date").notNull(),
+    platform: platformEnum("platform").notNull(),
+    campaignId: text("campaign_id").references(() => campaigns.id),
+    externalCampaignId: text("external_campaign_id"),
+    externalGroupId: text("external_group_id"), // ad group (Google) / ad set (FB)
+    groupName: text("group_name"),
+    externalAdId: text("external_ad_id").notNull(),
+    adName: text("ad_name"),
+    adStatus: text("ad_status"),
+    creativeThumbUrl: text("creative_thumb_url"),
+    creativeTitle: text("creative_title"),
+    creativeBody: text("creative_body"),
+    impressions: integer("impressions").default(0),
+    clicks: integer("clicks").default(0),
+    spendCents: integer("spend_cents").notNull().default(0),
+    conversions: numeric("conversions", { precision: 12, scale: 2 }).default("0"),
+    source: text("source"), // provenance, e.g. "direct:facebook"
+    raw: jsonb("raw"),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    uniqueIndex("ad_spend_ads_platform_adid_date_uq").on(t.platform, t.externalAdId, t.date),
+    index("ad_spend_ads_date_idx").on(t.date),
+    index("ad_spend_ads_campaign_idx").on(t.platform, t.externalCampaignId),
+  ],
+);
+
 // Manually-entered monthly spend for channels without an API sync (LSA until its
 // sync lands, GBP, print, yard signs, …) so every channel gets a CPL/ROAS row.
 // One row per (source, month); the ROI rollup spreads the amount evenly across
