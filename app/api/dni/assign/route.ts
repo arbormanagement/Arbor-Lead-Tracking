@@ -87,6 +87,8 @@ export async function POST(req: Request) {
       campaign: utm.campaign,
       keyword: utm.term,
       gclid: click.gclid,
+      gbraid: click.gbraid,
+      wbraid: click.wbraid,
       fbclid: click.fbclid,
       landingPage: url,
     };

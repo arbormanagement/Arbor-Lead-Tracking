@@ -147,6 +147,8 @@ export async function POST(req: Request) {
         sourceId,
         medium: utm.medium ?? cls.medium,
         gclid: click.gclid,
+        gbraid: click.gbraid,
+        wbraid: click.wbraid,
         fbclid: click.fbclid,
         landingPage: form.pageUrl ?? url,
         referrer,

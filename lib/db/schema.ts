@@ -261,6 +261,8 @@ export const numberAssignments = pgTable(
     campaign: text("campaign"),
     keyword: text("keyword"),
     gclid: text("gclid"),
+    gbraid: text("gbraid"),
+    wbraid: text("wbraid"),
     fbclid: text("fbclid"),
     landingPage: text("landing_page"),
     createdAt: createdAt(),
@@ -384,6 +386,10 @@ export const leads = pgTable(
     campaignId: text("campaign_id").references(() => campaigns.id),
     keyword: text("keyword"),
     gclid: text("gclid"),
+    // iOS/Safari Google clicks return gbraid/wbraid instead of a gclid — carried
+    // through so offline conversion upload can match those clicks too.
+    gbraid: text("gbraid"),
+    wbraid: text("wbraid"),
     fbclid: text("fbclid"),
     landingPage: text("landing_page"),
     referrer: text("referrer"),
@@ -615,8 +621,8 @@ export const conversionExports = pgTable(
     status: conversionExportStatusEnum("status").notNull().default("pending"),
     valueCents: integer("value_cents"),
     currency: text("currency").notNull().default("USD"),
-    identifier: text("identifier"), // the gclid / fbclid used to match the click
-    identifierType: text("identifier_type"), // 'gclid' | 'fbclid'
+    identifier: text("identifier"), // the click id / lead id used to match
+    identifierType: text("identifier_type"), // 'gclid' | 'gbraid' | 'wbraid' | 'fbclid' | 'leadgen_id'
     attempts: integer("attempts").notNull().default(0),
     response: jsonb("response"),
     error: text("error"),

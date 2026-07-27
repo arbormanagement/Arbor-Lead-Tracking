@@ -1,6 +1,6 @@
 import { and, eq, gte, inArray, sql } from "drizzle-orm";
 import { db } from "@/lib/db/client";
-import { conversionExports, facebookLeads, leads } from "@/lib/db/schema";
+import { calls, conversionExports, facebookLeads, hcpEstimates, leads, numberAssignments } from "@/lib/db/schema";
 import { getPlatformCreds } from "@/lib/credentials";
 import { googleAds, type ClickConversionInput } from "@/lib/integrations/google-ads";
 import { facebook, type CapiEvent } from "@/lib/integrations/facebook";
@@ -28,14 +28,23 @@ interface Task {
   event: EventKind;
   valueCents: number;
   identifier: string;
-  identifierType: "gclid" | "fbclid" | "leadgen_id";
+  identifierType: "gclid" | "gbraid" | "wbraid" | "fbclid" | "leadgen_id";
+  /** When the conversion happened (estimate created / approved), not when the lead came in. */
+  convertedAt: Date;
+  /** The original click/lead time — Meta needs it to build `fbc`. */
   occurredAt: Date;
   leadType: string;
   phoneE164: string | null;
   emailLc: string | null;
 }
 
-export async function syncConversions({ sinceDays = 60, limit = 500 }: { sinceDays?: number; limit?: number } = {}) {
+/**
+ * `sinceDays` spans lead → outcome lag: HCP estimates are often approved weeks
+ * after the lead arrives, and a lead that ages out of this window never exports.
+ * 90 matches the conversion actions' click lookback (the outer bound on what
+ * Google will still attribute).
+ */
+export async function syncConversions({ sinceDays = 90, limit = 500 }: { sinceDays?: number; limit?: number } = {}) {
   return withSyncRun("conversions.export", async () => {
     // ── Resolve which destinations are configured ────────────────────────────
     const g = await getPlatformCreds("google_ads");
@@ -61,16 +70,28 @@ export async function syncConversions({ sinceDays = 60, limit = 500 }: { sinceDa
         type: leads.type,
         status: leads.status,
         gclid: leads.gclid,
+        gbraid: leads.gbraid,
+        wbraid: leads.wbraid,
         fbclid: leads.fbclid,
         fbLeadgenId: facebookLeads.fbLeadgenId,
+        // Pooled-DNI calls carry their click ids on the number lease, not the lead.
+        naGclid: numberAssignments.gclid,
+        naGbraid: numberAssignments.gbraid,
+        naWbraid: numberAssignments.wbraid,
+        naFbclid: numberAssignments.fbclid,
         phoneE164: leads.phoneE164,
         emailLc: leads.emailLc,
         quoteValueCents: leads.quoteValueCents,
         salesValueCents: leads.salesValueCents,
         occurredAt: leads.occurredAt,
+        estimateCreatedAt: hcpEstimates.createdAtHcp,
+        estimateApprovedAt: hcpEstimates.approvedAtHcp,
       })
       .from(leads)
       .leftJoin(facebookLeads, eq(facebookLeads.leadId, leads.id))
+      .leftJoin(hcpEstimates, eq(hcpEstimates.id, leads.hcpEstimateId))
+      .leftJoin(calls, eq(calls.leadId, leads.id))
+      .leftJoin(numberAssignments, eq(numberAssignments.id, calls.numberAssignmentId))
       .where(
         and(
           inArray(leads.status, ["qualified", "quoted", "won"]),
@@ -82,11 +103,21 @@ export async function syncConversions({ sinceDays = 60, limit = 500 }: { sinceDa
 
     // ── Expand to (platform, event) tasks ─────────────────────────────────────
     const tasks: Task[] = [];
+    const seenTask = new Set<string>(); // the calls join can repeat a lead
     for (const l of rows) {
-      const events: Array<{ event: EventKind; valueCents: number }> = [
-        { event: "qualified", valueCents: l.quoteValueCents ?? 0 },
+      // Report the conversion at the time it actually happened — the estimate being
+      // written (qualified) or approved (won) — falling back to the lead time. An
+      // estimate approved weeks later would otherwise be reported at lead time.
+      const events: Array<{ event: EventKind; valueCents: number; convertedAt: Date }> = [
+        { event: "qualified", valueCents: l.quoteValueCents ?? 0, convertedAt: l.estimateCreatedAt ?? l.occurredAt },
       ];
-      if (l.status === "won") events.push({ event: "won", valueCents: l.salesValueCents ?? 0 });
+      if (l.status === "won") {
+        events.push({
+          event: "won",
+          valueCents: l.salesValueCents ?? 0,
+          convertedAt: l.estimateApprovedAt ?? l.estimateCreatedAt ?? l.occurredAt,
+        });
+      }
 
       const base = {
         leadId: l.id,
@@ -95,21 +126,35 @@ export async function syncConversions({ sinceDays = 60, limit = 500 }: { sinceDa
         phoneE164: l.phoneE164,
         emailLc: l.emailLc,
       };
-      if (googleOn && l.gclid) {
+      const push = (t: Task) => {
+        const k = key(t.leadId, t.platform, t.event);
+        if (seenTask.has(k)) return;
+        seenTask.add(k);
+        tasks.push(t);
+      };
+
+      // Google: gclid, or the iOS/Safari click ids that replace it (gbraid on
+      // app→web, wbraid on web→app). Pooled-DNI calls fall back to the lease.
+      const gId: Pick<Task, "identifier" | "identifierType"> | null = clickId(
+        [
+          ["gclid", l.gclid ?? l.naGclid],
+          ["gbraid", l.gbraid ?? l.naGbraid],
+          ["wbraid", l.wbraid ?? l.naWbraid],
+        ] as const,
+      );
+      if (googleOn && gId) {
         for (const e of events) {
           if (!googleAction[e.event]) continue; // that action not configured → skip event
-          tasks.push({ ...base, platform: "google", event: e.event, valueCents: e.valueCents, identifier: l.gclid, identifierType: "gclid" });
+          push({ ...base, platform: "google", ...e, ...gId });
         }
       }
       // Website-click leads match by fbclid; lead-form leads by Meta's leadgen id.
-      const fbId: { identifier: string; identifierType: "fbclid" | "leadgen_id" } | null = l.fbclid
-        ? { identifier: l.fbclid, identifierType: "fbclid" }
-        : l.fbLeadgenId
-          ? { identifier: l.fbLeadgenId, identifierType: "leadgen_id" }
-          : null;
+      const fbId: Pick<Task, "identifier" | "identifierType"> | null =
+        clickId([["fbclid", l.fbclid ?? l.naFbclid]] as const) ??
+        (l.fbLeadgenId ? { identifier: l.fbLeadgenId, identifierType: "leadgen_id" } : null);
       if (facebookOn && fbId) {
         for (const e of events) {
-          tasks.push({ ...base, platform: "facebook", event: e.event, valueCents: e.valueCents, ...fbId });
+          push({ ...base, platform: "facebook", ...e, ...fbId });
         }
       }
     }
@@ -153,9 +198,9 @@ export async function syncConversions({ sinceDays = 60, limit = 500 }: { sinceDa
     if (googleTasks.length) {
       try {
         const inputs: ClickConversionInput[] = googleTasks.map((t) => ({
-          gclid: t.identifier,
+          [t.identifierType]: t.identifier, // gclid | gbraid | wbraid
           conversionAction: googleAction[t.event]!,
-          conversionDateTime: googleDateTime(t.occurredAt),
+          conversionDateTime: googleDateTime(t.convertedAt),
           valueDollars: t.valueCents / 100,
         }));
         const results = await googleAds.uploadClickConversions(inputs);
@@ -177,10 +222,14 @@ export async function syncConversions({ sinceDays = 60, limit = 500 }: { sinceDa
       try {
         const nowSec = Math.floor(Date.now() / 1000);
         const events: CapiEvent[] = fbTasks.map((t) => {
-          const occSec = Math.floor(t.occurredAt.getTime() / 1000);
+          const convSec = Math.floor(t.convertedAt.getTime() / 1000);
           return {
             eventName: t.event === "won" ? "Purchase" : "Lead",
-            eventTime: Math.min(nowSec, Math.max(occSec, nowSec - 6 * 86_400)), // keep inside CAPI's 7-day window
+            // CAPI rejects the WHOLE batch if any event_time is >7 days old, so a
+            // late-approved estimate is reported as recent rather than dropped.
+            // Attribution is unaffected: Meta ties the event to the original lead
+            // via `lead_id`/`fbc`, not to event_time.
+            eventTime: Math.min(nowSec, Math.max(convSec, nowSec - 6 * 86_400)),
             actionSource: t.leadType === "call" ? "phone_call" : t.leadType === "web_form" ? "website" : "system_generated",
             eventId: `${t.leadId}:${t.event}`,
             emailHash: hashEmail(t.emailLc),
@@ -208,6 +257,16 @@ export async function syncConversions({ sinceDays = 60, limit = 500 }: { sinceDa
 
 function key(leadId: string, platform: string, event: string): string {
   return `${leadId}:${platform}:${event}`;
+}
+
+/** First non-empty click id, in preference order. */
+function clickId(
+  candidates: ReadonlyArray<readonly [Task["identifierType"], string | null | undefined]>,
+): Pick<Task, "identifier" | "identifierType"> | null {
+  for (const [identifierType, identifier] of candidates) {
+    if (identifier) return { identifier, identifierType };
+  }
+  return null;
 }
 
 async function markExport(t: Task, status: "sent" | "error", r: { ok: boolean; error?: string; raw?: unknown }) {
