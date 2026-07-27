@@ -207,7 +207,11 @@ class GoogleAdsProvider implements SpendProvider {
         const body = {
           conversions: [
             {
-              gclid: it.gclid,
+              // Exactly one click identifier per conversion. gbraid/wbraid are the
+              // iOS/Safari replacements for gclid; Google rejects a conversion that
+              // pairs either with user_identifiers (Enhanced Conversions for Leads),
+              // which we never send — click-id matching only.
+              ...(it.gclid ? { gclid: it.gclid } : it.gbraid ? { gbraid: it.gbraid } : { wbraid: it.wbraid }),
               conversionAction: normalizeConversionAction(it.conversionAction, cfg.customerId),
               conversionDateTime: it.conversionDateTime,
               conversionValue: it.valueDollars,
@@ -252,7 +256,10 @@ export interface ConversionActionOption {
 }
 
 export interface ClickConversionInput {
-  gclid: string;
+  /** Exactly one of gclid / gbraid / wbraid. */
+  gclid?: string;
+  gbraid?: string;
+  wbraid?: string;
   conversionAction: string; // resource name or bare numeric id
   conversionDateTime: string; // "yyyy-MM-dd HH:mm:ss+00:00"
   valueDollars: number;
