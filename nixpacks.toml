@@ -1,8 +1,14 @@
 # Adds the Postgres client (pg_dump / pg_restore / psql) to the image.
 #
-# Needed by `npm run db:backup` on the backup service, and useful for poking at
-# the database from a Railway shell. The literal "..." is Nixpacks' way of
-# APPENDING to the auto-detected package set — without it, this would replace
-# Node and the build would fail.
+# Pinned to 17 to match the databases: Neon runs Postgres 17, and pg_dump refuses
+# to dump from a server NEWER than itself — a 16 client cannot read a 17 source.
+# Railway Postgres is provisioned as 17 for the same reason in reverse (a 17 dump
+# will not restore into 16).
+#
+# Used by `npm run db:transfer` and `npm run db:backup`, and handy for poking at
+# the database from a Railway shell.
+#
+# The literal "..." is Nixpacks' way of APPENDING to the auto-detected package
+# set — without it, this would replace Node and the build would fail.
 [phases.setup]
-nixPkgs = ["...", "postgresql_16"]
+nixPkgs = ["...", "postgresql_17"]
