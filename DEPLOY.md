@@ -126,7 +126,7 @@ So there is no window to plan, no DNS TTL to pre-lower, and no freeze:
 
 1. Stand up `web` + `cron` on Railway (sections 2 and 4), plus a Postgres service with
    backups on.
-2. Decide about the existing data (below) — migrate it or start fresh.
+2. Bring the data across with `npm run db:transfer` (below).
 3. Point the domain at Railway whenever convenient, set `APP_BASE_URL`, delete the Vercel
    project.
 4. Run the Facebook poll once by hand and confirm leads land:
@@ -136,67 +136,73 @@ So there is no window to plan, no DNS TTL to pre-lower, and no freeze:
 5. Take a final archival dump of Neon before deleting the project (see **Backups**), then
    delete it.
 
-### Starting fresh instead of migrating the data
+### Bringing the data across
 
-Yes, this is a legitimate option — and an empty `sync_runs` is what *triggers* the
-cold-start backfills, so a fresh database repopulates itself.
+One command, which verifies itself:
 
-**Rebuilds on its own:**
-
-| Data | How | How far back |
-| --- | --- | --- |
-| `sources`, `pools` | seeded by `npm run db:deploy` | n/a |
-| `facebook_leads` + their `leads` | `fbleads` poll, deduped on `fb_leadgen_id` | 30d automatically; further via `POST /api/sync/fbleads?days=N`, capped by Meta's retention |
-| `hcp_customers` / `hcp_jobs` / `hcp_estimates` | `hcp` sync | **30d only** (`MAX_LOOKBACK_DAYS`); further via `?days=N` |
-| `ad_spend`, `campaigns` | `spend` sync cold-start | back to that platform's earliest lead (≤365d) |
-| `attributions`, `roi_daily` | `attribution` recomputes | from whatever leads exist |
-
-**Does not come back:**
-
-| Data | What it costs you | Mitigation |
-| --- | --- | --- |
-| `tracking_numbers` | the app forgets which Twilio numbers are its own | the numbers are safe in Twilio — re-register each via **/numbers → Add number → import an owned number** |
-| `integration_credentials` | platform API keys | **set them as Railway env vars instead** — `getPlatformCreds` falls back to env, so this costs nothing |
-| `settings` | routing, attribution mode, selected FB forms revert to defaults | reconfigure in Settings |
-| `spam_rules`, `manual_spend` | custom entries | re-enter |
-| `calls`, `visitors`, `web_sessions`, `form_submissions` | history | none — but these are near-empty today |
-| `conversion_exports` | **the record of which conversions were already uploaded to Google Ads** | see below |
-
-**The one that actually matters: `conversion_exports`.** The only thing stopping a
-conversion being uploaded to Google Ads twice is a `status='sent'` row here. Lose it and
-that memory is gone, so a lead that later re-qualifies can be reported a second time and
-double-count in your bidding data. Exposure is limited in practice — re-polled leads come
-back as `status='new'`, and only qualified/quoted/won leads are candidates — but don't rely
-on that if real conversions have already gone out.
-
-You **cannot** carry just this table: `conversion_exports.lead_id` is a hard FK to `leads`,
-so it only restores alongside them. If conversions have already been uploaded, do the full
-dump/restore.
-
-**So the decision comes down to two questions:**
 ```bash
-psql "$NEON_UNPOOLED_URL" -c "select
-  (select count(*) from conversion_exports where status='sent') conversions_already_sent,
-  (select count(*) from tracking_numbers) twilio_numbers,
-  (select count(*) from calls) calls,
-  (select count(*) from leads) leads,
-  (select count(*) from settings) settings_rows,
-  (select min(created_at)::date from leads) oldest_lead;"
+SOURCE_DATABASE_URL="$NEON_UNPOOLED_URL" \
+TARGET_DATABASE_URL="$RAILWAY_DATABASE_URL" \
+npm run db:transfer
 ```
-- **`conversions_already_sent` = 0 and few/no `twilio_numbers`** → start fresh. Deploy
-  against an empty Railway Postgres and let the syncs repopulate. Put the platform API keys
-  in Railway's env vars so credentials carry over for free.
-- **Otherwise** → do the full dump/restore from **Moving the database to Railway**. It's two
-  commands and it's verified; don't hand-pick tables.
 
-> **Don't try a partial carry-over.** It looks cheaper and isn't. Seeded `sources`/`pools`
-> get **new ULIDs** in a fresh database, so every row referencing them by id (`manual_spend`,
-> `leads.source_id`, `campaigns`, `tracking_numbers.static_source_id`) fails its foreign key.
-> Making it work means deleting the freshly-seeded dimensions and carrying `sources` +
-> `pools` along too — at which point you've done a messier version of the full restore.
+It dumps the **whole** database, restores with `--exit-on-error`, then compares every
+table's row count on both sides plus the migration-journal count, and exits non-zero if
+anything disagrees. Output looks like:
 
-Whichever you pick: **take an archival `pg_dump` of Neon before deleting the project.** One
-command, and it's the difference between "we started fresh" and "we lost it."
+```
+[db-transfer] dump: 0.06 MB
+[db-transfer] restoring into target…
+[db-transfer] verifying parity…
+  leads                      3
+  tracking_numbers           1
+  conversion_exports         1
+  drizzle migrations         16
+[db-transfer] ✓ 25 tables match, migration journal intact
+```
+
+**If the target already has tables**, it refuses and tells you to add `--clean`. That
+happens whenever the Railway `web` service has deployed once, because its pre-deploy step
+creates and seeds the schema, and those seed rows collide with the incoming ones:
+
+```bash
+… npm run db:transfer -- --clean     # drops + recreates the TARGET's schemas first
+```
+
+Afterwards:
+1. On `web`, set `DATABASE_URL=${{Postgres.DATABASE_URL}}` and **delete
+   `DATABASE_URL_UNPOOLED`** — a leftover Neon value silently sends migrations back to the
+   old database.
+2. Redeploy. The pre-deploy step is a clean no-op against the transferred data.
+3. Check `/api/health`, log in, confirm your leads are there.
+4. Leave Neon untouched for a week as the rollback, take a final `npm run db:backup` of it,
+   then delete the project.
+
+Why a script rather than two `pg_dump`/`pg_restore` lines: the hand-rolled version has a
+silent failure mode. Dumping only the `public` schema leaves Drizzle's migration journal
+behind (it lives in a separate `drizzle` schema) — every row arrives, nothing looks wrong,
+and the *next* deploy re-applies migration 0000 onto populated tables and dies with
+`type "lead_status" already exists`. `db:transfer` always takes the whole database and
+fails loudly if the journal didn't make it.
+
+<details>
+<summary>Alternative: starting fresh without the data</summary>
+
+Viable but rarely what you want, since an empty `sync_runs` triggers the cold-start
+backfills. **Rebuilds:** sources/pools (seeded), Facebook leads (30d poll, deduped on
+`fb_leadgen_id`), HCP (30d only — `MAX_LOOKBACK_DAYS`), ad spend (back to that platform's
+earliest lead), attributions and `roi_daily` (recomputed).
+
+**Doesn't:** `tracking_numbers` (re-register each via **/numbers → Add number → import an
+owned number**), `settings`, `spam_rules`, `manual_spend`, call/web history, and
+`conversion_exports` — which is the record of what was already uploaded to Google Ads, so
+losing it risks double-counting conversions. `integration_credentials` is free to lose if
+the platform keys are set as Railway env vars, since `getPlatformCreds` falls back to env.
+
+Don't try to hand-pick a few tables to carry: seeded `sources`/`pools` get **new ULIDs** in
+a fresh database, so every row referencing them by id fails its foreign key, and
+`conversion_exports.lead_id` is a hard FK to `leads` so it can't come without them.
+</details>
 
 ### Later: once calls are live
 
