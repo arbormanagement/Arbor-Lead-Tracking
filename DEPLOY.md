@@ -31,8 +31,10 @@ Either option works — `DB_DRIVER=pg` (the default) speaks plain Postgres to bo
   `DATABASE_URL_UNPOOLED` (direct). Put the Railway service in a region near the Neon
   project to keep round-trips short.
 - **Railway Postgres**: add a Postgres service to the project, then set
-  `DATABASE_URL=${{Postgres.DATABASE_URL}}` and
-  `DATABASE_URL_UNPOOLED=${{Postgres.DATABASE_URL}}` on `web`. Copy existing data first:
+  `DATABASE_URL=${{Postgres.DATABASE_URL}}` on `web`. `DATABASE_URL_UNPOOLED` is a
+  Neon concept (Neon serves pooled and direct endpoints at different hostnames);
+  Railway Postgres has one URL, so leave it unset and everything falls back to
+  `DATABASE_URL`. Copy existing data first:
   ```bash
   pg_dump --no-owner --no-acl "$NEON_UNPOOLED_URL" > arbor.sql
   psql "$RAILWAY_DATABASE_URL" < arbor.sql
@@ -158,7 +160,13 @@ Notes:
   connection is reused instead of paying an HTTPS round-trip per query, and it supports
   the interactive transactions the Phase 4 DNI lease needs.
 - **`neon-http`** — Neon's stateless HTTPS driver. Set this if you ever deploy back to a
-  serverless host, or from a network that blocks raw Postgres TCP.
+  serverless host, or from a network that blocks raw Postgres TCP. **Neon only** — it
+  derives an HTTPS endpoint from the connection string's hostname, so it cannot reach a
+  non-Neon Postgres. Leave it on `pg` unless you are on Neon and need HTTPS.
+
+Every path that touches the schema — the pre-deploy step, `npm run db:seed`, and
+`/api/admin/migrate` — resolves the driver through `lib/db/connect.ts`, so they all work
+against whichever database you point at. (They previously each hardcoded Neon's driver.)
 
 Each process opens its own pool (`DATABASE_POOL_MAX`, default 5). Keep the sum across
 services under the database's connection limit.
@@ -175,6 +183,16 @@ or use the secret-gated route:
 ```bash
 curl -H "Authorization: Bearer $CRON_SECRET" https://<domain>/api/admin/migrate
 ```
+
+## If you leave Neon
+Neon gives you a few things Railway Postgres does not do identically. Before cutting the
+database over, decide about each:
+- **Backups / point-in-time restore.** Neon does this by default. On Railway, enable
+  backups on the Postgres service — this is the one that bites hardest if skipped.
+- **Connection pooling.** Neon's `-pooler` endpoint fronts PgBouncer. Railway Postgres is a
+  plain instance, so `DATABASE_POOL_MAX` (per process, default 5) is the real limit — keep
+  the sum across `web` + `cron` under the server's `max_connections`.
+- **Region.** Co-locate the Railway services and the database, or every query pays the gap.
 
 ## Rollback
 Railway keeps previous deployments — **Deployments → ⋯ → Redeploy** on the last good one.
