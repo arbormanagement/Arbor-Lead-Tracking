@@ -14,8 +14,8 @@ export const maxDuration = 300;
 
 /**
  * Admin-triggered sync: POST /api/sync/spend or /api/sync/hcp. Lets us run a
- * sync on demand from the dashboard before the Inngest cron schedule is wired up
- * at deploy time. Gated to an authenticated admin session.
+ * sync on demand from the dashboard, independent of the cron worker's schedule.
+ * Gated to an authenticated admin session.
  */
 export async function POST(_req: Request, { params }: { params: Promise<{ job: string }> }) {
   const session = await getSession();

@@ -16,6 +16,11 @@ export const env = createEnv({
 
     DATABASE_URL: z.string().url(),
     DATABASE_URL_UNPOOLED: z.string().url().optional(),
+    // `pg` = long-lived node-postgres pool (default; right for a persistent
+    // server). `neon-http` = Neon's stateless HTTPS driver, for serverless/edge
+    // or networks that block raw Postgres TCP. See lib/db/client.ts.
+    DB_DRIVER: z.enum(["pg", "neon-http"]).default("pg"),
+    DATABASE_POOL_MAX: z.coerce.number().int().positive().default(5),
 
     NEXTAUTH_SECRET: z.string().min(1),
     NEXTAUTH_URL: z.string().url().optional(),
@@ -63,11 +68,8 @@ export const env = createEnv({
     GA4_PROPERTY_ID: z.string().optional(),
     FACEBOOK_VERIFY_TOKEN: z.string().optional(),
 
-    INNGEST_EVENT_KEY: z.string().optional(),
-    INNGEST_SIGNING_KEY: z.string().optional(),
-
-    // Shared secret the Vercel Cron scheduler sends (Authorization: Bearer) to
-    // trigger /api/cron/* — keeps the sync jobs off the public internet.
+    // Shared secret the cron worker sends (Authorization: Bearer) to trigger
+    // /api/cron/* — keeps the sync jobs from being runnable by anyone.
     CRON_SECRET: z.string().optional(),
   },
   client: {},
@@ -77,6 +79,8 @@ export const env = createEnv({
     NODE_ENV: process.env.NODE_ENV,
     DATABASE_URL: process.env.DATABASE_URL,
     DATABASE_URL_UNPOOLED: process.env.DATABASE_URL_UNPOOLED,
+    DB_DRIVER: process.env.DB_DRIVER,
+    DATABASE_POOL_MAX: process.env.DATABASE_POOL_MAX,
     NEXTAUTH_SECRET: process.env.NEXTAUTH_SECRET,
     NEXTAUTH_URL: process.env.NEXTAUTH_URL,
     ADMIN_EMAIL: process.env.ADMIN_EMAIL,
@@ -107,8 +111,6 @@ export const env = createEnv({
     GOOGLE_ADS_CUSTOMER_ID: process.env.GOOGLE_ADS_CUSTOMER_ID,
     GA4_PROPERTY_ID: process.env.GA4_PROPERTY_ID,
     FACEBOOK_VERIFY_TOKEN: process.env.FACEBOOK_VERIFY_TOKEN,
-    INNGEST_EVENT_KEY: process.env.INNGEST_EVENT_KEY,
-    INNGEST_SIGNING_KEY: process.env.INNGEST_SIGNING_KEY,
     CRON_SECRET: process.env.CRON_SECRET,
   },
   // Allow `npm run build` / lint without a full env (skips validation when set).
