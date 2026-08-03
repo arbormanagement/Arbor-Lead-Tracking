@@ -27,19 +27,14 @@ npx tsx scripts/hash-password.ts 'your-admin-password'   # ADMIN_PASSWORD_HASH
 ## 1. Database
 Either option works — `DB_DRIVER=pg` (the default) speaks plain Postgres to both.
 
-- **Keep Neon** (nothing to migrate): reuse the existing `DATABASE_URL` (pooled) and
-  `DATABASE_URL_UNPOOLED` (direct). Put the Railway service in a region near the Neon
-  project to keep round-trips short.
-- **Railway Postgres**: add a Postgres service to the project, then set
-  `DATABASE_URL=${{Postgres.DATABASE_URL}}` on `web`. `DATABASE_URL_UNPOOLED` is a
-  Neon concept (Neon serves pooled and direct endpoints at different hostnames);
-  Railway Postgres has one URL, so leave it unset and everything falls back to
-  `DATABASE_URL`. Copy existing data first:
-  ```bash
-  pg_dump --no-owner --no-acl "$NEON_UNPOOLED_URL" > arbor.sql
-  psql "$RAILWAY_DATABASE_URL" < arbor.sql
-  ```
-  Do the dump during a quiet window — anything written to Neon after it is not copied.
+- **Keep Neon**: reuse the existing `DATABASE_URL` (pooled) and `DATABASE_URL_UNPOOLED`
+  (direct). Put the Railway service in a region near the Neon project.
+- **Railway Postgres**: add a Postgres service, set `DATABASE_URL=${{Postgres.DATABASE_URL}}`
+  on `web`, and follow **Moving the database to Railway** below.
+
+`DATABASE_URL_UNPOOLED` is a Neon concept — Neon serves pooled and direct endpoints at
+different hostnames. Railway Postgres has one URL, so leave it unset there; everything
+falls back to `DATABASE_URL`.
 
 ## 2. The `web` service
 1. **New Project → Deploy from GitHub repo** → `arbormanagement/Arbor-Lead-Tracking`.
@@ -122,6 +117,101 @@ Do these in order so no inbound event is dropped or double-processed:
 3. Watch a real call land end-to-end under **Calls**.
 4. Delete the Vercel project.
 
+## Moving the database to Railway
+
+> **Dump the WHOLE database, not just the `public` schema.** Drizzle's migration journal
+> lives in a separate `drizzle` schema. A `pg_dump -n public` restores every row and still
+> leaves you broken: the journal is gone, so the next deploy re-applies migration 0000 onto
+> populated tables and dies with `type "lead_status" already exists`. The pre-deploy step
+> fails the release rather than corrupting anything, but you cannot ship until it's fixed.
+
+The app is the only writer, so the safe shape is a short window with `web` stopped. The
+dump is small (well under a minute at current volume) — the cost is a few minutes where
+inbound calls fall back to Twilio's forwarding, not lost data.
+
+1. **Check the size** so you know what you're in for:
+   ```bash
+   psql "$NEON_UNPOOLED_URL" -c "select pg_size_pretty(pg_database_size(current_database()));"
+   ```
+2. **Add a Postgres service** to the Railway project (**New → Database → PostgreSQL**) and
+   turn on backups now, before it holds anything (see the next section).
+3. **Rehearse first, with everything still running.** This is a read-only dump; it changes
+   nothing and tells you whether the real run will work:
+   ```bash
+   pg_dump --no-owner --no-acl --format=custom "$NEON_UNPOOLED_URL" > rehearsal.dump
+   pg_restore --no-owner --no-acl --exit-on-error -d "$RAILWAY_DATABASE_URL" rehearsal.dump
+   psql "$RAILWAY_DATABASE_URL" -c "select count(*) from drizzle.__drizzle_migrations;"  # expect 16
+   ```
+   Then point a local `npm run dev` at `$RAILWAY_DATABASE_URL` and click around.
+4. **Drop the rehearsal copy** so the real run starts clean:
+   ```bash
+   psql "$RAILWAY_DATABASE_URL" -c "drop schema public cascade; create schema public; drop schema if exists drizzle cascade;"
+   ```
+5. **Quiet the writers.** Scale `web` and `cron` to 0 replicas (or pause the services).
+   Calls still reach the office: Twilio falls back to forwarding when the webhook is
+   unreachable. They just won't be *tracked* for these few minutes.
+6. **Dump and restore for real:**
+   ```bash
+   pg_dump --no-owner --no-acl --format=custom "$NEON_UNPOOLED_URL" > cutover.dump
+   pg_restore --no-owner --no-acl --exit-on-error -d "$RAILWAY_DATABASE_URL" cutover.dump
+   ```
+   `--exit-on-error` matters: without it pg_restore reports success having skipped
+   statements that failed.
+7. **Verify parity** before letting anything write again:
+   ```bash
+   for t in leads calls visitors web_sessions form_submissions sources ad_spend hcp_jobs; do
+     echo "$t neon=$(psql -tA "$NEON_UNPOOLED_URL" -c "select count(*) from $t") railway=$(psql -tA "$RAILWAY_DATABASE_URL" -c "select count(*) from $t")"
+   done
+   psql -tA "$RAILWAY_DATABASE_URL" -c "select count(*) from drizzle.__drizzle_migrations;"
+   ```
+   Every pair must match, and the journal count must equal the number of files in
+   `lib/db/migrations/`.
+8. **Repoint and restart.** On `web`: `DATABASE_URL=${{Postgres.DATABASE_URL}}`, and
+   **delete `DATABASE_URL_UNPOOLED`** — a leftover Neon value silently sends migrations
+   back to the old database. Scale `web`/`cron` back up.
+9. **Confirm:** `/api/health` returns `{"ok":true,"db":"up"}`, a test call lands under
+   **Calls**, and the `cron` logs show a green `reaper` tick.
+10. **Keep Neon around, read-only, for a week or two.** It is your rollback: if something
+    is wrong, put `DATABASE_URL` back. Delete the Neon project only once you're satisfied —
+    and take a final dump before you do.
+
+## Backups
+
+**Yes — but they are not on by default, and they are not the same thing Neon gave you.**
+Railway backs up the Postgres service's *volume* on a schedule you set. Neon did
+point-in-time recovery to any moment. A volume snapshot restores to the snapshot, so your
+worst case goes from "seconds of loss" to "up to a day of loss". Decide if that's
+acceptable before you cut over; for this app (a handful of leads a day, all of which also
+exist in Twilio/HCP/Meta) it usually is.
+
+**Enable them:** Postgres service → **Settings → Backups** → set a schedule (daily is the
+sane default) and a retention count. Restores are performed from the same panel; Railway
+restores a snapshot into the volume, so treat a restore as a maintenance window.
+
+Two things to do beyond flipping it on:
+
+1. **Actually test a restore.** An untested backup is a hope. Restore a recent snapshot into
+   a scratch Postgres service once, confirm `select count(*) from leads` looks right, then
+   delete it.
+2. **Keep a logical dump too** — portable, inspectable, and *outside* the thing that might
+   break. A volume snapshot lives inside the same Railway project:
+   ```bash
+   npm run db:backup                    # → ./backups/arbor-<utc>.dump, prunes to BACKUP_RETAIN
+   pg_restore --no-owner --no-acl --exit-on-error -d "$DATABASE_URL" backups/arbor-<utc>.dump
+   ```
+   To automate it on Railway: **New → GitHub Repo** (same repo), name it `backup`, set
+   config-as-code to `railway.backup.json`, attach a **Volume** mounted at `/data`, and set
+   `BACKUP_DIR=/data`, `BACKUP_RETAIN=14`, `DATABASE_URL=${{Postgres.DATABASE_URL}}`. Give
+   the service a **cron schedule** (e.g. `0 8 * * *`) — it runs, writes a dump, and exits
+   (`restartPolicyType: NEVER`).
+
+   The dump needs `pg_dump` in the image, which `nixpacks.toml` adds. Verify once from a
+   Railway shell with `pg_dump --version`; the script fails loudly with that same hint if
+   it's missing.
+
+   For true off-site copies, have that service push to S3/R2 afterwards, or pull the dumps
+   down periodically. A backup in the same account as the database is not a disaster plan.
+
 ## Scheduled jobs
 
 The schedule lives in `scripts/cron.ts` (ported 1:1 from the old `vercel.json`) and is
@@ -185,14 +275,15 @@ curl -H "Authorization: Bearer $CRON_SECRET" https://<domain>/api/admin/migrate
 ```
 
 ## If you leave Neon
-Neon gives you a few things Railway Postgres does not do identically. Before cutting the
-database over, decide about each:
-- **Backups / point-in-time restore.** Neon does this by default. On Railway, enable
-  backups on the Postgres service — this is the one that bites hardest if skipped.
+Beyond backups (above), two Neon behaviours don't carry over:
 - **Connection pooling.** Neon's `-pooler` endpoint fronts PgBouncer. Railway Postgres is a
   plain instance, so `DATABASE_POOL_MAX` (per process, default 5) is the real limit — keep
   the sum across `web` + `cron` under the server's `max_connections`.
 - **Region.** Co-locate the Railway services and the database, or every query pays the gap.
+
+Once the cutover has held for a while, you can drop `@neondatabase/serverless` and the
+`neon-http` branch in `lib/db/connect.ts` / `lib/db/client.ts`. No rush — it's inert unless
+`DB_DRIVER=neon-http`, and it's what makes going back easy.
 
 ## Rollback
 Railway keeps previous deployments — **Deployments → ⋯ → Redeploy** on the last good one.

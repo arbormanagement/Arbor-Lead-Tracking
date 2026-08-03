@@ -1,0 +1,8 @@
+# Adds the Postgres client (pg_dump / pg_restore / psql) to the image.
+#
+# Needed by `npm run db:backup` on the backup service, and useful for poking at
+# the database from a Railway shell. The literal "..." is Nixpacks' way of
+# APPENDING to the auto-detected package set — without it, this would replace
+# Node and the build would fail.
+[phases.setup]
+nixPkgs = ["...", "postgresql_16"]
