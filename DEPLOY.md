@@ -136,29 +136,67 @@ So there is no window to plan, no DNS TTL to pre-lower, and no freeze:
 5. Take a final archival dump of Neon before deleting the project (see **Backups**), then
    delete it.
 
-**Do you even need to migrate the data?** Check what's actually in there:
+### Starting fresh instead of migrating the data
+
+Yes, this is a legitimate option — and an empty `sync_runs` is what *triggers* the
+cold-start backfills, so a fresh database repopulates itself.
+
+**Rebuilds on its own:**
+
+| Data | How | How far back |
+| --- | --- | --- |
+| `sources`, `pools` | seeded by `npm run db:deploy` | n/a |
+| `facebook_leads` + their `leads` | `fbleads` poll, deduped on `fb_leadgen_id` | 30d automatically; further via `POST /api/sync/fbleads?days=N`, capped by Meta's retention |
+| `hcp_customers` / `hcp_jobs` / `hcp_estimates` | `hcp` sync | **30d only** (`MAX_LOOKBACK_DAYS`); further via `?days=N` |
+| `ad_spend`, `campaigns` | `spend` sync cold-start | back to that platform's earliest lead (≤365d) |
+| `attributions`, `roi_daily` | `attribution` recomputes | from whatever leads exist |
+
+**Does not come back:**
+
+| Data | What it costs you | Mitigation |
+| --- | --- | --- |
+| `tracking_numbers` | the app forgets which Twilio numbers are its own | the numbers are safe in Twilio — re-register each via **/numbers → Add number → import an owned number** |
+| `integration_credentials` | platform API keys | **set them as Railway env vars instead** — `getPlatformCreds` falls back to env, so this costs nothing |
+| `settings` | routing, attribution mode, selected FB forms revert to defaults | reconfigure in Settings |
+| `spam_rules`, `manual_spend` | custom entries | re-enter |
+| `calls`, `visitors`, `web_sessions`, `form_submissions` | history | none — but these are near-empty today |
+| `conversion_exports` | **the record of which conversions were already uploaded to Google Ads** | see below |
+
+**The one that actually matters: `conversion_exports`.** The only thing stopping a
+conversion being uploaded to Google Ads twice is a `status='sent'` row here. Lose it and
+that memory is gone, so a lead that later re-qualifies can be reported a second time and
+double-count in your bidding data. Exposure is limited in practice — re-polled leads come
+back as `status='new'`, and only qualified/quoted/won leads are candidates — but don't rely
+on that if real conversions have already gone out.
+
+You **cannot** carry just this table: `conversion_exports.lead_id` is a hard FK to `leads`,
+so it only restores alongside them. If conversions have already been uploaded, do the full
+dump/restore.
+
+**So the decision comes down to two questions:**
 ```bash
 psql "$NEON_UNPOOLED_URL" -c "select
-  (select count(*) from leads) leads,
+  (select count(*) from conversion_exports where status='sent') conversions_already_sent,
+  (select count(*) from tracking_numbers) twilio_numbers,
   (select count(*) from calls) calls,
-  (select count(*) from facebook_leads) fb_leads,
-  (select count(*) from hcp_jobs) hcp_jobs,
-  (select count(*) from ad_spend) spend,
+  (select count(*) from leads) leads,
+  (select count(*) from settings) settings_rows,
   (select min(created_at)::date from leads) oldest_lead;"
 ```
-- **Only Facebook leads, all recent** → start fresh. Deploy against an empty Railway
-  Postgres; the pre-deploy step creates the schema and seeds, and the first `fbleads` tick
-  cold-starts to a 30-day pull on its own. Nothing to dump, nothing to verify, zero
-  migration risk.
+- **`conversions_already_sent` = 0 and few/no `twilio_numbers`** → start fresh. Deploy
+  against an empty Railway Postgres and let the syncs repopulate. Put the platform API keys
+  in Railway's env vars so credentials carry over for free.
+- **Otherwise** → do the full dump/restore from **Moving the database to Railway**. It's two
+  commands and it's verified; don't hand-pick tables.
 
-  To reach back **further than 30 days**, use the admin trigger, which takes a window:
-  `POST /api/sync/fbleads?days=90`. Note it is gated on an admin *session*, not
-  `CRON_SECRET` — run it from the dashboard's "Run sync now", or with your login cookie.
-  Meta's own retention caps how far back this can actually reach, so check what comes back
-  rather than assuming, and don't rely on this route for anything older than that.
-- **Anything you can't re-derive** — real call history, HCP revenue, ad spend — → do the
-  dump/restore from **Moving the database to Railway**. You still don't need the freeze
-  ceremony; just don't run two deployments against two different databases while you do it.
+> **Don't try a partial carry-over.** It looks cheaper and isn't. Seeded `sources`/`pools`
+> get **new ULIDs** in a fresh database, so every row referencing them by id (`manual_spend`,
+> `leads.source_id`, `campaigns`, `tracking_numbers.static_source_id`) fails its foreign key.
+> Making it work means deleting the freshly-seeded dimensions and carrying `sources` +
+> `pools` along too — at which point you've done a messier version of the full restore.
+
+Whichever you pick: **take an archival `pg_dump` of Neon before deleting the project.** One
+command, and it's the difference between "we started fresh" and "we lost it."
 
 ### Later: once calls are live
 
