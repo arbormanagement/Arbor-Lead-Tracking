@@ -105,10 +105,66 @@ with verify token = `FACEBOOK_VERIFY_TOKEN`, and set the app secret in
 
 ## Cutting over
 
-Two ways to do this. **One window** moves the app and the database together and is the
-default recommendation — the app is small, the dump takes seconds, and the sequence below
-holds the one invariant that matters. **Staged** moves the app first and the database days
-later; pick it only if you want to debug one change at a time.
+How careful you need to be depends entirely on what is actually live. Right now the answer
+is: **almost nothing**, so take the simple path.
+
+### The simple path — while the app isn't load-bearing yet
+
+Today the only live data path is Facebook lead ads, and that path is unusually forgiving:
+
+- **It's an outbound poll, not a webhook.** `fbleads` pulls from the Graph API on a
+  schedule (`lib/sync/facebook-leads.ts`), deliberately so it doesn't touch the page's
+  existing Replit webhook subscription. It therefore does **not** depend on this app's URL,
+  DNS, or inbound reachability at all.
+- **It self-heals.** Leads are deduped on `fb_leadgen_id`, and on a database with no prior
+  successful run it cold-starts to a **30-day** window. A gap of hours or days costs
+  nothing — the next tick backfills it.
+- **Calls and `track.js` aren't in play yet**, so there's nothing to lose while the app is
+  down.
+
+So there is no window to plan, no DNS TTL to pre-lower, and no freeze:
+
+1. Stand up `web` + `cron` on Railway (sections 2 and 4), plus a Postgres service with
+   backups on.
+2. Decide about the existing data (below) — migrate it or start fresh.
+3. Point the domain at Railway whenever convenient, set `APP_BASE_URL`, delete the Vercel
+   project.
+4. Run the Facebook poll once by hand and confirm leads land:
+   ```bash
+   curl -H "Authorization: Bearer $CRON_SECRET" https://<domain>/api/cron/fbleads
+   ```
+5. Take a final archival dump of Neon before deleting the project (see **Backups**), then
+   delete it.
+
+**Do you even need to migrate the data?** Check what's actually in there:
+```bash
+psql "$NEON_UNPOOLED_URL" -c "select
+  (select count(*) from leads) leads,
+  (select count(*) from calls) calls,
+  (select count(*) from facebook_leads) fb_leads,
+  (select count(*) from hcp_jobs) hcp_jobs,
+  (select count(*) from ad_spend) spend,
+  (select min(created_at)::date from leads) oldest_lead;"
+```
+- **Only Facebook leads, all recent** → start fresh. Deploy against an empty Railway
+  Postgres; the pre-deploy step creates the schema and seeds, and the first `fbleads` tick
+  cold-starts to a 30-day pull on its own. Nothing to dump, nothing to verify, zero
+  migration risk.
+
+  To reach back **further than 30 days**, use the admin trigger, which takes a window:
+  `POST /api/sync/fbleads?days=90`. Note it is gated on an admin *session*, not
+  `CRON_SECRET` — run it from the dashboard's "Run sync now", or with your login cookie.
+  Meta's own retention caps how far back this can actually reach, so check what comes back
+  rather than assuming, and don't rely on this route for anything older than that.
+- **Anything you can't re-derive** — real call history, HCP revenue, ad spend — → do the
+  dump/restore from **Moving the database to Railway**. You still don't need the freeze
+  ceremony; just don't run two deployments against two different databases while you do it.
+
+### Later: once calls are live
+
+The procedure below is what this becomes **after Phase 6**, when tracking numbers carry real
+traffic and an untracked call is a lost lead. Skip it for now; come back when the app is
+load-bearing.
 
 ### The invariant
 
@@ -117,7 +173,8 @@ later; pick it only if you want to debug one change at a time.
 That is the only failure mode here that loses data irrecoverably: writes land in a database
 you then walk away from. Everything else — a bad env var, a failed migration, a domain
 pointed at the wrong place — is recoverable, because Neon is still sitting there intact.
-Every step below exists to hold that line.
+Every step below exists to hold that line. (Facebook leads are the exception that proves it:
+being re-pollable and deduped, they'd survive even that.)
 
 Three properties of this app make a maintenance window cheap:
 
