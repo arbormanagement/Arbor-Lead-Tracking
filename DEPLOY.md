@@ -103,19 +103,103 @@ with verify token = `FACEBOOK_VERIFY_TOKEN`, and set the app secret in
 
 ---
 
-## Cutting over from Vercel
-Do these in order so no inbound event is dropped or double-processed:
+## Cutting over
 
-1. Deploy `web` + `cron` on Railway and verify with the steps above, while Vercel is still
-   serving the live domain. Both point at the same database — safe, because `cron` on
-   Railway is the only scheduler at this point (`vercel.json` was deleted in this change,
-   so the Vercel deployment no longer has crons of its own).
+Two ways to do this. **One window** moves the app and the database together and is the
+default recommendation — the app is small, the dump takes seconds, and the sequence below
+holds the one invariant that matters. **Staged** moves the app first and the database days
+later; pick it only if you want to debug one change at a time.
+
+### The invariant
+
+> **Never let two writable app instances point at two different databases.**
+
+That is the only failure mode here that loses data irrecoverably: writes land in a database
+you then walk away from. Everything else — a bad env var, a failed migration, a domain
+pointed at the wrong place — is recoverable, because Neon is still sitting there intact.
+Every step below exists to hold that line.
+
+Three properties of this app make a maintenance window cheap:
+
+- **Calls still connect while the app is down.** Every tracking number's Twilio *voice
+  fallback* is a Twilio-hosted twimlet that dials the office directly, with no dependency on
+  this app. Twilio invokes it whenever the primary webhook errors, times out, or returns
+  something that isn't TwiML — which is exactly what a stopped service does. Downtime means
+  **untracked calls, not dropped calls**. Confirm the fallbacks are set first (below).
+- **Facebook leads self-heal.** `fbleads` polls Meta on a rolling window with a 6-hour
+  overlap, so lead-gen submissions during the window get picked up on the next tick
+  regardless of missed webhooks.
+- **Only the `web` service writes.** The cron worker drives jobs over HTTP through `web`,
+  and no script touches the app's database client. Stopping `web` is a clean, total freeze.
+
+What you *do* lose in the window: web/form submissions from `track.js` (the browser posts
+once and doesn't retry), and Twilio status/recording callbacks for calls that end during it
+— so those calls keep their row but may lack duration or a recording. Run it outside
+business hours and that's close to nothing for a tree service.
+
+### One-window cutover (app + database together)
+
+**Days before — no downtime, no risk:**
+
+1. **Lower the DNS TTL** on `app.arbor-mgmt.com` to 60s. This is what turns the domain move
+   from an unpredictable propagation window into about a minute. Do it at least as far ahead
+   as the *old* TTL (often 24–48h) or it hasn't taken effect yet.
+2. **Confirm the Twilio fallbacks** are actually set — this is the safety net the whole plan
+   leans on:
+   ```bash
+   curl -H "Authorization: Bearer $CRON_SECRET" https://<current-domain>/api/cron/twilio-fallback
+   ```
+   Then spot-check a number in the Twilio console: *Voice Fallback URL* should be a
+   `twimlets.com/forward?PhoneNumber=+1618…` pointing at the office line.
+3. **Stand up Railway `web` + `cron` pointed at Neon** (sections 2 and 4 above), on the
+   temporary `*.up.railway.app` domain. Verify everything there. Vercel and Railway are both
+   writing to Neon — the *same* database — so the invariant holds and there is no divergence.
+   This gets all the fiddly setup done with zero exposure.
+4. **Add the Postgres service** and enable backups on it (see **Backups**).
+5. **Rehearse the dump/restore** read-only against live Neon (steps 3–4 of *Moving the
+   database*). Then drop the rehearsal copy.
+
+**The window itself — pick an evening:**
+
+6. **Freeze all writers.** Scale Railway `web` and `cron` to 0 replicas, and take the domain
+   off the Vercel project (or pause it). Nothing writes now. Calls are hitting the twimlet
+   and reaching the office.
+7. **Dump and restore for real**, then verify parity — steps 6–7 of *Moving the database*.
+8. **Repoint `web`:** `DATABASE_URL=${{Postgres.DATABASE_URL}}`, and **delete
+   `DATABASE_URL_UNPOOLED`**. A leftover Neon value silently sends migrations back to the
+   old database.
+9. **Move the domain** to the Railway `web` service and set `APP_BASE_URL` +
+   `TWILIO_VOICE_WEBHOOK_BASE` to it. Scale `web` and `cron` back up.
+10. **Verify** — `/api/health` green, log in, place a test call and watch it land under
+    **Calls**, and wait for a green `reaper` tick in the `cron` logs.
+11. **Re-assert the Twilio webhooks** now that the domain moved:
+    ```bash
+    curl -H "Authorization: Bearer $CRON_SECRET" https://<domain>/api/cron/twilio-fallback
+    ```
+    and update the `<script src>` on arbor-mgmt.com if the domain changed.
+
+Realistically 10–20 minutes, most of it DNS and the Railway redeploy rather than the data.
+
+**Rollback.** Until step 10 passes, Neon is untouched and authoritative: put `DATABASE_URL`
+back to Neon, move the domain back, redeploy. Your decision point is the first real write to
+Railway Postgres — after that, rolling back means losing it, so decide *before* you reopen
+traffic, not after. Keep the Neon project (read-only, undeleted) for a week or two, and take
+a final dump before you delete it.
+
+### Staged alternative
+If you'd rather move one thing at a time — app now, database later:
+
+1. Deploy `web` + `cron` on Railway pointed at Neon and verify, while Vercel still serves
+   the live domain. Both point at the same database — safe, and `cron` on Railway is the
+   only scheduler at this point (`vercel.json` was deleted in this change, so the Vercel
+   deployment no longer has crons of its own).
 2. Move the domain: remove `app.arbor-mgmt.com` from the Vercel project, add it to the
    Railway `web` service, and update `APP_BASE_URL` / `TWILIO_VOICE_WEBHOOK_BASE`.
    If you're switching domains rather than moving one, re-point the Twilio voice webhooks
    (or run `twilio-fallback`) and update the `<script src>` on arbor-mgmt.com.
 3. Watch a real call land end-to-end under **Calls**.
 4. Delete the Vercel project.
+5. Days later, follow **Moving the database to Railway** as its own window.
 
 ## Moving the database to Railway
 
