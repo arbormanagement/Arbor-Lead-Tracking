@@ -51,7 +51,7 @@ form tracking on the website, and any notification emails/webhooks people rely o
 | Number type | Decision |
 |---|---|
 | Published in hard-to-change places (GBP, print, wraps, signs) or meaningful repeat-call volume | **Port to Twilio**, keep same digits |
-| Website DNI pool numbers | **Don't port** — the app's own Twilio pool replaces them |
+| Website DNI pool numbers | **Port** — customers dial saved pool numbers directly (8.3% of pool calls have no web session and are 100% repeat callers). The ported originals then *become* the app's pool, so nothing needs buying. |
 | Low/zero volume, nowhere published | Let die with the account |
 
 ## Step 1 — Stand up the Twilio side in parallel
@@ -75,10 +75,14 @@ Nothing is published yet — CallRail is untouched.
 
 ## Step 2 — Website shadow run (`track.js` alongside CallRail)
 
-1. Add `<script async src="https://app.arbor-mgmt.com/track.js"></script>` to
-   arbor-mgmt.com **while CallRail's swap.js stays in place**. `track.js` captures
-   pageviews, UTMs/click-ids, and form submissions first-party; it does not need to
-   swap numbers to do that, so the two scripts coexist.
+1. Add `<script async src="https://app.arbor-mgmt.com/track.js" data-shadow></script>`
+   to arbor-mgmt.com **while CallRail's swap.js stays in place**. `track.js` captures
+   pageviews, UTMs/click-ids, and form submissions first-party.
+   **`data-shadow` is required, not optional.** Without it the snippet calls
+   `/api/dni/assign`, which falls back to the oldest active *static* number when the
+   pool is empty — so it would rewrite every `tel:` link on the site and race
+   CallRail's swap.js. Shadow mode skips the assign call entirely. Drop the attribute
+   in the same deploy that removes swap.js.
 2. Validate on `/dni-test` (built for exactly this — isolated from CallRail and
    hidden from customers): each channel preset leases the right pool number and a
    call to it attributes correctly.
