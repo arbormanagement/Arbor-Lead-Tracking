@@ -150,10 +150,19 @@ async function recordCall(args: {
 }) {
   const { callSid, fromE164, tn, assignmentId, sourceKey, destination, status } = args;
 
-  // Resolve source id (best-effort) for the denormalized lead row.
+  // Resolve source id (best-effort) for the denormalized lead row. Create the
+  // row when missing — a DNI lease can freeze a key (e.g. facebook/organic)
+  // before any pageview reached /api/track to create it (ad-blocked snippet).
   let sourceId: string | null = null;
   if (sourceKey) {
-    const [src] = await db.select({ id: sources.id }).from(sources).where(eq(sources.key, sourceKey)).limit(1);
+    let [src] = await db.select({ id: sources.id }).from(sources).where(eq(sources.key, sourceKey)).limit(1);
+    if (!src) {
+      await db
+        .insert(sources)
+        .values({ key: sourceKey, displayName: sourceKey })
+        .onConflictDoNothing({ target: sources.key });
+      [src] = await db.select({ id: sources.id }).from(sources).where(eq(sources.key, sourceKey)).limit(1);
+    }
     sourceId = src?.id ?? null;
   }
 

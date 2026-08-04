@@ -8,8 +8,9 @@ import { withSyncRun } from "./run";
 
 /**
  * lsa.sync.leads — pull Google Local Services Ads leads and store them as `lsa`
- * leads attributed to google/lsa. Deduped on (type, phone, occurred_at) since the
- * leads table has no external-id column for LSA. Best-effort: no-ops without creds.
+ * leads attributed to google/lsa. Deduped on Google's own lead id via
+ * leads.external_id (partial unique index on (type, external_id)).
+ * Best-effort: no-ops without creds.
  */
 export async function syncLsaLeads({ sinceDays = 30 }: { sinceDays?: number } = {}) {
   return withSyncRun("lsa.sync.leads", async () => {
@@ -21,35 +22,42 @@ export async function syncLsaLeads({ sinceDays = 30 }: { sinceDays?: number } = 
     const sourceId = await getOrCreateSource("google/lsa");
     const lsaLeads = await googleAds.getLsaLeads({ sinceDays });
     let inserted = 0;
+    let skipped = 0;
 
     for (const l of lsaLeads) {
-      const phoneE164 = normalizePhone(l.phone);
-      const occurredAt = l.createdTime ?? new Date();
-
-      // Dedup: same lsa lead (phone + creation time) already captured?
-      const existing = phoneE164
-        ? await db
-            .select({ id: leads.id })
-            .from(leads)
-            .where(and(eq(leads.type, "lsa"), eq(leads.phoneE164, phoneE164), eq(leads.occurredAt, occurredAt)))
-            .limit(1)
-        : [];
+      // No external id → no idempotency key; LSA always assigns one, so a row
+      // without it is malformed — skip rather than re-insert it every run.
+      if (!l.id) {
+        skipped++;
+        continue;
+      }
+      const existing = await db
+        .select({ id: leads.id })
+        .from(leads)
+        .where(and(eq(leads.type, "lsa"), eq(leads.externalId, l.id)))
+        .limit(1);
       if (existing.length) continue;
 
-      await db.insert(leads).values({
-        type: "lsa",
-        status: "new",
-        name: l.name,
-        phoneE164,
-        emailLc: normalizeEmail(l.email),
-        sourceId,
-        medium: "lsa",
-        occurredAt,
-      });
+      await db
+        .insert(leads)
+        .values({
+          type: "lsa",
+          status: "new",
+          name: l.name,
+          phoneE164: normalizePhone(l.phone),
+          emailLc: normalizeEmail(l.email),
+          sourceId,
+          medium: "lsa",
+          externalId: l.id,
+          occurredAt: l.createdTime ?? new Date(),
+        })
+        // Race backstop for the check above — the partial unique index
+        // leads_type_external_id_uq is the real guard.
+        .onConflictDoNothing();
       inserted++;
     }
 
-    return { fetched: lsaLeads.length, inserted };
+    return { fetched: lsaLeads.length, inserted, skipped };
   });
 }
 

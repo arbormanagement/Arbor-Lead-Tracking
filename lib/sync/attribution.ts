@@ -11,7 +11,12 @@ import {
   sources,
 } from "@/lib/db/schema";
 import { getSetting } from "@/lib/settings";
+import { businessDate } from "@/lib/tz";
 import { withSyncRun } from "./run";
+
+/** Bulk-insert batch size — a single-statement insert exceeds Postgres's 65,535
+ *  bind-param limit at ~5-6k rows (attributions/roi_daily are ~10 params/row). */
+const INSERT_CHUNK = 500;
 
 /**
  * attribution.run — the credential-independent core of ROI. Three passes, each a
@@ -85,15 +90,18 @@ async function matchLeadsToEstimates(windowDays: number): Promise<{ qualified: n
     ),
   );
   // Status reset must run first — clearing hcp_estimate_id would break the
-  // linked-estimate arm of `resettable` for the second statement.
-  await db
-    .update(leads)
-    .set({ status: "new" })
-    .where(and(resettable, inArray(leads.status, ["won", "qualified", "quoted", "lost", "cancelled"])));
-  await db
-    .update(leads)
-    .set({ hcpEstimateId: null, salesValueCents: null, quoteValueCents: null })
-    .where(resettable);
+  // linked-estimate arm of `resettable` for the second statement. One transaction
+  // so a crash between the two can't leave leads half-reset.
+  await db.transaction(async (tx) => {
+    await tx
+      .update(leads)
+      .set({ status: "new" })
+      .where(and(resettable, inArray(leads.status, ["won", "qualified", "quoted", "lost", "cancelled"])));
+    await tx
+      .update(leads)
+      .set({ hcpEstimateId: null, salesValueCents: null, quoteValueCents: null })
+      .where(resettable);
+  });
 
   // Every estimate (created), won first so a won estimate claims its lead before a
   // merely-created one does.
@@ -106,7 +114,6 @@ async function matchLeadsToEstimates(windowDays: number): Promise<{ qualified: n
       approved: hcpEstimates.approvedAmountCents,
       total: hcpEstimates.totalAmountCents,
       createdAtHcp: hcpEstimates.createdAtHcp,
-      approvedAtHcp: hcpEstimates.approvedAtHcp,
       custId: hcpEstimates.hcpCustomerId,
       custPhone: hcpEstimates.customerPhoneE164,
       custEmail: hcpEstimates.customerEmailLc,
@@ -124,19 +131,18 @@ async function matchLeadsToEstimates(windowDays: number): Promise<{ qualified: n
 
   for (const est of estRows) {
     if (!est.custPhone && !est.custEmail) continue;
-    // Won → anchor to approval; created → anchor to creation. The lead must precede it.
-    const estDate = est.won ? est.approvedAtHcp ?? est.createdAtHcp : est.createdAtHcp;
+    // The lead must precede the estimate being WRITTEN, so the window is anchored
+    // to created_at_hcp even for won estimates — approved_at_hcp can derive from
+    // HCP's updated_at, which drifts on ANY edit, and anchoring there would let a
+    // later unrelated inquiry steal credit for an old job.
+    const estDate = est.createdAtHcp;
     if (!estDate) continue;
 
     const contactKeys = [est.custPhone && `p:${est.custPhone}`, est.custEmail && `e:${est.custEmail}`].filter(
       Boolean,
     ) as string[];
 
-    // Search back from the estimate's creation (the lead precedes the estimate),
-    // not from a possibly much-later approval — a late approval must still be
-    // able to re-claim the original lead.
-    const anchor = est.createdAtHcp && est.createdAtHcp < estDate ? est.createdAtHcp : estDate;
-    const windowStart = new Date(anchor.getTime() - windowDays * 86_400_000);
+    const windowStart = new Date(estDate.getTime() - windowDays * 86_400_000);
     const contactMatch =
       est.custPhone && est.custEmail
         ? or(eq(leads.phoneE164, est.custPhone), eq(leads.emailLc, est.custEmail))
@@ -219,39 +225,48 @@ async function matchLeadsToEstimates(windowDays: number): Promise<{ qualified: n
 
 // ── 2. Attribution trail (last-touch for now) ────────────────────────────────
 async function rebuildAttributions(): Promise<number> {
-  const rows = await db
-    .select({
-      id: leads.id,
-      sourceId: leads.sourceId,
-      campaignId: leads.campaignId,
-      gclid: leads.gclid,
-      fbclid: leads.fbclid,
-      keyword: leads.keyword,
-      landingPage: leads.landingPage,
-      occurredAt: leads.occurredAt,
-    })
-    .from(leads)
-    .where(eq(leads.isSpam, false));
+  // Delete-then-insert in one transaction, serialized on an advisory lock so
+  // concurrent rebuilds (hourly cron vs dashboard "Run sync now") queue instead
+  // of interleaving — two interleaved rebuilds would drop or double touches.
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext('attribution-rebuild'))`);
 
-  // Full rebuild — clear then insert one 'last' touch per lead.
-  await db.delete(attributions).where(eq(attributions.touchType, "last"));
-  if (rows.length === 0) return 0;
+    const rows = await tx
+      .select({
+        id: leads.id,
+        sourceId: leads.sourceId,
+        campaignId: leads.campaignId,
+        gclid: leads.gclid,
+        fbclid: leads.fbclid,
+        keyword: leads.keyword,
+        landingPage: leads.landingPage,
+        occurredAt: leads.occurredAt,
+      })
+      .from(leads)
+      .where(eq(leads.isSpam, false));
 
-  await db.insert(attributions).values(
-    rows.map((r) => ({
-      leadId: r.id,
-      touchType: "last" as const,
-      sourceId: r.sourceId,
-      campaignId: r.campaignId,
-      gclid: r.gclid,
-      fbclid: r.fbclid,
-      keyword: r.keyword,
-      landingPage: r.landingPage,
-      occurredAt: r.occurredAt,
-      weight: "1",
-    })),
-  );
-  return rows.length;
+    // Full rebuild — clear then insert one 'last' touch per lead.
+    await tx.delete(attributions).where(eq(attributions.touchType, "last"));
+    if (rows.length === 0) return 0;
+
+    for (let i = 0; i < rows.length; i += INSERT_CHUNK) {
+      await tx.insert(attributions).values(
+        rows.slice(i, i + INSERT_CHUNK).map((r) => ({
+          leadId: r.id,
+          touchType: "last" as const,
+          sourceId: r.sourceId,
+          campaignId: r.campaignId,
+          gclid: r.gclid,
+          fbclid: r.fbclid,
+          keyword: r.keyword,
+          landingPage: r.landingPage,
+          occurredAt: r.occurredAt,
+          weight: "1",
+        })),
+      );
+    }
+    return rows.length;
+  });
 }
 
 // ── 3. roi_daily rollup ──────────────────────────────────────────────────────
@@ -316,7 +331,9 @@ async function rebuildRoiDaily(windowDays: number): Promise<number> {
 
   for (const l of leadRows) {
     const row = bump({
-      date: l.occurredAt.toISOString().slice(0, 10),
+      // Business-timezone day, matching the ad platforms' account-timezone spend
+      // dates — a late-evening CT lead must not land on tomorrow's (UTC) row.
+      date: businessDate(l.occurredAt),
       sourceId: l.sourceId ?? null,
       campaignId: l.campaignId ?? null,
       location: (l.location ?? "unknown") as RoiAcc["location"],
@@ -366,7 +383,7 @@ async function rebuildRoiDaily(windowDays: number): Promise<number> {
     .from(manualSpend)
     .where(gte(manualSpend.month, windowMonthStart));
 
-  const todayDate = new Date().toISOString().slice(0, 10);
+  const todayDate = businessDate(new Date());
   for (const m of manualRows) {
     const [y, mo] = m.month.split("-").map(Number);
     const daysInMonth = new Date(Date.UTC(y, mo, 0)).getUTCDate();
@@ -382,30 +399,37 @@ async function rebuildRoiDaily(windowDays: number): Promise<number> {
     }
   }
 
-  // Full rebuild of the window.
-  await db.delete(roiDaily).where(gte(roiDaily.date, sinceDate));
+  // Full rebuild of the window — transactional and serialized on the same
+  // advisory lock as rebuildAttributions, so a concurrent run can't interleave
+  // its delete/insert with ours (dashboards would see a half-empty window).
   const rows = [...acc.values()];
-  if (rows.length === 0) return 0;
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext('attribution-rebuild'))`);
+    await tx.delete(roiDaily).where(gte(roiDaily.date, sinceDate));
+    if (rows.length === 0) return 0;
 
-  await db.insert(roiDaily).values(
-    rows.map((r) => ({
-      date: r.date,
-      sourceId: r.sourceId,
-      campaignId: r.campaignId,
-      location: r.location,
-      leadsCount: r.leadsCount,
-      qualifiedCount: r.qualifiedCount,
-      callsCount: r.callsCount,
-      formsCount: r.formsCount,
-      wonCount: r.wonCount,
-      spendCents: r.spendCents,
-      revenueCents: r.revenueCents,
-      quoteValueCents: r.quoteValueCents,
-      // Cost per *qualified* lead (a real opportunity), not per raw contact.
-      costPerLeadCents: r.qualifiedCount ? Math.round(r.spendCents / r.qualifiedCount) : null,
-      costPerAcquisitionCents: r.wonCount ? Math.round(r.spendCents / r.wonCount) : null,
-      roiRatio: r.spendCents ? (r.revenueCents / r.spendCents).toFixed(4) : null,
-    })),
-  );
-  return rows.length;
+    for (let i = 0; i < rows.length; i += INSERT_CHUNK) {
+      await tx.insert(roiDaily).values(
+        rows.slice(i, i + INSERT_CHUNK).map((r) => ({
+          date: r.date,
+          sourceId: r.sourceId,
+          campaignId: r.campaignId,
+          location: r.location,
+          leadsCount: r.leadsCount,
+          qualifiedCount: r.qualifiedCount,
+          callsCount: r.callsCount,
+          formsCount: r.formsCount,
+          wonCount: r.wonCount,
+          spendCents: r.spendCents,
+          revenueCents: r.revenueCents,
+          quoteValueCents: r.quoteValueCents,
+          // Cost per *qualified* lead (a real opportunity), not per raw contact.
+          costPerLeadCents: r.qualifiedCount ? Math.round(r.spendCents / r.qualifiedCount) : null,
+          costPerAcquisitionCents: r.wonCount ? Math.round(r.spendCents / r.wonCount) : null,
+          roiRatio: r.spendCents ? (r.revenueCents / r.spendCents).toFixed(4) : null,
+        })),
+      );
+    }
+    return rows.length;
+  });
 }
