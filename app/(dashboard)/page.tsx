@@ -1,7 +1,7 @@
 import { and, desc, eq, gte, ne, or, sql } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { leads, roiDaily, sources } from "@/lib/db/schema";
-import { dollars } from "@/lib/format";
+import { wholeDollars } from "@/lib/format";
 
 export const dynamic = "force-dynamic";
 
@@ -45,7 +45,7 @@ export default async function OverviewPage() {
   const revenue = daily.reduce((s, d) => s + d.revenue, 0);
   const roas = spend > 0 ? (revenue / spend).toFixed(1) + "×" : "—";
   // Ads-Manager-style CPL: spend ÷ captured leads (not per-quoted).
-  const cpl = captured > 0 && spend > 0 ? dollars(Math.round(spend / captured)) : "—";
+  const cpl = captured > 0 && spend > 0 ? wholeDollars(Math.round(spend / captured)) : "—";
 
   // Top sources by revenue.
   const top = await db
@@ -94,14 +94,14 @@ export default async function OverviewPage() {
           <div className="st-label"><span className="st-dot" style={{ background: "var(--accent)" }} />Won</div>
           {quoted > 0 && <div className="st-conv">{pct(won, quoted)} close rate</div>}
           <div className="st-value mono" style={{ color: "var(--accent)" }}>{won}</div>
-          <div className="st-sub">estimate approved · {dollars(revenue)} revenue</div>
+          <div className="st-sub">estimate approved · {wholeDollars(revenue)} revenue</div>
         </div>
       </div>
 
       {/* KPIs */}
       <div className="cards">
-        <div className="card kpi"><div className="label">◐ Ad spend</div><div className="value mono">{dollars(spend)}</div></div>
-        <div className="card kpi"><div className="label">◈ Revenue (won est.)</div><div className="value mono">{dollars(revenue)}</div></div>
+        <div className="card kpi"><div className="label">◐ Ad spend</div><div className="value mono">{wholeDollars(spend)}</div></div>
+        <div className="card kpi"><div className="label">◈ Revenue (won est.)</div><div className="value mono">{wholeDollars(revenue)}</div></div>
         <div className="card kpi accent"><div className="label">✦ ROAS</div><div className="value mono pos">{roas}</div></div>
         <div className="card kpi"><div className="label" title="Spend ÷ captured leads — matches Ads Manager">☎ Cost / lead</div><div className="value mono">{cpl}</div></div>
       </div>
@@ -135,12 +135,21 @@ export default async function OverviewPage() {
             <table style={{ border: "none", borderRadius: 0 }}>
               <tbody>
                 {top.map((s, i) => {
-                  const r = s.spend > 0 ? (s.revenue / s.spend).toFixed(1) + "×" : s.revenue > 0 ? "organic" : "—";
+                  // Spend with no revenue yet is a wait-state, not a 0.0× verdict.
+                  const r =
+                    s.spend > 0 && s.revenue > 0
+                      ? (s.revenue / s.spend).toFixed(1) + "×"
+                      : s.revenue > 0
+                        ? "organic"
+                        : s.spend > 0
+                          ? "no rev yet"
+                          : "—";
+                  const winning = s.spend > 0 && s.revenue > 0;
                   return (
                     <tr key={s.key ?? i}>
                       <td><span className="src"><span className="dot" style={{ background: SRC_HUES[i % SRC_HUES.length] }} />{s.name ?? s.key ?? "Unknown"}</span></td>
-                      <td className="muted mono">{dollars(s.spend)}</td>
-                      <td className="mono" style={{ color: s.spend > 0 ? "var(--accent)" : "var(--muted)", fontWeight: 700, textAlign: "right" }}>{r}</td>
+                      <td className="muted mono">{wholeDollars(s.spend)}</td>
+                      <td className={winning ? "mono" : ""} style={{ color: winning ? "var(--accent)" : "var(--muted)", fontWeight: winning ? 700 : 500, fontSize: winning ? undefined : 12, textAlign: "right" }}>{r}</td>
                     </tr>
                   );
                 })}

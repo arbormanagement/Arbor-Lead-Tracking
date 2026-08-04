@@ -3,6 +3,17 @@ export function dollars(cents: number | null | undefined): string {
   return (c / 100).toLocaleString("en-US", { style: "currency", currency: "USD" });
 }
 
+/** Whole-dollar formatting for KPI tiles and summary numbers — "$4,000", not
+ *  "$4,000.05". Cent precision stays in tables and detail views (`dollars`). */
+export function wholeDollars(cents: number | null | undefined): string {
+  const c = cents ?? 0;
+  return (c / 100).toLocaleString("en-US", {
+    style: "currency",
+    currency: "USD",
+    maximumFractionDigits: 0,
+  });
+}
+
 export function dateTime(d: Date | string | null | undefined): string {
   if (!d) return "—";
   const date = typeof d === "string" ? new Date(d) : d;

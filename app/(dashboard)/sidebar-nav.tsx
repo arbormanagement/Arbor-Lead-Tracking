@@ -3,15 +3,14 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
+// Everything admin/config-shaped (numbers, integrations, sync) lives under
+// Settings — the sidebar stays the day-to-day working set.
 const NAV: Array<{ href: string; label: string; ic: string; section?: string }> = [
   { href: "/", label: "Overview", ic: "◧" },
   { href: "/calls", label: "Calls", ic: "☎" },
   { href: "/leads", label: "Leads", ic: "✉" },
   { href: "/sources", label: "Sources", ic: "◈" },
-  { href: "/numbers", label: "Numbers", ic: "#" },
   { href: "/settings", label: "Settings", ic: "⚙", section: "Admin" },
-  { href: "/settings/integrations", label: "Integrations", ic: "◱" },
-  { href: "/spend", label: "Data & sync", ic: "⟳" },
 ];
 
 export function SidebarNav() {

@@ -21,6 +21,7 @@ export default async function IntegrationsPage() {
 
   return (
     <>
+      <a href="/settings" className="backlink">← Settings</a>
       <div className="page-head">
         <div>
           <h1 className="page-title">Integrations</h1>

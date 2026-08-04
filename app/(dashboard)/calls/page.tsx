@@ -78,7 +78,7 @@ export default async function CallsPage() {
               return (
                 <tr key={c.id}>
                   <td className="muted mono" style={{ whiteSpace: "nowrap" }}>{dateTime(c.createdAt)}</td>
-                  <td style={{ fontWeight: 600 }}>
+                  <td className="nowrap" style={{ fontWeight: 600 }}>
                     {c.leadId ? (
                       <Link href={`/leads/${c.leadId}`} className="rowlink">{formatPhoneDisplay(c.fromNumber)}</Link>
                     ) : (
