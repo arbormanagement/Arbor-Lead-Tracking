@@ -63,6 +63,17 @@ export const env = createEnv({
     // App secret — verifies X-Hub-Signature-256 on the lead-gen webhook.
     FACEBOOK_APP_SECRET: z.string().optional(),
 
+    // Credential fields that lib/credentials/spec.ts offers an env fallback for.
+    // envFallback() resolves through THIS validated object, not process.env — so a
+    // spec envKey missing here is not a fallback that merely goes unused, it is one
+    // that silently never works no matter what the host sets.
+    GOOGLE_ADS_LSA_CUSTOMER_ID: z.string().optional(),
+    GOOGLE_ADS_CONV_QUALIFIED: z.string().optional(),
+    GOOGLE_ADS_CONV_WON: z.string().optional(),
+    FACEBOOK_PAGE_ID: z.string().optional(),
+    FACEBOOK_PIXEL_ID: z.string().optional(),
+    ANTHROPIC_API_KEY: z.string().optional(),
+
     FB_AD_ACCOUNT_ID: z.string().optional(),
     GOOGLE_ADS_CUSTOMER_ID: z.string().optional(),
     GA4_PROPERTY_ID: z.string().optional(),
@@ -107,6 +118,12 @@ export const env = createEnv({
     FACEBOOK_ACCESS_TOKEN: process.env.FACEBOOK_ACCESS_TOKEN,
     FACEBOOK_API_VERSION: process.env.FACEBOOK_API_VERSION,
     FACEBOOK_APP_SECRET: process.env.FACEBOOK_APP_SECRET,
+    GOOGLE_ADS_LSA_CUSTOMER_ID: process.env.GOOGLE_ADS_LSA_CUSTOMER_ID,
+    GOOGLE_ADS_CONV_QUALIFIED: process.env.GOOGLE_ADS_CONV_QUALIFIED,
+    GOOGLE_ADS_CONV_WON: process.env.GOOGLE_ADS_CONV_WON,
+    FACEBOOK_PAGE_ID: process.env.FACEBOOK_PAGE_ID,
+    FACEBOOK_PIXEL_ID: process.env.FACEBOOK_PIXEL_ID,
+    ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
     FB_AD_ACCOUNT_ID: process.env.FB_AD_ACCOUNT_ID,
     GOOGLE_ADS_CUSTOMER_ID: process.env.GOOGLE_ADS_CUSTOMER_ID,
     GA4_PROPERTY_ID: process.env.GA4_PROPERTY_ID,
