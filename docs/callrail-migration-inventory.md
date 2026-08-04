@@ -118,6 +118,34 @@ normal call goes.
 - **Notification emails / webhooks** anyone relies on — must be re-created or explicitly
   replaced by the Leads page.
 
+## Next actions — queued, nothing executed
+
+No live change has been made. Everything below is approved in principle but explicitly
+**not yet run** (Justin, 2026-08-04).
+
+**Justin owns:**
+
+1. Add `<script async src="https://app.arbor-mgmt.com/track.js"></script>` to
+   arbor-mgmt.com **alongside** CallRail's `swap.js` — they coexist. That repo is not in
+   the lead-tracking session's scope.
+2. **Request port-out info + LOA from CallRail support.** Free, non-committal, and it is
+   the 1–4 week long pole — starting it early costs nothing.
+3. Confirm whether the **LSA number (618-366-9977) can be re-pointed** inside the Local
+   Services Ads product. If it can, it drops off the port list.
+4. Find out what system owns **+1 618 205 9924** — it is now the single destination for
+   every tracked call.
+
+**Ready to run on approval:**
+
+5. Provision the **DNI pool** — 5–6 Twilio numbers in 618, wired to `/api/twilio/voice`,
+   forwarding to +1 618 205 9924. Unpublished, so no routing risk; costs ~$1/number/mo.
+6. Retarget `+16184278164`'s voice **fallback** from 618-920-7917 to +1 618 205 9924.
+7. **The canary cutover:** repoint the Google Ads call asset to `+16184278164`. Must
+   update **both** `338816285606` (campaign `23633267649`) **and** `172222076754`
+   (account level) — miss the account-level one and 618-414-5907 keeps serving. Chosen
+   as the first real cutover because it is a swap, not a port: reversible in minutes and
+   only ~4% of call volume.
+
 ## Status against the plan
 
 | Step | State |
