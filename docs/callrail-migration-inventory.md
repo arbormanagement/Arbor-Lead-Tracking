@@ -194,6 +194,13 @@ unaffected. The shadow run is now safe by construction rather than by luck.
 
 Drop `data-shadow` at cutover, in the same deploy that removes CallRail's `swap.js`.
 
+> ⚠️ **Deploy order is load-bearing.** The copy of `track.js` currently served by
+> app.arbor-mgmt.com predates shadow mode and **ignores `data-shadow`** (verified by
+> fetching it on 2026-08-04). Shipping the website tag first would swap numbers anyway.
+> **This repo must be merged and deployed before `arbor-website`.** The website change is
+> prepared on the matching branch `claude/callrail-phone-migration-r2p0tl` and carries the
+> same warning in its commit message.
+
 ## Status against the plan
 
 | Step | State |
