@@ -3,7 +3,9 @@ import { z } from "zod";
 import { db } from "@/lib/db/client";
 import { formSubmissions, leads, sources, visitors, webSessions } from "@/lib/db/schema";
 import { classifySource } from "@/lib/attribution/classify";
+import { isAllowedOrigin } from "@/lib/origin";
 import { normalizeEmail, normalizePhone } from "@/lib/phone";
+import { clientIp, rateLimit } from "@/lib/rate-limit";
 
 export const runtime = "nodejs";
 
@@ -64,11 +66,40 @@ export function OPTIONS() {
 }
 
 export async function POST(req: Request) {
+  // Public-endpoint hygiene: browser posts must come from our own sites, and
+  // every IP gets a budget (pageviews are chatty; form submits are not).
+  if (!isAllowedOrigin(req)) {
+    return Response.json({ error: "origin not allowed" }, { status: 403, headers: CORS });
+  }
+  const ip = clientIp(req);
+  const rl = rateLimit(`track:${ip}`, 60, 60_000);
+  if (!rl.ok) return tooManyRequests(rl.retryAfterSec);
+
   let parsed;
   try {
     parsed = Body.parse(JSON.parse(await req.text()));
   } catch {
     return Response.json({ error: "invalid payload" }, { status: 400, headers: CORS });
+  }
+
+  // Tighter budget for the event that mints leads.
+  if (parsed.event === "form_submit") {
+    const frl = rateLimit(`track-form:${ip}`, 5, 60_000);
+    if (!frl.ok) return tooManyRequests(frl.retryAfterSec);
+  }
+
+  // Cap the form-fields blob we store verbatim in form_submissions.fields:
+  // bounded key count, bounded value length, hard ceiling on the serialized size.
+  if (parsed.form) {
+    const fields = parsed.form.fields;
+    const keys = Object.keys(fields);
+    if (keys.length > 50) {
+      return Response.json({ error: "too many fields" }, { status: 413, headers: CORS });
+    }
+    for (const k of keys) fields[k] = fields[k]!.slice(0, 1000);
+    if (JSON.stringify(fields).length > 32_768) {
+      return Response.json({ error: "fields too large" }, { status: 413, headers: CORS });
+    }
   }
 
   const { vid, sid, url, referrer, ga, utm = {}, click = {}, form } = parsed;
@@ -83,6 +114,9 @@ export async function POST(req: Request) {
     referrer,
   });
   const sourceId = await getOrCreateSource(cls.sourceKey);
+  // classify lowercases its output; normalize raw UTM the same way so "CPC" and
+  // "cpc" don't split dashboard groupings.
+  const medium = utm.medium?.toLowerCase() ?? cls.medium;
   const location = inferLocation(form?.pageUrl ?? url);
   const now = new Date();
 
@@ -93,7 +127,7 @@ export async function POST(req: Request) {
       id: vid,
       gaClientId: ga,
       ftSource: cls.sourceKey,
-      ftMedium: utm.medium ?? cls.medium,
+      ftMedium: medium,
       ftCampaign: utm.campaign,
       ftContent: utm.content,
       ftTerm: utm.term,
@@ -115,7 +149,7 @@ export async function POST(req: Request) {
       id: sid,
       visitorId: vid,
       source: cls.sourceKey,
-      medium: utm.medium ?? cls.medium,
+      medium,
       campaign: utm.campaign,
       content: utm.content,
       term: utm.term,
@@ -145,7 +179,7 @@ export async function POST(req: Request) {
         emailLc: normalizeEmail(c.email),
         message: c.message,
         sourceId,
-        medium: utm.medium ?? cls.medium,
+        medium,
         gclid: click.gclid,
         gbraid: click.gbraid,
         wbraid: click.wbraid,
@@ -170,6 +204,14 @@ export async function POST(req: Request) {
   }
 
   return Response.json({ ok: true }, { headers: CORS });
+}
+
+/** 429 with Retry-After — CORS headers included so the browser sees it cleanly. */
+function tooManyRequests(retryAfterSec: number) {
+  return Response.json(
+    { error: "rate limited" },
+    { status: 429, headers: { ...CORS, "Retry-After": String(retryAfterSec) } },
+  );
 }
 
 /** Upsert a source row by key so every lead/session rolls up to a named source. */

@@ -1,9 +1,14 @@
 import { z } from "zod";
 import { classifySource } from "@/lib/attribution/classify";
+import { db } from "@/lib/db/client";
+import { visitors, webSessions } from "@/lib/db/schema";
+import { isAllowedOrigin } from "@/lib/origin";
 import { formatPhoneDisplay } from "@/lib/phone";
+import { clientIp, rateLimit } from "@/lib/rate-limit";
 import {
   getActiveAssignmentForSession,
   getFallbackNumber,
+  getNewestAssignmentAtVisitorCap,
   leaseNumber,
   releaseExpired,
 } from "@/lib/dni/assign";
@@ -15,8 +20,10 @@ export const runtime = "nodejs";
  * `track.js` can swap the displayed phone number. Cookieless (keys off the
  * client-provided session id), CORS-open for the cross-origin call from the site.
  *
- * Order: reap expired leases → reuse this session's existing number → lease from
- * the single shared website pool → static fallback. The visitor's source is frozen
+ * Order: reap expired leases → reuse this session's existing number → seed
+ * visitor/session rows (the pageview beacon races us and may be ad-blocked) →
+ * per-visitor lease cap → lease from the single shared website pool → static
+ * fallback. The visitor's source is frozen
  * onto the lease, so the number itself is channel-agnostic. Never throws to the
  * page; on any failure it returns `{ number: null }` and the page keeps its number.
  */
@@ -56,6 +63,19 @@ export function OPTIONS() {
 }
 
 export async function POST(req: Request) {
+  // Public-endpoint hygiene: browser posts must come from our own sites, and
+  // each IP gets a budget — leases are a finite pool worth protecting.
+  if (!isAllowedOrigin(req)) {
+    return Response.json({ error: "origin not allowed" }, { status: 403, headers: CORS });
+  }
+  const rl = rateLimit(`dni:${clientIp(req)}`, 30, 60_000);
+  if (!rl.ok) {
+    return Response.json(
+      { error: "rate limited" },
+      { status: 429, headers: { ...CORS, "Retry-After": String(rl.retryAfterSec) } },
+    );
+  }
+
   let b;
   try {
     b = Body.parse(JSON.parse(await req.text()));
@@ -81,9 +101,10 @@ export async function POST(req: Request) {
       utmMedium: utm.medium,
       referrer,
     });
+    const medium = utm.medium?.toLowerCase() ?? cls.medium;
     const snapshot = {
       source: cls.sourceKey,
-      medium: utm.medium ?? cls.medium,
+      medium,
       campaign: utm.campaign,
       keyword: utm.term,
       gclid: click.gclid,
@@ -92,6 +113,49 @@ export async function POST(req: Request) {
       fbclid: click.fbclid,
       landingPage: url,
     };
+
+    // FK safety: the snippet fires the pageview beacon and this assign call
+    // concurrently — and /api/track may be ad-blocked outright — so the visitor/
+    // session rows the lease FKs reference may not exist yet. Seed minimal rows
+    // from this request's own attribution (no-op when the pageview won the race).
+    await db
+      .insert(visitors)
+      .values({
+        id: vid,
+        ftSource: cls.sourceKey,
+        ftMedium: medium,
+        ftCampaign: utm.campaign,
+        ftTerm: utm.term,
+        ftGclid: click.gclid,
+        ftFbclid: click.fbclid,
+        ftReferrer: referrer,
+        ftLandingPage: url,
+        ftAt: new Date(),
+      })
+      .onConflictDoNothing({ target: visitors.id });
+    await db
+      .insert(webSessions)
+      .values({
+        id: sid,
+        visitorId: vid,
+        source: cls.sourceKey,
+        medium,
+        campaign: utm.campaign,
+        term: utm.term,
+        gclid: click.gclid,
+        gbraid: click.gbraid,
+        wbraid: click.wbraid,
+        fbclid: click.fbclid,
+        referrer,
+        landingPage: url,
+      })
+      .onConflictDoNothing({ target: webSessions.id });
+
+    // Cap concurrent leases per visitor: at the cap, reuse their newest number
+    // rather than letting one visitor (e.g. sid churn with blocked cookies)
+    // drain the pool.
+    const capped = await getNewestAssignmentAtVisitorCap(vid);
+    if (capped) return numberResponse(capped.phoneNumber);
 
     const leased = await leaseNumber(snapshot, sid, vid);
     if (leased) return numberResponse(leased.phoneNumber);

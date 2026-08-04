@@ -96,8 +96,10 @@ const SNIPPET = String.raw`(function () {
     function send(payload) {
       var body = JSON.stringify(payload);
       try {
-        if (navigator.sendBeacon) {
-          navigator.sendBeacon(ENDPOINT, new Blob([body], { type: 'text/plain' }));
+        // sendBeacon returns false when it can't queue the event (quota, size) —
+        // fall through to fetch instead of dropping it.
+        if (navigator.sendBeacon &&
+            navigator.sendBeacon(ENDPOINT, new Blob([body], { type: 'text/plain' }))) {
           return;
         }
       } catch (e) {}
@@ -154,8 +156,15 @@ const SNIPPET = String.raw`(function () {
       if (form.hasAttribute('data-arbor-ignore')) return;
       var fields = {};
       try {
+        // FormData can't tell input types apart — inspect form.elements so
+        // password values never leave the page.
+        var secret = {};
+        for (var fi = 0; fi < form.elements.length; fi++) {
+          var fe = form.elements[fi];
+          if (fe && fe.type === 'password' && fe.name) secret[fe.name] = 1;
+        }
         new FormData(form).forEach(function (v, k) {
-          if (typeof v === 'string') fields[k] = v;
+          if (typeof v === 'string' && secret[k] !== 1) fields[k] = v;
         });
       } catch (e) {}
       send(merge({

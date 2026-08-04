@@ -4,6 +4,7 @@ import { db } from "@/lib/db/client";
 import { numberAssignments, trackingNumbers } from "@/lib/db/schema";
 
 const LEASE_MINUTES = 30;
+const MAX_ACTIVE_LEASES_PER_VISITOR = 2;
 
 export interface AttributionSnapshot {
   source?: string | null;
@@ -60,6 +61,34 @@ export async function getActiveAssignmentForSession(sid: string): Promise<LeaseR
 }
 
 /**
+ * Per-visitor lease cap — a visitor churning session ids (cookie-blocked browsers
+ * mint a fresh sid per pageview) must not drain the pool. At/over the cap this
+ * returns their newest active lease so the page still shows a consistent tracked
+ * number; under the cap it returns null and the caller leases normally.
+ */
+export async function getNewestAssignmentAtVisitorCap(vid: string): Promise<LeaseResult | null> {
+  const rows = await db
+    .select({
+      id: numberAssignments.id,
+      phone: trackingNumbers.phoneNumber,
+    })
+    .from(numberAssignments)
+    .innerJoin(trackingNumbers, eq(numberAssignments.trackingNumberId, trackingNumbers.id))
+    .where(
+      and(
+        eq(numberAssignments.visitorId, vid),
+        isNull(numberAssignments.releasedAt),
+        gt(numberAssignments.expiresAt, new Date()),
+      ),
+    )
+    .orderBy(desc(numberAssignments.assignedAt))
+    .limit(MAX_ACTIVE_LEASES_PER_VISITOR);
+
+  if (rows.length < MAX_ACTIVE_LEASES_PER_VISITOR) return null;
+  return { phoneNumber: rows[0]!.phone, assignmentId: rows[0]!.id, reused: true };
+}
+
+/**
  * Atomically lease a free number from the single shared website pool — every
  * non-static active number is part of one rotation (CallRail-style); the visitor's
  * source is frozen onto the lease, not derived from the number, so a call resolves
@@ -83,7 +112,13 @@ export async function leaseNumber(snap: AttributionSnapshot, sid: string, vid: s
             AND na.released_at IS NULL
             AND na.expires_at > now()
         )
-      ORDER BY tn.created_at
+      -- Least-recently-released first (never-leased numbers before any recycled
+      -- one), so a stale tab still showing an expired number has the longest
+      -- possible window before that number is handed to someone else.
+      ORDER BY (
+        SELECT MAX(na2.released_at) FROM number_assignments na2
+        WHERE na2.tracking_number_id = tn.id
+      ) ASC NULLS FIRST, tn.created_at
       LIMIT 1
       FOR UPDATE SKIP LOCKED
     ),

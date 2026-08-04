@@ -82,6 +82,13 @@ export const env = createEnv({
     // Shared secret the cron worker sends (Authorization: Bearer) to trigger
     // /api/cron/* — keeps the sync jobs from being runnable by anyone.
     CRON_SECRET: z.string().optional(),
+
+    // Origins allowed to POST to the public tracking endpoints (/api/track,
+    // /api/dni/assign), comma-separated. APP_BASE_URL's origin is always allowed
+    // too (the /dni-test page posts same-origin). See lib/origin.ts.
+    TRACKING_ALLOWED_ORIGINS: z
+      .string()
+      .default("https://arbor-mgmt.com,https://www.arbor-mgmt.com"),
   },
   client: {},
   // Next.js inlines process.env at build; pass through explicitly.
@@ -129,6 +136,7 @@ export const env = createEnv({
     GA4_PROPERTY_ID: process.env.GA4_PROPERTY_ID,
     FACEBOOK_VERIFY_TOKEN: process.env.FACEBOOK_VERIFY_TOKEN,
     CRON_SECRET: process.env.CRON_SECRET,
+    TRACKING_ALLOWED_ORIGINS: process.env.TRACKING_ALLOWED_ORIGINS,
   },
   // Allow `npm run build` / lint without a full env (skips validation when set).
   skipValidation:
