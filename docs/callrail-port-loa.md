@@ -40,22 +40,22 @@ send this to CallRail if they accept a free-form LOA.
 | Field | Value |
 |---|---|
 | Current provider | **CallRail** *(⬜ confirm the underlying carrier of record — CallRail resells, so the port team may need Bandwidth / Twilio / etc. instead)* |
-| Account number | ⬜ **from CallRail** — CallRail's own numeric account ID is `408466063`; confirm this is the number the port team should use |
+| Account number | ⬜ **from CallRail** — two IDs exist: **account** `408466063` and **company** `190471331` (the latter is what appears in the swap.js URL). Confirm which the port team wants. |
 | Account PIN / passcode | ⬜ **from CallRail** |
-| BTN (billing telephone number) | ⬜ **from CallRail** — resold tracking-number pools often have no conventional BTN; get their answer in writing |
+| BTN (billing telephone number) | **Likely `+1 618 920 7917`** — CallRail's Business Profile lists it as the *Primary phone number*, and it is Arbor's real business line rather than a tracking number. ⬜ confirm with CallRail before submitting. |
 
 ### Account holder
 
 | Field | Value |
 |---|---|
-| Company name (exactly as on the CallRail bill) | ⬜ **verify against an invoice** — see the name trap above |
-| Service address — street | ⬜ |
+| Company name (exactly as on the CallRail bill) | ⬜ **still needed.** CallRail's Business Profile shows **"Arbor Management"**, but that field is labelled *"used in reports and dashboards"* — it is a display name, not necessarily the billing entity. **Verify against an invoice** — see the name trap above. |
+| Service address — street | ⬜ **still needed** — not shown on the Business Profile screen |
 | Service address — suite/unit | ⬜ *(a missing or extra suite number is the single most common rejection)* |
 | City / State / ZIP | ⬜ |
 | Authorized signer | **Justin Hays** — sole admin on the CallRail account |
 | Title | ⬜ (Owner) |
 | Contact email | justin@arbor-mgmt.com |
-| Contact phone | ⬜ *(use a number **not** on the port list — a ported number can be unreachable at cutover, which is exactly when the port team may need to call)* |
+| Contact phone | **+1 618 920 7917** ✅ — Arbor's real business line, and confirmed **not** one of the 10 numbers being ported, so it stays reachable through cutover |
 
 ### Numbers to port (10)
 
@@ -109,12 +109,23 @@ Fill in as CallRail responds, then transfer to the LOA above.
 |---|---|---|
 | All 10 numbers portable? | ⬜ | |
 | Underlying carrier of record | ⬜ | |
-| Account number for port team | ⬜ | |
+| Account number for port team | ⬜ (account `408466063` / company `190471331`) | |
 | Account PIN / passcode | ⬜ | |
-| BTN | ⬜ | |
+| BTN | Business Profile says **+1 618 920 7917** — ⬜ confirm | 2026-08-04 |
 | CSR issued? | ⬜ | |
 | Service address as on file | ⬜ | |
-| Company name as on file | ⬜ | |
+| Company name as on file | ⬜ (display name is "Arbor Management") | |
+
+**From the Business Profile screen (2026-08-04):** company name "Arbor Management",
+company ID `190471331`, primary phone `+1 618 920 7917`. The screen carries **no service
+address and no billing entity name**, which are the two fields that actually get ports
+rejected — those still have to come off an invoice or from CallRail support.
+
+*Aside, not port-relevant:* the profile's Timezone is unset while the API reports
+`America/Indiana/Knox`. That is US Central, the same offset and DST rules as
+`America/Chicago`, so it does **not** shift day boundaries when comparing CallRail's daily
+counts against the app's during the Step 3 validation window. Worth setting for tidiness;
+not a blocker.
 
 ---
 
