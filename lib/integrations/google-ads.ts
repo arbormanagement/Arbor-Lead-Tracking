@@ -9,7 +9,7 @@ import type { SpendProvider, SpendRow } from "./types";
  * cost_micros are millionths of the account currency → cents = micros / 10_000.
  * Bump GOOGLE_ADS_API_VERSION as Google deprecates versions (~yearly).
  */
-const GOOGLE_ADS_API_VERSION = "v18";
+const GOOGLE_ADS_API_VERSION = "v24";
 
 interface GoogleAdsConfig {
   developerToken: string;
