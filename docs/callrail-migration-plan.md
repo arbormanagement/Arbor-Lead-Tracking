@@ -24,9 +24,12 @@ Guiding rules:
 ## Step 0 — Inventory CallRail (no changes yet)
 
 > **DONE 2026-08-04 — results in [`callrail-migration-inventory.md`](./callrail-migration-inventory.md).**
-> 6 active trackers / 10 numbers / 1,672 calls per 90 days. Decision: 4 ports, 1 Google
-> Ads asset swap, 5 pool numbers dropped. **All numbers forward to +1 618 205 9924**, not
-> the office number this plan originally assumed.
+> 6 active trackers / 10 numbers / 1,672 calls per 90 days. Decision: **port all 10** — a
+> full port, nothing swapped and nothing dropped. The pool numbers and the call-only-ads
+> number were both initially marked to drop or swap; the call data reversed both.
+> **All numbers forward to +1 618 205 9924**, not the office number this plan assumed.
+> Filing packet: [`callrail-port-packet.md`](./callrail-port-packet.md) ·
+> LOA field values: [`callrail-port-loa.md`](./callrail-port-loa.md)
 
 Build a spreadsheet of every CallRail tracking number with, per number:
 

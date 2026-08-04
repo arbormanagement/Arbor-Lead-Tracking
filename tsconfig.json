@@ -19,5 +19,13 @@
     }
   },
   "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts"],
-  "exclude": ["node_modules"]
+  // drizzle.config.ts is drizzle-kit's own config, not application code, and it
+  // imports `drizzle-kit` — a devDependency. Railway installs production deps
+  // only, so on a deploy build that import cannot resolve and `next build`
+  // fails the whole release at the type-check step with
+  // "Cannot find module 'drizzle-kit'". Nothing in the app or the release step
+  // imports it (migrations run through drizzle-orm's migrator in
+  // scripts/migrate-deploy.ts), and drizzle-kit loads this file with its own
+  // bundler rather than through tsc — so excluding it costs no type safety.
+  "exclude": ["node_modules", "drizzle.config.ts"]
 }
