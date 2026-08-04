@@ -9,12 +9,24 @@ export const dynamic = "force-static";
  * captures attribution (UTM / click IDs / referrer / landing page / GA client id),
  * sends a pageview, and captures form submissions — all without blocking the page.
  * DNI number-swap is added in Phase 4; the structure leaves room for it.
+ *
+ * SHADOW MODE — for running alongside CallRail during the migration:
+ *   <script async src="https://app.arbor-mgmt.com/track.js" data-shadow></script>
+ *
+ * Shadow mode skips the DNI assign call entirely, so the snippet observes only and
+ * never touches a phone number on the page. This has to be explicit: without it the
+ * assign endpoint falls back to the oldest active *static* number when the pool is
+ * empty (`getFallbackNumber`), so a "harmless" install would in fact rewrite every
+ * `tel:` link on the site and race CallRail's swap.js for the displayed number.
+ * Drop the attribute at cutover, once CallRail's swap.js is gone.
  */
 const SNIPPET = String.raw`(function () {
   try {
     var script = document.currentScript;
     var ENDPOINT = new URL('/api/track', script ? script.src : location.origin).toString();
     var VID_DAYS = 730, SID_MIN = 30;
+    // Observe-only: track everything, never touch a number on the page.
+    var SHADOW = !!(script && script.hasAttribute('data-shadow'));
 
     function getCookie(n) {
       var m = document.cookie.match('(?:^|; )' + n + '=([^;]*)');
@@ -121,6 +133,9 @@ const SNIPPET = String.raw`(function () {
       }
     }
     (function () {
+      // Shadow run: no assign call at all — it would both swap the number and burn a
+      // pool lease for a visitor whose displayed number CallRail still controls.
+      if (SHADOW) return;
       var ASSIGN = new URL('/api/dni/assign', script ? script.src : location.origin).toString();
       var body = JSON.stringify({
         vid: vid, sid: sid, url: location.href, referrer: document.referrer || undefined,
