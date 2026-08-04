@@ -64,7 +64,7 @@ are attached only to **REMOVED** campaigns, and `47402561065` is PAUSED at accou
 | **618 368 2902** | **PORT** | GBP primary phone for Edwardsville. Not in print, so a swap is *possible* — but changing a GBP primary phone is a NAP-consistency event across the whole citation graph, and porting keeps the digits so there is no GBP edit at all. Not worth the SEO risk to save a port. |
 | **618 350 4451** | **PORT** | GBP primary phone for O'Fallon. Same reasoning, and it matters more here: closing the O'Fallon review/ranking gap is the #1 GBP lever, so this is the last profile to take chances with. |
 | **618 366 9977** | **PORT** | 421 calls/90d (25%) is too much volume to risk. LSA phone numbers are managed in the Local Services Ads product, not the Google Ads API — if it turns out to be freely re-pointable there, downgrading this one to a swap is a safe simplification. |
-| **618 414 5907** | **SWAP, don't port** | Lives in exactly one editable place (a Google Ads call asset). Repoint the asset to `+16184278164`, which is already provisioned and wired. No port, no downtime. |
+| **618 414 5907** | **PORT** *(revised 2026-08-04)* | Originally "swap, don't port" — it lives in one editable Google Ads asset. But it is **live on the only ENABLED campaign** (asset `338816285606` + account-level `172222076754`), and **16 of its 72 calls (22.2%) are repeat callers**, ~5/month. One more line on an LOA already being filed beats losing those, and porting means the Google Ads asset needs no change at all. See `callrail-port-packet.md`. |
 | **pool ×5** | **PORT — and reuse them as the app's own DNI pool** | *Reversed 2026-08-04.* Customers do dial pool numbers directly — see below. Porting keeps the digits alive **and** supplies the pool, so there is nothing to buy. |
 
 That is **10 ports** — every number on the account, a FULL port (9 if LSA proves re-pointable). Nothing is swapped and nothing is dropped.
@@ -104,11 +104,13 @@ Arbor's Twilio account (the one behind `TWILIO_ACCOUNT_SID`) owns **3 numbers**:
 | +1 618 310 3486 | (618) 310-3486 | `demo.twilio.com` | Not a tracking number. SMS points at the Arbor MCP webhook. |
 | +1 833 479 1834 | (833) 479-1834 | `demo.twilio.com` | Toll-free, unused. |
 
-So **Step 1 is one number in**: `+16184278164` is provisioned and correctly wired, and is
-the natural replacement for the Google Ads call asset (618-414-5907).
+So **Step 1 is one number in**: `+16184278164` is provisioned and correctly wired. It is
+now used as the **canary** — repoint the Google Ads call asset to it to prove the pipeline
+end-to-end on live traffic, weeks before any port lands.
 
-Still to provision: 3–4 static numbers (or the ported originals) plus a **5–6 number DNI
-pool** to replace CallRail's website pool.
+**Nothing else needs provisioning.** Every remaining tracking number arrives via the port,
+keeping its original digits — including the five pool numbers, which become the app's DNI
+pool.
 
 ## Forwarding destination — DECIDED
 
