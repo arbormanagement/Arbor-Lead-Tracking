@@ -67,12 +67,15 @@ dates to 2025-09-10), so none should trip a minimum-age rule.
 
 | Field | Value |
 |---|---|
-| Account name | **Arbor Management** |
+| Account name (billing) | **Arbor Management** — confirmed on invoice `INV03003062` |
 | Account ID | `ACCbc8f5e5591f44e42bd49924ee68c858f` |
 | **Numeric account ID** | **`408466063`** ← the number carriers usually want |
 | Company ID | `COM5b472d2f8bb648f4b62ee5095e3af772` |
 | Account opened | 2025-01-30 |
 | Authorized user (sole admin) | **Justin Hays**, justin@arbor-mgmt.com |
+| Billing address | Edwardsville, Illinois 62025, United States (**no street line on the invoice**) |
+| Business line / BTN candidate | **+1 618 920 7917** — not a tracking number, not on the port list |
+| Run rate | **$281.66/mo** ($240 platform + $41.66 activity) |
 | Billing | Zuora-backed (`has_zuora_account: true`) |
 
 Justin is the only user on the account, so he is the authorized signer.
@@ -81,10 +84,13 @@ Justin is the only user on the account, so he is the authorized signer.
 
 The API does not expose these, and a port cannot be filed without them:
 
-1. **Service address on the CallRail account** — must match the LOA exactly, character for
-   character. A mismatched suite number is the single most common port rejection.
-2. **A recent CallRail invoice** (Twilio asks for a bill or CSR from the losing carrier).
-3. **A signature** on the Twilio LOA.
+1. ~~A recent CallRail invoice~~ ✅ **supplied 2026-08-04** — `INV03003062`, which
+   confirmed the billing name (**Arbor Management**), the account number (**408466063**)
+   and the city/state/ZIP (**Edwardsville, Illinois 62025**).
+2. **The STREET address** — ⬜ still open, and now the only missing LOA field. The
+   invoice bill-to has no street line, so it has to come from CallRail support.
+3. **A signature** on the LOA (Twilio emails it for e-signature — see
+   `callrail-port-loa.md`).
 
 ## 4. What to ask CallRail support for
 

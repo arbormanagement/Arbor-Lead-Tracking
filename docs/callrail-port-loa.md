@@ -10,23 +10,35 @@ Fill this out, sign it, and attach it to the Twilio port-in request. Companion t
 
 ---
 
-## ⚠️ The name trap — read this first
+## ✅ The name trap — RESOLVED 2026-08-04
 
-Arbor has **at least three** name variants in circulation, and they are not
-interchangeable on a port:
+Arbor has three name variants in circulation and they are not interchangeable on a port.
+**Invoice `INV03003062` (billed 2026-07-28) settles it** — the bill-to reads:
 
-| Variant | Where it appears |
+```
+Arbor Management
+Account 408466063
+Justin Hays
+Edwardsville Illinois 62025
+United States
+```
+
+| Variant | Verdict |
 |---|---|
-| **Arbor Management** | The CallRail account name (via API) |
-| **Arbor Management Specialist, Inc** | The company's full legal entity name |
-| Arbor Management LLC. | A **different, sibling entity** — never use this |
+| **Arbor Management** | ✅ **Use this.** It is what the invoice bills to. |
+| Arbor Management Specialist, Inc | ❌ The legal entity name — do NOT use, it does not match the bill |
+| Arbor Management LLC. | ❌ A different, sibling entity — never use |
 
-The LOA must carry the name **exactly as CallRail has it on the billing record**, not the
-name that is legally correct. If CallRail's invoice says "Arbor Management" and the LOA
-says "Arbor Management Specialist, Inc", the port is rejected for name mismatch.
+The LOA must carry the name **exactly as the losing carrier has it**, not the name that is
+legally correct. Confirmed: **"Arbor Management"**.
 
-**Confirm against a CallRail invoice before signing.** That is why the draft support
-email asks CallRail for the service address exactly as it should appear.
+The same invoice confirms the **account number is `408466063`** — the account ID, not the
+company ID `190471331`. Use `408466063`.
+
+⚠️ **The invoice bill-to has NO street line** — it goes straight from "Justin Hays" to
+"Edwardsville Illinois 62025". So the street address still has to come from CallRail, and
+it is worth telling Twilio's port team that the billing record is street-less, since they
+will otherwise expect the LOA address to match a street that CallRail may not hold.
 
 ---
 
@@ -40,7 +52,7 @@ send this to CallRail if they accept a free-form LOA.
 | Field | Value |
 |---|---|
 | Current provider | **CallRail** *(⬜ confirm the underlying carrier of record — CallRail resells, so the port team may need Bandwidth / Twilio / etc. instead)* |
-| Account number | ⬜ **from CallRail** — two IDs exist: **account** `408466063` and **company** `190471331` (the latter is what appears in the swap.js URL). Confirm which the port team wants. |
+| Account number | **`408466063`** ✅ — confirmed on invoice `INV03003062`. (Not `190471331`, which is the *company* ID from the swap.js URL.) |
 | Account PIN / passcode | ⬜ **from CallRail** |
 | BTN (billing telephone number) | **Likely `+1 618 920 7917`** — CallRail's Business Profile lists it as the *Primary phone number*, and it is Arbor's real business line rather than a tracking number. ⬜ confirm with CallRail before submitting. |
 
@@ -48,10 +60,10 @@ send this to CallRail if they accept a free-form LOA.
 
 | Field | Value |
 |---|---|
-| Company name (exactly as on the CallRail bill) | ⬜ **still needed.** CallRail's Business Profile shows **"Arbor Management"**, but that field is labelled *"used in reports and dashboards"* — it is a display name, not necessarily the billing entity. **Verify against an invoice** — see the name trap above. |
-| Service address — street | ⬜ **still needed** — not shown on the Business Profile screen |
+| Company name (exactly as on the CallRail bill) | **Arbor Management** ✅ — confirmed on invoice `INV03003062` |
+| Service address — street | ⬜ **the last missing field.** The invoice bill-to carries no street line — get it from CallRail support. |
 | Service address — suite/unit | ⬜ *(a missing or extra suite number is the single most common rejection)* |
-| City / State / ZIP | ⬜ |
+| City / State / ZIP | **Edwardsville, Illinois 62025, United States** ✅ — from the invoice |
 | Authorized signer | **Justin Hays** — sole admin on the CallRail account |
 | Title | ⬜ (Owner) |
 | Contact email | justin@arbor-mgmt.com |
@@ -109,17 +121,30 @@ Fill in as CallRail responds, then transfer to the LOA above.
 |---|---|---|
 | All 10 numbers portable? | ⬜ | |
 | Underlying carrier of record | ⬜ | |
-| Account number for port team | ⬜ (account `408466063` / company `190471331`) | |
+| Account number for port team | **`408466063`** ✅ (invoice `INV03003062`) | 2026-08-04 |
 | Account PIN / passcode | ⬜ | |
 | BTN | Business Profile says **+1 618 920 7917** — ⬜ confirm | 2026-08-04 |
 | CSR issued? | ⬜ | |
-| Service address as on file | ⬜ | |
-| Company name as on file | ⬜ (display name is "Arbor Management") | |
+| **Service address — STREET** | ⬜ **the one blocking field** | |
+| Company name as on file | **Arbor Management** ✅ (invoice bill-to) | 2026-08-04 |
 
-**From the Business Profile screen (2026-08-04):** company name "Arbor Management",
-company ID `190471331`, primary phone `+1 618 920 7917`. The screen carries **no service
-address and no billing entity name**, which are the two fields that actually get ports
-rejected — those still have to come off an invoice or from CallRail support.
+**Sources so far.** Business Profile screen (2026-08-04): company ID `190471331`, primary
+phone `+1 618 920 7917`. Invoice `INV03003062`, billed 2026-07-28 (2026-08-04): bill-to
+name, account number, and city/state/ZIP.
+
+**Only the street address is still missing.** Everything else on the LOA is either filled
+or is Justin's own (title, signature, date, requested port date).
+
+## Cost of keeping CallRail alive during the port
+
+Invoice `INV03003062` (2026-07-28) totals **$281.66/mo** — $240.00 platform + $41.66
+activity, due on receipt and paid same day. So the "keep the account paid until every port
+completes" rule costs roughly **$282–$563** across a 1–4 week port window.
+
+That is the correct trade: one lost saved-number caller costs more than a month of
+CallRail, and a delinquent account can kill an in-flight port outright. Do not let the
+subscription lapse to save the fee — and note the account must stay paid **past** the last
+port completion, until the Google Ads and GA4 integrations are rebuilt.
 
 *Aside, not port-relevant:* the profile's Timezone is unset while the API reports
 `America/Indiana/Knox`. That is US Central, the same offset and DST rules as
