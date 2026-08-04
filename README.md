@@ -11,8 +11,11 @@ system that answers *"what lead sources produce what leads, and what's the ROI o
   credentials live in this app).
 
 ## Stack
-Next.js (App Router) · Neon Postgres · Drizzle ORM · Twilio · Deepgram · Inngest ·
-Vercel. See the full design in the plan and `CLAUDE.md`.
+Next.js (App Router) · Postgres (Neon or Railway) · Drizzle ORM · Twilio · Deepgram ·
+Railway. See the full design in the plan and `CLAUDE.md`, and `DEPLOY.md` for the runbook.
+
+Deployed as two Railway services off this repo: `web` (`npm run start`) and `cron`
+(`npm run cron` — the scheduler in `scripts/cron.ts`).
 
 ## Getting started
 
@@ -21,7 +24,7 @@ npm install
 cp .env.example .env.local        # fill in the values
 npx tsx scripts/hash-password.ts 'your-admin-password'   # → ADMIN_PASSWORD_HASH
 npm run db:generate               # generate SQL migrations from lib/db/schema.ts
-npm run db:migrate                # apply to Neon
+npm run db:migrate                # apply to the database
 npm run db:seed                   # seed canonical sources
 npm run dev                       # http://localhost:3000
 ```
@@ -61,7 +64,7 @@ to any form you want skipped). Web-form submissions become `web_form` leads.
 ## Phased delivery
 1. **Phase 1 (this scaffold):** native call tracking on static numbers — forward + whisper +
    record + voicemail; leads/calls dashboard. *Starts replacing CallRail.*
-2. **Phase 2:** HCP revenue + Google/FB spend sync (Inngest) + ROI rollups.
+2. **Phase 2:** HCP revenue + Google/FB spend sync (scheduled) + ROI rollups.
 3. **Phase 3:** `track.js` web + form tracking.
 4. **Phase 4:** pooled DNI (`/api/dni/assign`, number leases, reaper).
 5. **Phase 5:** Facebook lead-gen + LSA + Deepgram transcription + spam scoring.
