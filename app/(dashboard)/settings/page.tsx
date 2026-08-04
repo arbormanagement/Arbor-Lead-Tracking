@@ -4,7 +4,9 @@ import { credentialStatus, CREDENTIAL_SPECS } from "@/lib/credentials";
 import { getDefaultForwardNumber } from "@/lib/routing";
 import { formatPhoneDisplay } from "@/lib/phone";
 import { getSetting } from "@/lib/settings";
+import { TRACKING_ORIGINS_KEY, DEFAULT_ALLOWED_ORIGINS } from "@/lib/origin";
 import { AttributionForm } from "./attribution-form";
+import { TrackingOriginsForm } from "./tracking-origins-form";
 
 export const dynamic = "force-dynamic";
 
@@ -13,6 +15,7 @@ export default async function SettingsPage() {
   const defaultForward = await getDefaultForwardNumber();
   const attributionModel = await getSetting<string>("attribution_model", "last_touch");
   const customerWindowDays = await getSetting<number>("customer_window_days", 90);
+  const storedOrigins = await getSetting<string[] | null>(TRACKING_ORIGINS_KEY, null);
 
   // How many platforms have at least one credential resolved (db or env).
   const statuses = await Promise.all(
@@ -60,6 +63,10 @@ export default async function SettingsPage() {
           <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>edit default forward · per-number override in /numbers</div>
         </Link>
         <AttributionForm initialModel={attributionModel} initialWindowDays={customerWindowDays} />
+        <TrackingOriginsForm
+          initialOrigins={storedOrigins?.length ? storedOrigins : DEFAULT_ALLOWED_ORIGINS}
+          usingDefaults={!storedOrigins?.length}
+        />
       </div>
 
       <div className="empty">

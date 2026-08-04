@@ -65,7 +65,7 @@ export function OPTIONS() {
 export async function POST(req: Request) {
   // Public-endpoint hygiene: browser posts must come from our own sites, and
   // each IP gets a budget — leases are a finite pool worth protecting.
-  if (!isAllowedOrigin(req)) {
+  if (!(await isAllowedOrigin(req))) {
     return Response.json({ error: "origin not allowed" }, { status: 403, headers: CORS });
   }
   const rl = rateLimit(`dni:${clientIp(req)}`, 30, 60_000);

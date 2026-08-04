@@ -68,7 +68,7 @@ export function OPTIONS() {
 export async function POST(req: Request) {
   // Public-endpoint hygiene: browser posts must come from our own sites, and
   // every IP gets a budget (pageviews are chatty; form submits are not).
-  if (!isAllowedOrigin(req)) {
+  if (!(await isAllowedOrigin(req))) {
     return Response.json({ error: "origin not allowed" }, { status: 403, headers: CORS });
   }
   const ip = clientIp(req);
