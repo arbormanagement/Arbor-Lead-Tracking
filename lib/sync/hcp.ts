@@ -5,9 +5,12 @@ import { revenueProvider } from "@/lib/integrations";
 import { normalizeEmail, normalizePhone } from "@/lib/phone";
 import { incrementalWindowDays, withSyncRun } from "./run";
 
-// Cap / initial-backfill window for the history-walking endpoints, and the fixed
-// window for jobs (whose server-side scheduled_start filter must stay broad).
+// Fixed window for jobs (whose server-side scheduled_start filter must stay broad).
 const MAX_LOOKBACK_DAYS = 30;
+// Cap / initial-backfill window for the history-walking endpoints. 365: the cap
+// bounds outage recovery — a longer-than-cap gap would silently lose changes.
+// Deep windows stay cheap because the providers early-stop on updated_at.
+const MAX_WINDOW_DAYS = 365;
 
 /**
  * hcp.sync.jobs — pull recently-updated HousecallPro customers, estimates, and jobs
@@ -57,7 +60,7 @@ export async function syncHcp(
     // filter). Explicit `sinceDays` forces a full backfill. Keyed on updated_at, so
     // an approval to an old estimate resurfaces and flips it to won.
     const windowDays =
-      sinceDays ?? (await incrementalWindowDays("hcp.sync.jobs", { overlapHours: 2, maxDays: MAX_LOOKBACK_DAYS }));
+      sinceDays ?? (await incrementalWindowDays("hcp.sync.jobs", { overlapHours: 2, maxDays: MAX_WINDOW_DAYS }));
 
     // Fetch the three independent endpoints concurrently — read time is the slowest
     // one, not the sum. (Each still paginates 100/page internally.)

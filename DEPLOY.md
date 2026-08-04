@@ -67,7 +67,10 @@ domain (CNAME to the Railway target). Then set on `web` and redeploy:
    - `CRON_SECRET` — **identical** to `web`'s value
    - `CRON_TARGET_BASE_URL=https://<domain>` (public), **or**, to keep cron traffic inside
      the project, `CRON_TARGET_BASE_URL=http://${{web.RAILWAY_PRIVATE_DOMAIN}}:8080`
-     together with `HOST=::` on `web` (Railway's private network is IPv6-only).
+     together with `HOST=::` on `web` (Railway's private network is IPv6-only). The URL's
+     port must match the port `next start` actually listens on — Railway injects `PORT`,
+     so for this option also pin `PORT=8080` in `web`'s variables (or change the URL to
+     whatever `PORT` is). A mismatch means connection-refused on every tick.
    - Optional: `CRON_TIMEZONE` (default `UTC`, matching the old Vercel Cron behavior),
      `CRON_JOBS` (comma-separated subset).
 5. **Deploy**, then check the logs — on boot it prints every schedule and its next run:

@@ -1,4 +1,4 @@
-import { and, eq, gte, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, sql } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { calls, conversionExports, facebookLeads, hcpEstimates, leads, numberAssignments } from "@/lib/db/schema";
 import { getPlatformCreds } from "@/lib/credentials";
@@ -99,6 +99,8 @@ export async function syncConversions({ sinceDays = 90, limit = 500 }: { sinceDa
           gte(leads.occurredAt, cutoff),
         ),
       )
+      // Deterministic under LIMIT: keep the newest candidates, not planner order.
+      .orderBy(desc(leads.occurredAt))
       .limit(limit);
 
     // ── Expand to (platform, event) tasks ─────────────────────────────────────

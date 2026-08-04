@@ -1,4 +1,5 @@
 import { getPlatformCreds } from "@/lib/credentials";
+import { fetchWithRetry } from "./http";
 import type { SpendProvider, SpendRow } from "./types";
 
 /**
@@ -41,7 +42,7 @@ class GoogleAdsProvider implements SpendProvider {
   }
 
   private async accessToken(cfg: GoogleAdsConfig): Promise<string> {
-    const res = await fetch("https://oauth2.googleapis.com/token", {
+    const res = await fetchWithRetry("https://oauth2.googleapis.com/token", {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({
@@ -67,7 +68,7 @@ class GoogleAdsProvider implements SpendProvider {
     };
     if (cfg.loginCustomerId) headers["login-customer-id"] = cfg.loginCustomerId.replace(/-/g, "");
 
-    const res = await fetch(
+    const res = await fetchWithRetry(
       `https://googleads.googleapis.com/${GOOGLE_ADS_API_VERSION}/customers/${cfg.customerId}/googleAds:searchStream`,
       { method: "POST", headers, body: JSON.stringify({ query: gaql }), signal: AbortSignal.timeout(90_000) },
     );
@@ -92,21 +93,27 @@ class GoogleAdsProvider implements SpendProvider {
     const rows: SpendRow[] = [];
     for (const customerId of await this.spendCustomerIds(cfg)) {
       const results = await this.searchStream({ ...cfg, customerId }, gaql);
-      rows.push(
-        ...results.map((r) => ({
-          platform: (r.campaign?.advertisingChannelType === "LOCAL_SERVICES" ? "google_lsa" : "google") as
+      for (const r of results) {
+        // ad_spend.external_campaign_id is NOT NULL — a result missing its
+        // campaign id (or date) can't be keyed, so skip it rather than write junk.
+        if (r.campaign?.id == null || !r.segments?.date) {
+          console.warn("[google-ads] skipping spend row without campaign id/date", JSON.stringify(r).slice(0, 300));
+          continue;
+        }
+        rows.push({
+          platform: (r.campaign.advertisingChannelType === "LOCAL_SERVICES" ? "google_lsa" : "google") as
             | "google"
             | "google_lsa",
-          externalCampaignId: String(r.campaign?.id),
-          campaignName: r.campaign?.name,
-          date: r.segments?.date,
+          externalCampaignId: String(r.campaign.id),
+          campaignName: r.campaign.name,
+          date: r.segments.date,
           impressions: Number(r.metrics?.impressions ?? 0),
           clicks: Number(r.metrics?.clicks ?? 0),
           spendCents: Math.round(Number(r.metrics?.costMicros ?? 0) / 10_000),
           conversions: Number(r.metrics?.conversions ?? 0),
           raw: r,
-        })),
-      );
+        });
+      }
     }
     return rows;
   }
@@ -133,11 +140,15 @@ class GoogleAdsProvider implements SpendProvider {
     // dedicated lsa_customer_id when it's configured (else assume customer_id is it).
     const c = await getPlatformCreds("google_ads");
     if (c.lsa_customer_id) cfg.customerId = c.lsa_customer_id.replace(/-/g, "");
+    // Server-side lower bound so each run reads only the window, not all history.
+    // creation_date_time is a DATE_TIME field → "yyyy-MM-dd HH:mm:ss" literal.
+    const since = new Date(Date.now() - sinceDays * 86_400_000).toISOString().slice(0, 10);
     const gaql = `
       SELECT local_services_lead.id, local_services_lead.contact_details,
              local_services_lead.lead_type, local_services_lead.lead_status,
              local_services_lead.creation_date_time
-      FROM local_services_lead`;
+      FROM local_services_lead
+      WHERE local_services_lead.creation_date_time >= '${since} 00:00:00'`;
     const results = await this.searchStream(cfg, gaql);
 
     const cutoff = Date.now() - sinceDays * 86_400_000;
@@ -220,7 +231,7 @@ class GoogleAdsProvider implements SpendProvider {
           ],
           partialFailure: true,
         };
-        const res = await fetch(
+        const res = await fetchWithRetry(
           `https://googleads.googleapis.com/${GOOGLE_ADS_API_VERSION}/customers/${cfg.customerId}:uploadClickConversions`,
           { method: "POST", headers, body: JSON.stringify(body), signal: AbortSignal.timeout(30_000) },
         );

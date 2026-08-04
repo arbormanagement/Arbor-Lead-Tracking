@@ -25,7 +25,9 @@ export function classifySource(p: TouchParams): Classification {
   if (p.gclid || p.gbraid || p.wbraid) {
     return { sourceKey: "google/cpc", medium: "cpc" };
   }
-  if (p.fbclid || isFacebookHost(p.referrer)) {
+  // Only the click ID proves an ad click — a bare facebook.com referrer is organic
+  // social (shares, page links) and is handled in the referrer block below.
+  if (p.fbclid) {
     return { sourceKey: "facebook/paid", medium: "paid" };
   }
 
@@ -45,6 +47,7 @@ export function classifySource(p: TouchParams): Classification {
 
   if (p.referrer) {
     const host = hostOf(p.referrer);
+    if (host && isFacebookHost(p.referrer)) return { sourceKey: "facebook/organic", medium: "social" };
     if (host && isSearchHost(host)) return { sourceKey: "organic/seo", medium: "organic" };
     if (host) return { sourceKey: `${host}/referral`, medium: "referral" };
   }
@@ -66,5 +69,14 @@ function isFacebookHost(ref?: string | null): boolean {
 }
 
 function isSearchHost(host: string): boolean {
-  return /(^|\.)(google|bing|duckduckgo|yahoo|ecosia)\./.test(host);
+  // Anchored per engine (host arrives with `www.` stripped) so neither
+  // `google.evil.com` nor subdomain products like `docs.google.com` classify as
+  // organic search. Google keeps its ccTLDs (google.de, google.co.uk).
+  return (
+    /^google\.[a-z]{2,3}(\.[a-z]{2})?$/.test(host) ||
+    host === "bing.com" ||
+    host === "duckduckgo.com" ||
+    host === "search.yahoo.com" ||
+    host === "ecosia.org"
+  );
 }

@@ -1,4 +1,5 @@
 import { getPlatformCreds } from "@/lib/credentials";
+import { fetchWithRetry } from "./http";
 import type { HcpCustomerDTO, HcpEstimateDTO, HcpJobDTO, RevenueProvider } from "./types";
 
 /**
@@ -28,7 +29,7 @@ class HousecallProProvider implements RevenueProvider {
     const url = new URL(path, cfg.base);
     for (const [k, v] of Object.entries(query)) url.searchParams.set(k, String(v));
 
-    const res = await fetch(url, {
+    const res = await fetchWithRetry(url, {
       headers: {
         Authorization: `Token ${cfg.apiKey}`,
         Accept: "application/json",
@@ -186,9 +187,17 @@ function mapEstimate(e: Record<string, unknown>): HcpEstimateDTO {
   const lost = !won && statuses.length > 0 && statuses.every((s) => LOST_STATUSES.has(s));
   const outcome = won ? "won" : lost ? "lost" : "open";
 
-  const approvedAmountCents = options
-    .filter((o) => APPROVED_STATUSES.has(approvalOf(o)))
-    .reduce((sum, o) => sum + optAmount(o), 0);
+  const approvedOptions = options.filter((o) => APPROVED_STATUSES.has(approvalOf(o)));
+  const approvedAmountCents = approvedOptions.reduce((sum, o) => sum + optAmount(o), 0);
+  // When HCP carries a per-option approval timestamp, use the earliest one;
+  // otherwise fall back to the estimate's updated_at — which drifts on ANY edit,
+  // so downstream it is display/conversion-timing only (the attribution window
+  // is clamped to created_at_hcp, never to this).
+  const approvedAt =
+    approvedOptions
+      .map((o) => parseDate(o.approved_at ?? o.approval_status_updated_at))
+      .filter((d): d is Date => d != null)
+      .sort((a, b) => a.getTime() - b.getTime())[0] ?? null;
   // Quote value = the HIGHEST-value option, not the sum: multiple options are usually
   // alternative bids for the same work, so summing overstates the quote (Justin,
   // 2026-07-13). Approved revenue still sums, since multi-approval means add-ons.
@@ -210,7 +219,7 @@ function mapEstimate(e: Record<string, unknown>): HcpEstimateDTO {
     approvedAmountCents,
     address: e.address ?? null,
     createdAtHcp: parseDate(e.created_at),
-    approvedAtHcp: won ? parseDate(e.updated_at ?? e.created_at) : null,
+    approvedAtHcp: won ? approvedAt ?? parseDate(e.updated_at ?? e.created_at) : null,
     updatedAtHcp: parseDate(e.updated_at ?? e.created_at),
     raw: e,
   };

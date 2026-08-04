@@ -1,4 +1,4 @@
-import { and, eq, isNotNull, isNull } from "drizzle-orm";
+import { and, desc, eq, isNotNull, isNull, lt, sql } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { calls, leads } from "@/lib/db/schema";
 import { transcribeRecording } from "@/lib/transcription/deepgram";
@@ -6,6 +6,9 @@ import { classifyCallLead } from "@/lib/transcription/classify-lead";
 import { withSyncRun } from "./run";
 
 const SPAM_THRESHOLD = 0.5;
+/** Poison-pill guard: a call past this many failed attempts is dropped from the
+ *  batch backlog (its transcribe_error keeps the last failure for inspection). */
+const MAX_TRANSCRIBE_ATTEMPTS = 3;
 
 type PendingCall = { id: string; leadId: string | null; recordingUrl: string | null };
 
@@ -33,6 +36,9 @@ async function runTranscription(call: PendingCall): Promise<"transcribed" | "spa
       summary: cls.summary,
       selfReportedSource: cls.selfReportedSource,
       spamScore: cls.spamScore.toFixed(3),
+      // Success clears the retry bookkeeping.
+      transcribeAttempts: 0,
+      transcribeError: null,
     })
     .where(eq(calls.id, call.id));
 
@@ -87,24 +93,42 @@ export async function transcribeCall(callId: string): Promise<"transcribed" | "s
  */
 export async function syncTranscriptions({ limit = 25 }: { limit?: number } = {}) {
   return withSyncRun("transcription.process", async () => {
+    // Newest first, and skip calls past the retry cap — without both, 25
+    // permanently-failing rows in planner order would starve the whole queue.
     const pending = await db
       .select({ id: calls.id, leadId: calls.leadId, recordingUrl: calls.recordingUrl })
       .from(calls)
-      .where(and(isNotNull(calls.recordingUrl), isNull(calls.transcript)))
+      .where(
+        and(
+          isNotNull(calls.recordingUrl),
+          isNull(calls.transcript),
+          lt(calls.transcribeAttempts, MAX_TRANSCRIBE_ATTEMPTS),
+        ),
+      )
+      .orderBy(desc(calls.createdAt))
       .limit(limit);
 
     let done = 0;
     let spam = 0;
+    let failed = 0;
     for (const call of pending) {
       try {
         const result = await runTranscription(call);
         if (result === "spam") spam++;
         if (result !== "skipped") done++;
       } catch (err) {
+        failed++;
         console.error("[transcribe] failed for call", call.id, err);
+        await db
+          .update(calls)
+          .set({
+            transcribeAttempts: sql`${calls.transcribeAttempts} + 1`,
+            transcribeError: (err instanceof Error ? err.message : String(err)).slice(0, 500),
+          })
+          .where(eq(calls.id, call.id));
       }
     }
 
-    return { transcribed: done, flaggedSpam: spam, pending: pending.length };
+    return { transcribed: done, flaggedSpam: spam, failed, pending: pending.length };
   });
 }

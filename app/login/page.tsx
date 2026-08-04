@@ -30,7 +30,10 @@ function LoginForm() {
     });
     setLoading(false);
     if (res.ok) {
-      router.push(search.get("next") || "/");
+      // Only follow same-site paths (single leading slash) — "//evil.com" and
+      // absolute URLs would be an open redirect.
+      const next = search.get("next") || "/";
+      router.push(/^\/(?!\/)/.test(next) ? next : "/");
       router.refresh();
     } else {
       const body = await res.json().catch(() => ({}));

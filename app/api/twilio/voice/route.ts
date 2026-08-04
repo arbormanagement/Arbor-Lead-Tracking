@@ -11,6 +11,7 @@ import {
 import { validateTwilioSignature, parseTwilioForm } from "@/lib/twilio/signature";
 import { getDefaultForwardNumber } from "@/lib/routing";
 import {
+  DEFAULT_RECORDING_NOTICE,
   forwardTwiml,
   rejectTwiml,
   fallbackTwiml,
@@ -23,7 +24,6 @@ export const runtime = "nodejs";
 export const maxDuration = 10;
 
 const GRACE_MS = 15 * 60 * 1000; // resolve a recently-released lease to its source
-const DEFAULT_GREETING = "This call may be recorded."; // used when a number's greeting is on but blank
 
 export async function POST(req: Request) {
   const { params, url } = await parseTwilioForm(req);
@@ -103,11 +103,11 @@ export async function POST(req: Request) {
     await recordCall({ callSid, fromE164, tn, assignmentId, sourceKey, destination, status: "ringing" });
 
     // 5) Forward with an optional pre-call message + whisper + (optional) recording.
-    //    All three are per-number overrides. The greeting is independent of recording
-    //    so it can be turned off or customized in the app (mind consent laws if you
-    //    record without a notice).
+    //    All three are per-number overrides. The greeting is only configurable when
+    //    recording is off — with recording on, `forwardTwiml` forces the default
+    //    recording notice if no greeting would play (IL/MO mixed consent).
     const whisper = tn.whisperMessage ?? (sourceKey ? `Tree lead from ${sourceKey}` : "Tree lead");
-    const greeting = tn.greetingEnabled ? (tn.greetingMessage || DEFAULT_GREETING) : undefined;
+    const greeting = tn.greetingEnabled ? (tn.greetingMessage || DEFAULT_RECORDING_NOTICE) : undefined;
     return xmlResponse(
       forwardTwiml({
         destination,
@@ -132,7 +132,9 @@ async function isHardSpam(fromE164: string): Promise<boolean> {
     try {
       return new RegExp(r.pattern).test(fromE164);
     } catch {
-      return fromE164.includes(r.pattern);
+      // A bad pattern must never 500 the hot path — skip the rule and surface it.
+      console.warn("[twilio/voice] invalid spam rule pattern — skipping:", r.pattern);
+      return false;
     }
   });
 }
@@ -148,23 +150,50 @@ async function recordCall(args: {
 }) {
   const { callSid, fromE164, tn, assignmentId, sourceKey, destination, status } = args;
 
-  // Resolve source id (best-effort) for the denormalized lead row.
+  // Resolve source id (best-effort) for the denormalized lead row. Create the
+  // row when missing — a DNI lease can freeze a key (e.g. facebook/organic)
+  // before any pageview reached /api/track to create it (ad-blocked snippet).
   let sourceId: string | null = null;
   if (sourceKey) {
-    const [src] = await db.select({ id: sources.id }).from(sources).where(eq(sources.key, sourceKey)).limit(1);
+    let [src] = await db.select({ id: sources.id }).from(sources).where(eq(sources.key, sourceKey)).limit(1);
+    if (!src) {
+      await db
+        .insert(sources)
+        .values({ key: sourceKey, displayName: sourceKey })
+        .onConflictDoNothing({ target: sources.key });
+      [src] = await db.select({ id: sources.id }).from(sources).where(eq(sources.key, sourceKey)).limit(1);
+    }
     sourceId = src?.id ?? null;
   }
 
-  // Idempotent on twilio_call_sid — the voice webhook can fire more than once.
-  const existing = await db.select({ id: calls.id }).from(calls).where(eq(calls.twilioCallSid, callSid)).limit(1);
-  if (existing.length) return;
-
   // Repeat-caller detection (one quick indexed lookup — keep the webhook fast).
+  // Runs BEFORE the call insert so it doesn't count this very call.
   let isFirstTime = true;
   if (fromE164) {
     const prior = await db.select({ id: calls.id }).from(calls).where(eq(calls.fromNumber, fromE164)).limit(1);
     isFirstTime = prior.length === 0;
   }
+
+  // Idempotent on twilio_call_sid — the voice webhook can fire more than once,
+  // concurrently. Insert the call row FIRST so the unique index arbitrates the
+  // race; a check-then-insert here let two deliveries both create a lead. Only
+  // the delivery that actually inserted the call goes on to create its lead.
+  const [inserted] = await db
+    .insert(calls)
+    .values({
+      twilioCallSid: callSid,
+      trackingNumberId: tn.id,
+      numberAssignmentId: assignmentId,
+      fromNumber: fromE164,
+      toDestination: destination,
+      direction: "inbound",
+      status,
+    })
+    .onConflictDoNothing({ target: calls.twilioCallSid })
+    .returning({ id: calls.id });
+
+  // Another delivery won the race — its call row (and lead) already exist.
+  if (!inserted) return;
 
   const [lead] = await db
     .insert(leads)
@@ -179,14 +208,5 @@ async function recordCall(args: {
     })
     .returning({ id: leads.id });
 
-  await db.insert(calls).values({
-    leadId: lead.id,
-    twilioCallSid: callSid,
-    trackingNumberId: tn.id,
-    numberAssignmentId: assignmentId,
-    fromNumber: fromE164,
-    toDestination: destination,
-    direction: "inbound",
-    status,
-  });
+  await db.update(calls).set({ leadId: lead.id }).where(eq(calls.id, inserted.id));
 }

@@ -11,45 +11,50 @@ import type { FbLeadDetail } from "@/lib/integrations/facebook";
  * existed. Shared by the webhook and the polling sync.
  */
 export async function ingestFacebookLead(detail: FbLeadDetail): Promise<boolean> {
-  const existing = await db
-    .select({ id: facebookLeads.id })
-    .from(facebookLeads)
-    .where(eq(facebookLeads.fbLeadgenId, detail.leadgenId))
-    .limit(1);
-  if (existing.length) return false;
-
   const c = mapFbFields(detail.fieldData);
   const sourceId = await getOrCreateSource("facebook/paid");
   const campaignId = detail.campaignId ? await resolveCampaign(detail.campaignId, sourceId) : null;
   const occurredAt = detail.createdTime ? new Date(detail.createdTime) : new Date();
 
-  const [lead] = await db
-    .insert(leads)
-    .values({
-      type: "facebook_leadgen",
-      status: "new",
-      isLead: true, // a submitted lead-gen form is inherently a lead
-      name: c.name,
-      phoneE164: normalizePhone(c.phone),
-      emailLc: normalizeEmail(c.email),
-      message: c.message,
-      sourceId,
-      medium: "paid",
-      campaignId,
-      occurredAt,
-    })
-    .returning({ id: leads.id });
+  // One transaction, and the uniquely-constrained facebook_leads row goes in
+  // FIRST: whoever wins the fb_leadgen_id conflict creates the lead, the loser
+  // no-ops. The old check-then-insert (lead created before the constraint row)
+  // let a webhook/poller race leave an orphan duplicate lead.
+  return db.transaction(async (tx) => {
+    const [claimed] = await tx
+      .insert(facebookLeads)
+      .values({
+        fbLeadgenId: detail.leadgenId,
+        fbFormId: detail.formId,
+        fbAdId: detail.adId,
+        fbCampaignId: detail.campaignId,
+        fields: Object.fromEntries(detail.fieldData.map((f) => [f.name, f.values?.[0] ?? ""])),
+        createdTime: occurredAt,
+      })
+      .onConflictDoNothing({ target: facebookLeads.fbLeadgenId })
+      .returning({ id: facebookLeads.id });
+    if (!claimed) return false; // already ingested (redelivery, or the other path won)
 
-  await db.insert(facebookLeads).values({
-    leadId: lead.id,
-    fbLeadgenId: detail.leadgenId,
-    fbFormId: detail.formId,
-    fbAdId: detail.adId,
-    fbCampaignId: detail.campaignId,
-    fields: Object.fromEntries(detail.fieldData.map((f) => [f.name, f.values?.[0] ?? ""])),
-    createdTime: occurredAt,
+    const [lead] = await tx
+      .insert(leads)
+      .values({
+        type: "facebook_leadgen",
+        status: "new",
+        isLead: true, // a submitted lead-gen form is inherently a lead
+        name: c.name,
+        phoneE164: normalizePhone(c.phone),
+        emailLc: normalizeEmail(c.email),
+        message: c.message,
+        sourceId,
+        medium: "paid",
+        campaignId,
+        occurredAt,
+      })
+      .returning({ id: leads.id });
+
+    await tx.update(facebookLeads).set({ leadId: lead.id }).where(eq(facebookLeads.id, claimed.id));
+    return true;
   });
-  return true;
 }
 
 function mapFbFields(fieldData: Array<{ name: string; values: string[] }>) {

@@ -11,6 +11,9 @@ export function dateTime(d: Date | string | null | undefined): string {
     day: "numeric",
     hour: "numeric",
     minute: "2-digit",
+    // Business wall-clock time. Without this the server container renders UTC —
+    // a 2:10pm Central call showed as 7:10pm.
+    timeZone: "America/Chicago",
   });
 }
 

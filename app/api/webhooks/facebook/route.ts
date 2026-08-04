@@ -1,4 +1,5 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
+import { after } from "next/server";
 import { getFacebookLead } from "@/lib/integrations/facebook";
 import { ingestFacebookLead } from "@/lib/facebook/ingest";
 import { getPlatformCreds } from "@/lib/credentials";
@@ -56,14 +57,18 @@ export async function POST(req: Request) {
     }
   }
 
-  // Ack fast even if individual fetches fail (Meta retries on non-200).
-  for (const e of events) {
-    try {
-      await ingestFacebookLead(await getFacebookLead(e.leadgenId));
-    } catch (err) {
-      console.error("[fb webhook] ingest failed", e.leadgenId, err);
+  // Ack immediately — Meta times out slow handlers and eventually disables the
+  // subscription, so the per-lead Graph fetch + ingest runs via `after()` once
+  // the response has flushed. The 15-min poller backstops any failure here.
+  after(async () => {
+    for (const e of events) {
+      try {
+        await ingestFacebookLead(await getFacebookLead(e.leadgenId));
+      } catch (err) {
+        console.error("[fb webhook] ingest failed", e.leadgenId, err);
+      }
     }
-  }
+  });
 
   return Response.json({ ok: true, received: events.length });
 }

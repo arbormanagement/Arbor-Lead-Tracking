@@ -1,6 +1,9 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, lt } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { syncRuns } from "@/lib/db/schema";
+
+/** A `running` row older than this is a zombie — the process died mid-run. */
+const STALE_RUN_HOURS = 6;
 
 /**
  * Wrap a sync job so every run is recorded in `sync_runs` (visible on /spend).
@@ -10,6 +13,19 @@ export async function withSyncRun<T extends Record<string, unknown>>(
   job: string,
   fn: () => Promise<T>,
 ): Promise<T> {
+  // Reap zombies first: a crash/redeploy mid-run leaves a `running` row that
+  // would otherwise look in-flight forever.
+  await db
+    .update(syncRuns)
+    .set({ status: "error", finishedAt: new Date(), error: "stale — process died mid-run" })
+    .where(
+      and(
+        eq(syncRuns.job, job),
+        eq(syncRuns.status, "running"),
+        lt(syncRuns.startedAt, new Date(Date.now() - STALE_RUN_HOURS * 3_600_000)),
+      ),
+    );
+
   const [run] = await db.insert(syncRuns).values({ job, status: "running" }).returning({ id: syncRuns.id });
   try {
     const stats = await fn();

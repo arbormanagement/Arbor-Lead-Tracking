@@ -28,15 +28,29 @@ export async function syncSpend({ sinceDays }: { sinceDays?: number } = {}) {
     const providers = await activeSpendProviders();
     let upserted = 0;
     const byProvider: Record<string, string> = {};
+    const errors: string[] = [];
 
+    // Per-provider isolation: one bad platform (expired token, API outage) must
+    // not block the others' pull. Record the error and move on — the run only
+    // fails (holding for a cron retry) if EVERY provider failed.
     for (const provider of providers) {
-      const days = sinceDays ?? ((await hasHistory(provider)) ? ROLLING_DAYS : await coldStartDays(provider));
-      const rows = await provider.getDailySpend({ sinceDays: days });
-      upserted += await upsertSpendRows(rows);
-      byProvider[provider.name] = `${rows.length} rows (${days}d window)`;
+      try {
+        const days = sinceDays ?? ((await hasHistory(provider)) ? ROLLING_DAYS : await coldStartDays(provider));
+        const rows = await provider.getDailySpend({ sinceDays: days });
+        upserted += await upsertSpendRows(rows);
+        byProvider[provider.name] = `${rows.length} rows (${days}d window)`;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(`[spend] ${provider.name} failed`, err);
+        byProvider[provider.name] = `error: ${msg}`;
+        errors.push(`${provider.name}: ${msg}`);
+      }
+    }
+    if (providers.length > 0 && errors.length === providers.length) {
+      throw new Error(`all spend providers failed — ${errors.join("; ")}`);
     }
 
-    return { providers: providers.map((p) => p.name), upserted, byProvider };
+    return { providers: providers.map((p) => p.name), upserted, byProvider, failedProviders: errors.length };
   });
 }
 
@@ -118,35 +132,32 @@ async function upsertSpendRows(rows: SpendRow[]): Promise<number> {
 /** Ensure the campaign dimension exists for every distinct campaign in the pull,
  *  so spend links to a campaign. Returns `${platform}|${externalCampaignId}` → id. */
 async function ensureCampaigns(rows: SpendRow[]): Promise<Map<string, string>> {
+  // Providers guarantee every row carries a real campaign id (rows without one
+  // are skipped at the source — external_campaign_id is NOT NULL).
   const distinct = new Map<string, SpendRow>();
-  for (const row of rows) {
-    if (row.externalCampaignId && row.externalCampaignId !== "undefined") {
-      distinct.set(`${row.platform}|${row.externalCampaignId}`, row);
-    }
-  }
+  for (const row of rows) distinct.set(`${row.platform}|${row.externalCampaignId}`, row);
 
   const ids = new Map<string, string>();
   for (const [key, row] of distinct) {
+    // Insert-first (no-op on the unique index) then select — select-then-insert
+    // raced a concurrent run into a unique violation.
+    await db
+      .insert(campaigns)
+      .values({
+        platform: row.platform,
+        externalCampaignId: row.externalCampaignId,
+        name: row.campaignName,
+      })
+      .onConflictDoNothing({ target: [campaigns.platform, campaigns.externalCampaignId] });
     const [existing] = await db
-      .select({ id: campaigns.id })
+      .select({ id: campaigns.id, name: campaigns.name })
       .from(campaigns)
-      .where(and(eq(campaigns.platform, row.platform), eq(campaigns.externalCampaignId, row.externalCampaignId!)))
+      .where(and(eq(campaigns.platform, row.platform), eq(campaigns.externalCampaignId, row.externalCampaignId)))
       .limit(1);
-    if (existing) {
-      ids.set(key, existing.id);
-      if (row.campaignName) {
-        await db.update(campaigns).set({ name: row.campaignName }).where(eq(campaigns.id, existing.id));
-      }
-    } else {
-      const [created] = await db
-        .insert(campaigns)
-        .values({
-          platform: row.platform,
-          externalCampaignId: row.externalCampaignId,
-          name: row.campaignName,
-        })
-        .returning({ id: campaigns.id });
-      ids.set(key, created.id);
+    if (!existing) continue; // unreachable: the row exists after the upsert
+    ids.set(key, existing.id);
+    if (row.campaignName && row.campaignName !== existing.name) {
+      await db.update(campaigns).set({ name: row.campaignName }).where(eq(campaigns.id, existing.id));
     }
   }
   return ids;
