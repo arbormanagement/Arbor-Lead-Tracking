@@ -1,4 +1,5 @@
 import { env } from "@/lib/env";
+import { secretEquals } from "@/lib/secret-compare";
 import { syncSpend } from "@/lib/sync/spend";
 import { syncHcp } from "@/lib/sync/hcp";
 import { runAttribution } from "@/lib/sync/attribution";
@@ -20,7 +21,7 @@ export const maxDuration = 300;
  */
 export async function GET(req: Request, { params }: { params: Promise<{ job: string }> }) {
   const auth = req.headers.get("authorization");
-  if (!env.CRON_SECRET || auth !== `Bearer ${env.CRON_SECRET}`) {
+  if (!env.CRON_SECRET || !secretEquals(auth, `Bearer ${env.CRON_SECRET}`)) {
     return new Response("unauthorized", { status: 401 });
   }
 

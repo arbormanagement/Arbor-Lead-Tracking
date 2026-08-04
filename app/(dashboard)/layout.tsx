@@ -30,7 +30,18 @@ export default async function DashboardLayout({ children }: { children: React.Re
             <b>{email}</b>
             <small>Owner</small>
           </div>
-          <a className="logout" href="/api/auth/logout" title="Sign out">⏻</a>
+          {/* POST, not a link: the logout route is POST-only (a GET link would 405,
+              and a GET handler would be CSRF-able via top-level navigation). */}
+          <form method="post" action="/api/auth/logout" style={{ marginLeft: "auto" }}>
+            <button
+              className="logout"
+              type="submit"
+              title="Sign out"
+              style={{ background: "none", border: 0, padding: 0, cursor: "pointer", color: "var(--faint)", fontSize: 12 }}
+            >
+              ⏻
+            </button>
+          </form>
         </div>
       </aside>
 

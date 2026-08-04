@@ -21,14 +21,9 @@ export async function GET() {
     await db.execute(sql`select 1`);
     return Response.json({ ok: true, db: "up", latencyMs: Date.now() - startedAt });
   } catch (err) {
-    return Response.json(
-      {
-        ok: false,
-        db: "down",
-        latencyMs: Date.now() - startedAt,
-        error: err instanceof Error ? err.message : String(err),
-      },
-      { status: 503 },
-    );
+    // Detail stays in the logs: pg error messages carry internal hostnames and
+    // usernames (pg_hba lines), and this endpoint is unauthenticated.
+    console.error("[health] db check failed:", err);
+    return Response.json({ ok: false }, { status: 503 });
   }
 }

@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import { env } from "@/lib/env";
+import { secretEquals } from "@/lib/secret-compare";
 import { db } from "@/lib/db/client";
 import { connectForSchemaWork } from "@/lib/db/connect";
 import { seedDefaults } from "@/lib/db/seed-data";
@@ -17,13 +18,10 @@ export const maxDuration = 60;
  * Trigger: GET /api/admin/migrate with `Authorization: Bearer <CRON_SECRET>`.
  */
 export async function GET(req: Request) {
-  // Accept the secret via Authorization header OR ?secret= query param (so it can be
-  // triggered from a browser, since the sandbox can't reach the SSO-protected URL).
+  // Header only — no ?secret= query param: query strings land in access logs and
+  // browser history, and the header path matches how /api/cron/[job] is called.
   const auth = req.headers.get("authorization");
-  const querySecret = new URL(req.url).searchParams.get("secret");
-  const authorized =
-    !!env.CRON_SECRET && (auth === `Bearer ${env.CRON_SECRET}` || querySecret === env.CRON_SECRET);
-  if (!authorized) {
+  if (!env.CRON_SECRET || !secretEquals(auth, `Bearer ${env.CRON_SECRET}`)) {
     return new Response("unauthorized", { status: 401 });
   }
 

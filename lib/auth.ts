@@ -1,4 +1,5 @@
-import { createHmac, timingSafeEqual, scryptSync, randomBytes } from "node:crypto";
+import { createHmac, timingSafeEqual, scrypt, randomBytes } from "node:crypto";
+import { promisify } from "node:util";
 import { cookies } from "next/headers";
 import { env } from "@/lib/env";
 import { SESSION_COOKIE } from "@/lib/session-cookie";
@@ -48,18 +49,23 @@ export function verifySessionToken(token: string | undefined): SessionPayload | 
   }
 }
 
+// Async scrypt: the sync variant blocks the event loop for ~100ms per call, and a
+// login flood sharing the process with /api/twilio/voice could push that webhook
+// past its 3s budget. The async version runs in libuv's threadpool instead.
+const scryptAsync = promisify(scrypt) as (password: string, salt: Buffer, keylen: number) => Promise<Buffer>;
+
 /** scrypt password hash in `salt:hash` hex form (see scripts/hash-password.ts). */
-export function hashPassword(password: string): string {
+export async function hashPassword(password: string): Promise<string> {
   const salt = randomBytes(16);
-  const hash = scryptSync(password, salt, 64);
+  const hash = await scryptAsync(password, salt, 64);
   return `${salt.toString("hex")}:${hash.toString("hex")}`;
 }
 
-export function verifyPassword(password: string, stored: string | undefined): boolean {
+export async function verifyPassword(password: string, stored: string | undefined): Promise<boolean> {
   if (!stored || !stored.includes(":")) return false;
   const [saltHex, hashHex] = stored.split(":");
   const hash = Buffer.from(hashHex, "hex");
-  const test = scryptSync(password, Buffer.from(saltHex, "hex"), hash.length);
+  const test = await scryptAsync(password, Buffer.from(saltHex, "hex"), hash.length);
   return hash.length === test.length && timingSafeEqual(hash, test);
 }
 
