@@ -43,7 +43,7 @@ callers hear no recording notice from CallRail.
 |---|---|---|
 | **618 205 3094** | arbor-mgmt.com — hard-coded default, 9 occurrences on the homepage | fetched 2026-08-04 |
 | | GBP **Edwardsville** → `additionalPhones` | GBP API |
-| | *(suspected)* print / truck wraps / yard signs | **unverified — needs Justin** |
+| | **Print / truck wraps / yard signs — this is the only number in print** | Justin, 2026-08-04 |
 | **618 366 9977** | Google **Local Services Ads** account | CallRail tracker source type `google_local_services_ads` |
 | **618 368 2902** | GBP **Edwardsville** → `primaryPhone` | GBP API |
 | **618 350 4451** | GBP **O'Fallon** → `primaryPhone` | GBP API |
@@ -60,14 +60,14 @@ are attached only to **REMOVED** campaigns, and `47402561065` is PAUSED at accou
 
 | Number | Decision | Why |
 |---|---|---|
-| **618 205 3094** | **PORT to Twilio** | Highest volume (33%), hard-coded on the website, on GBP Edwardsville, and the most likely number on print/wraps. Repeat callers have this one saved. |
-| **618 368 2902** | **PORT to Twilio** | GBP primary phone for Edwardsville. Porting keeps the digits, so NAP consistency is untouched and there is no GBP edit to make. |
-| **618 350 4451** | **PORT to Twilio** | GBP primary phone for O'Fallon. Same reasoning. |
-| **618 366 9977** | **PORT** (default) | 421 calls/90d is far too much volume to risk. LSA phone numbers are managed in the Local Services Ads product, not the Google Ads API — confirm whether the number can simply be re-pointed there before committing to a port. |
-| **618 414 5907** | **SWAP, don't port** | Lives in exactly one editable place (a Google Ads call asset). Repoint the asset to a new Twilio number; no port, no downtime. |
+| **618 205 3094** | **PORT — mandatory** | The only number in print (trucks, signs, door hangers — Justin 2026-08-04). Cannot be reprinted, so it must keep its digits. Also the highest-volume number (33%), hard-coded on the website, and on GBP Edwardsville. |
+| **618 368 2902** | **PORT** | GBP primary phone for Edwardsville. Not in print, so a swap is *possible* — but changing a GBP primary phone is a NAP-consistency event across the whole citation graph, and porting keeps the digits so there is no GBP edit at all. Not worth the SEO risk to save a port. |
+| **618 350 4451** | **PORT** | GBP primary phone for O'Fallon. Same reasoning, and it matters more here: closing the O'Fallon review/ranking gap is the #1 GBP lever, so this is the last profile to take chances with. |
+| **618 366 9977** | **PORT** | 421 calls/90d (25%) is too much volume to risk. LSA phone numbers are managed in the Local Services Ads product, not the Google Ads API — if it turns out to be freely re-pointable there, downgrading this one to a swap is a safe simplification. |
+| **618 414 5907** | **SWAP, don't port** | Lives in exactly one editable place (a Google Ads call asset). Repoint the asset to `+16184278164`, which is already provisioned and wired. No port, no downtime. |
 | pool ×5 | **DROP** | Pure DNI rotation, published nowhere. The app's own pool replaces them; let them die with the account. |
 
-That is **4 ports** (or 3 if LSA can be re-pointed), **1 asset swap**, and **5 dropped**.
+That is **4 ports** (3 if LSA proves re-pointable), **1 asset swap**, and **5 dropped**.
 
 ## Twilio side — current state
 
@@ -85,10 +85,15 @@ the natural replacement for the Google Ads call asset (618-414-5907).
 Still to provision: 3–4 static numbers (or the ported originals) plus a **5–6 number DNI
 pool** to replace CallRail's website pool.
 
-## Forwarding destination — OPEN QUESTION
+## Forwarding destination — DECIDED
 
-The migration plan assumes calls forward to the office at **+1 618 836 8004**. Live
-config disagrees, and three different destinations are in play:
+**Every new tracking number forwards to `+1 618 205 9924`** (Justin, 2026-08-04) — the
+same destination all 10 CallRail numbers use today. The migration therefore changes only
+*who tracks* the call, never where it lands, which keeps call routing out of the blast
+radius if anything goes wrong.
+
+The migration plan had assumed the office at **+1 618 836 8004**; that is wrong and is
+corrected in `docs/callrail-migration-plan.md`. Three destinations were in play:
 
 | Destination | Where it is used | Notes |
 |---|---|---|
@@ -96,8 +101,14 @@ config disagrees, and three different destinations are in play:
 | +1 618 920 7917 | The app's voice **fallback** on `+16184278164`; also the old destination on several disabled CallRail trackers | — |
 | +1 618 836 8004 | The office number recorded in `CLAUDE.md` and the plan | Not referenced by any live CallRail or Twilio config. |
 
-**This must be resolved before provisioning the remaining numbers** — it is the value
-every new tracking number forwards to, and getting it wrong sends real calls nowhere.
+**Still worth chasing down what owns +1 618 205 9924**, since it is now a single point of
+failure for every tracked call. It is a Twilio number outside Arbor's own account, so
+some third system relays it to the office — knowing which one matters for debugging.
+
+**Follow-up:** the app's existing number `+16184278164` still has its voice *fallback*
+pointing at 618-920-7917, which no longer matches the decided destination. It should be
+retargeted to +1 618 205 9924 so a primary-webhook outage degrades to the same place a
+normal call goes.
 
 ## Other CallRail integrations to replace
 
