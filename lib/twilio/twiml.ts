@@ -12,7 +12,8 @@ export interface ForwardOptions {
   /** Status callback for the dial leg. */
   actionPath?: string;
   /** Pre-call message played to the caller before dialing (e.g. a recording notice).
-   *  Independent of recording — plays whenever set. */
+   *  When `record` is on and this is unset, the default recording notice plays
+   *  instead — a notice is mandatory whenever we record (IL/MO mixed consent). */
   greeting?: string;
   /** Record the call (dual-channel). Default true. */
   record?: boolean;
@@ -21,20 +22,28 @@ export interface ForwardOptions {
 
 const base = () => env.TWILIO_VOICE_WEBHOOK_BASE ?? `${env.APP_BASE_URL}/api/twilio`;
 
+/** Default recording notice. IL/MO are mixed-consent states, so a notice MUST play
+ *  whenever recording is on — `forwardTwiml` enforces this even if no greeting is
+ *  configured. Exported so the voice route shares the same copy. */
+export const DEFAULT_RECORDING_NOTICE = "This call may be recorded.";
+
 /**
- * Build the inbound-call TwiML: optional recording notice → dial the destination
- * with dual-channel recording and a whisper, then voicemail on no-answer.
- *
- * IL/MO are mixed-consent states; we play a recording notice to stay safe.
+ * Build the inbound-call TwiML: recording notice/greeting → dial the destination
+ * with dual-channel recording and a whisper. The `action` callback (/status)
+ * receives the dial-leg outcome; there is deliberately NO TwiML after the <Dial>,
+ * so the call simply ends when the dial leg does — the forward destination's own
+ * voicemail/AI handles no-answers (app-side voicemail is not wanted).
  */
 export function forwardTwiml(opts: ForwardOptions): string {
   const vr = new VoiceResponse();
   const record = opts.record !== false; // default on
 
-  // Pre-call message (recording notice, greeting, etc.) — plays if set, regardless
-  // of recording, so it's fully controlled per number in the app.
-  if (opts.greeting) {
-    vr.say({ voice: "Polly.Joanna" }, opts.greeting);
+  // Pre-call message. When recording is on a notice is REQUIRED (mixed consent) —
+  // fall back to the default so no caller path can be recorded silently. With
+  // recording off the greeting stays fully optional per number in the app.
+  const greeting = opts.greeting ?? (record ? DEFAULT_RECORDING_NOTICE : undefined);
+  if (greeting) {
+    vr.say({ voice: "Polly.Joanna" }, greeting);
   }
 
   const dial = vr.dial({
@@ -58,19 +67,6 @@ export function forwardTwiml(opts: ForwardOptions): string {
   } else {
     dial.number(opts.destination);
   }
-
-  // Fell through (no answer) — take a voicemail.
-  vr.say(
-    { voice: "Polly.Joanna" },
-    "Sorry, we couldn't connect you. Please leave a message after the tone and we'll call you right back.",
-  );
-  vr.record({
-    maxLength: 120,
-    playBeep: true,
-    recordingStatusCallback: `${base()}/recording?src=voicemail`,
-    recordingStatusCallbackEvent: ["completed"],
-  });
-  vr.hangup();
 
   return vr.toString();
 }

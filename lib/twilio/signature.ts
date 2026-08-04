@@ -31,7 +31,16 @@ export async function validateTwilioSignature(
   return twilio.validateRequest(authToken, signature, url, params) ? "valid" : "invalid";
 }
 
-/** Parse an application/x-www-form-urlencoded Twilio webhook body. */
+/**
+ * Parse an application/x-www-form-urlencoded Twilio webhook body, plus the URL
+ * to validate the signature against.
+ *
+ * Twilio signs the exact PUBLIC url it requested. Behind Railway's proxy,
+ * `req.url` can reconstruct with the wrong proto/host and 403 genuine requests —
+ * so the URL is rebuilt from the configured public base (same resolution as
+ * `base()` in lib/twilio/twiml.ts), keeping the request's own path suffix and
+ * query string (e.g. ?src=dial). `req.url` is only a fallback with no base set.
+ */
 export async function parseTwilioForm(req: Request): Promise<{
   params: Record<string, string>;
   url: string;
@@ -39,5 +48,17 @@ export async function parseTwilioForm(req: Request): Promise<{
   const body = await req.text();
   const params: Record<string, string> = {};
   new URLSearchParams(body).forEach((v, k) => (params[k] = v));
-  return { params, url: req.url };
+  return { params, url: publicWebhookUrl(req) };
+}
+
+function publicWebhookUrl(req: Request): string {
+  const base = env.TWILIO_VOICE_WEBHOOK_BASE ?? (env.APP_BASE_URL ? `${env.APP_BASE_URL}/api/twilio` : null);
+  if (!base) return req.url;
+  const requested = new URL(req.url);
+  const configured = new URL(base);
+  // Keep the route suffix beyond the shared base path (e.g. /status, /whisper).
+  const suffix = requested.pathname.startsWith(configured.pathname)
+    ? requested.pathname.slice(configured.pathname.length)
+    : requested.pathname;
+  return `${configured.origin}${configured.pathname}${suffix}${requested.search}`;
 }

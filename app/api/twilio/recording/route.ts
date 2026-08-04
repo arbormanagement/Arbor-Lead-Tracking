@@ -2,6 +2,7 @@ import { after } from "next/server";
 import { eq } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { calls } from "@/lib/db/schema";
+import { env } from "@/lib/env";
 import { validateTwilioSignature, parseTwilioForm } from "@/lib/twilio/signature";
 import { xmlResponse } from "@/lib/twilio/twiml";
 import { transcribeCall } from "@/lib/sync/transcribe";
@@ -17,8 +18,17 @@ export const runtime = "nodejs";
  */
 export async function POST(req: Request) {
   const { params, url } = await parseTwilioForm(req);
-  if ((await validateTwilioSignature(req.headers.get("x-twilio-signature"), url, params)) === "invalid") {
+  const sig = await validateTwilioSignature(req.headers.get("x-twilio-signature"), url, params);
+  if (sig === "invalid") {
     return new Response("invalid signature", { status: 403 });
+  }
+  // Pure write endpoint — unlike /voice (which fails OPEN so a call is never
+  // dropped), an unverifiable request must not be allowed to write in production.
+  if (sig === "unresolved" && env.NODE_ENV === "production") {
+    console.error(
+      "[twilio/recording] no auth token available to verify the Twilio signature — rejecting write. Fix the Twilio credentials.",
+    );
+    return new Response("signature unresolved", { status: 403 });
   }
 
   const callSid = params.CallSid;
