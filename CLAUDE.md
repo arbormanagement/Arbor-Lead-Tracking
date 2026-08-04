@@ -34,6 +34,20 @@ Edwardsville + O'Fallon). WhatConverts-style. Single-tenant. Owner: Justin
 ## Phases
 1. Call tracking on **static** numbers (current scaffold). 2. HCP revenue + spend sync + ROI. 3. `track.js` web/form. 4. Pooled DNI. 5. FB leadgen + LSA + Deepgram transcription + spam. 6. CallRail decommission.
 
+**Phase 6 lives in the `arbor-general` repo** — `callrail-migration/` (plan, number
+inventory, transfer mechanics) plus a summary in that repo's CLAUDE.md. It is vendor and
+account knowledge, not app documentation, so it sits where every session sees it. Two
+things from it that constrain this codebase:
+
+- `track.js` is deployed on arbor-mgmt.com with **`data-shadow`**, which skips the
+  `/api/dni/assign` call. The attribute is load-bearing: without it the snippet falls back
+  to the oldest active static number and rewrites every `tel:` link on the site, racing
+  CallRail's still-live `swap.js`. Remove it only in the same deploy that removes swap.js.
+- CallRail's numbers are **already Twilio numbers** under CallRail's account, so they will
+  arrive by account transfer rather than a port. Each one still needs the
+  `importPhoneNumber` flow the same day it lands, or calls hit a bare Twilio number with
+  no voice URL.
+
 ## Defaults (Justin can change)
 - v1 channels: calls + web forms + FB leadgen (SMS deferred).
 - Call routing: office +16188368004 first (configurable).
