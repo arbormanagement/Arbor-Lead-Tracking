@@ -154,7 +154,10 @@ export const adSpend = pgTable(
     date: date("date").notNull(),
     platform: platformEnum("platform").notNull(),
     campaignId: text("campaign_id").references(() => campaigns.id),
-    externalCampaignId: text("external_campaign_id"),
+    // Part of the idempotency key below — must never be NULL (NULLS DISTINCT would
+    // let a null-keyed row duplicate on every rolling re-pull). Providers skip
+    // rows without a campaign id.
+    externalCampaignId: text("external_campaign_id").notNull(),
     impressions: integer("impressions").default(0),
     clicks: integer("clicks").default(0),
     spendCents: integer("spend_cents").notNull().default(0),
@@ -273,6 +276,11 @@ export const numberAssignments = pgTable(
       .on(t.trackingNumberId)
       .where(sql`released_at IS NULL`),
     index("number_assignments_session_idx").on(t.webSessionId),
+    // The expired-lease reaper scans `released_at IS NULL AND expires_at <= now()`
+    // on every assign request.
+    index("number_assignments_expiry_idx")
+      .on(t.expiresAt)
+      .where(sql`released_at IS NULL`),
   ],
 );
 
@@ -365,6 +373,10 @@ export const hcpEstimates = pgTable(
     index("hcp_estimates_won_idx").on(t.won),
     index("hcp_estimates_phone_idx").on(t.customerPhoneE164),
     index("hcp_estimates_email_idx").on(t.customerEmailLc),
+    // The hourly attribution scan filters on these; without indexes it becomes a
+    // full-table scan as estimates accumulate.
+    index("hcp_estimates_created_hcp_idx").on(t.createdAtHcp),
+    index("hcp_estimates_updated_hcp_idx").on(t.updatedAtHcp),
   ],
 );
 
@@ -415,6 +427,9 @@ export const leads = pgTable(
     selfReportedSource: text("self_reported_source"),
     isLeadManual: boolean("is_lead_manual").notNull().default(false), // human override — auto-classify won't touch it
     isFirstTime: boolean("is_first_time"),
+    // The upstream platform's own id for this lead (LSA lead id, …) — the real
+    // idempotency key for synced lead types that have one.
+    externalId: text("external_id"),
     isDuplicate: boolean("is_duplicate").notNull().default(false),
     duplicateOfLeadId: text("duplicate_of_lead_id"),
     occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull().defaultNow(),
@@ -427,6 +442,10 @@ export const leads = pgTable(
     index("leads_email_idx").on(t.emailLc),
     index("leads_source_idx").on(t.sourceId),
     index("leads_status_idx").on(t.status),
+    index("leads_hcp_estimate_idx").on(t.hcpEstimateId),
+    uniqueIndex("leads_type_external_id_uq")
+      .on(t.type, t.externalId)
+      .where(sql`external_id IS NOT NULL`),
   ],
 );
 
@@ -448,6 +467,10 @@ export const calls = pgTable(
     recordingSid: text("recording_sid"),
     recordingDurationSec: integer("recording_duration_sec"),
     transcript: text("transcript"),
+    // Poison-pill guard for the transcription backlog: failed attempts count up
+    // and the sync skips calls past its retry cap instead of retrying forever.
+    transcribeAttempts: integer("transcribe_attempts").notNull().default(0),
+    transcribeError: text("transcribe_error"),
     transcriptProvider: text("transcript_provider"),
     transcriptConfidence: numeric("transcript_confidence", { precision: 4, scale: 3 }),
     intentLabel: text("intent_label"),
@@ -465,6 +488,7 @@ export const calls = pgTable(
     uniqueIndex("calls_twilio_sid_uq").on(t.twilioCallSid),
     index("calls_lead_idx").on(t.leadId),
     index("calls_from_idx").on(t.fromNumber),
+    index("calls_tracking_number_idx").on(t.trackingNumberId),
   ],
 );
 
