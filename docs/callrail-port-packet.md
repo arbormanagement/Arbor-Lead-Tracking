@@ -9,7 +9,7 @@ the numbers can be lost. The monthly fee is the cheapest insurance in this proje
 
 ---
 
-## 1. Numbers to port (9)
+## 1. Numbers to port (10)
 
 | # | E.164 | Dialed as | What it tracks | 90d calls |
 |---|---|---|---|---|
@@ -22,12 +22,45 @@ the numbers can be lost. The monthly fee is the cheapest insurance in this proje
 | 7 | `+16183504871` | (618) 350-4871 | Website DNI pool | 43 |
 | 8 | `+16183504252` | (618) 350-4252 | Website DNI pool | 37 |
 | 9 | `+16183522730` | (618) 352-2730 | Website DNI pool | 34 |
+| 10 | `+16184145907` | (618) 414-5907 | Google Call Only Ads — live on campaign 23633267649 | 72 |
 
-**Not ported — `+16184145907`** (Google Call Only Ads, 72 calls). It lives in one editable
-Google Ads asset, so it gets swapped to `+16184278164` instead. Let it lapse with the
-account.
+### ⚠️ `+16184145907` — add it to the port (revised 2026-08-04)
 
-All 9 are **local US numbers in the 618 NPA**, all created well over 30 days ago (the pool
+Earlier drafts said this one could be swapped and left to lapse, on the reasoning that it
+lives in a single editable Google Ads asset. Justin flagged that it is live in the ads,
+which is correct, and the data says lapsing it would cost real calls:
+
+- It **is serving**: asset `338816285606` on campaign `23633267649` ("Search | Tree
+  Services", the only ENABLED campaign), plus account-level asset `172222076754`, both
+  ENABLED.
+- **16 of its 72 calls (22.2%) are repeat callers.** Lower than the static numbers (38.2%)
+  and the pool (30.3%) — consistent with call-only ads being a first-touch channel — but
+  still roughly **5 repeat calls a month**.
+
+Note the no-web-session test used for the pool **does not work here**: 100% of these calls
+have no landing page, because a call-only ad never sends anyone to the website. So we
+cannot separate "dialed a saved number" from "searched again and tapped a new ad", and the
+evidence is genuinely ambiguous rather than clean.
+
+**Decision: port it.** The marginal cost is one more line on an LOA being filed anyway,
+against ~5 calls/month of downside if the ambiguity resolves the wrong way. Porting also
+means the Google Ads asset needs **no change at all** — the number keeps working and the
+app simply starts tracking it.
+
+**This makes it 10 numbers and a FULL port**, not a partial one. Two consequences:
+
+1. The LOA no longer needs partial-port marking (simpler, one less rejection risk).
+2. CallRail will hold **zero** numbers afterwards. That is fine — but the account must
+   still stay open and paid until every port completes *and* the Google Ads / GA4
+   integrations are rebuilt. Do not let a full port be treated as an instruction to close
+   the account early.
+
+The canary cutover still has value and is unaffected: repoint the Google Ads asset to
+`+16184278164` now to prove the pipeline end-to-end on live traffic weeks before any port
+lands. When 618-414-5907 arrives in Twilio, either point the asset back to it or leave it
+on 427-8164 and keep the ported number as a safety net for anyone who saved it.
+
+All 10 are **local US numbers in the 618 NPA**, all created well over 30 days ago (the pool
 dates to 2025-09-10), so none should trip a minimum-age rule.
 
 ## 2. CallRail account facts (for the LOA)
@@ -57,7 +90,7 @@ The API does not expose these, and a port cannot be filed without them:
 
 CallRail does not block port-outs, but it will not volunteer the details either. Request:
 
-- Written confirmation all 9 numbers are **portable**, and the **underlying carrier** for
+- Written confirmation all 10 numbers are **portable**, and the **underlying carrier** for
   each (CallRail resells, so the losing carrier of record may be Bandwidth/Twilio/etc. —
   Twilio's port team needs to know).
 - The **account number and PIN/passcode** the port team should use.
@@ -70,13 +103,31 @@ Draft email: section 7.
 
 ## 5. Twilio side
 
-Twilio port-ins are filed in **Console → Phone Numbers → Porting** (there is a Port-In
-API, but it is not exposed through the Arbor MCP, so this step is manual). Submit all 9 in
-**one port order** so they share a single LOA and a single completion date — a single
-cutover beats nine staggered ones.
+**Porting tools now exist on the Arbor MCP** (added 2026-08-04, Arbor-MCP-Server branch
+`claude/callrail-phone-migration-r2p0tl`): `twilio_check_number_portability`,
+`twilio_create_port_in`, `twilio_get_port_in`, `twilio_get_port_in_phone_number`,
+`twilio_delete_port_in`, `twilio_delete_port_in_phone_number`.
+
+**Run `twilio_check_number_portability` on all 10 numbers now.** It is free, read-only,
+and needs neither an LOA nor any credential from CallRail — so it can be done before the
+support ticket is even answered. It returns `portable` plus
+`pin_and_account_number_required`, which tells us in advance whether CallRail must supply
+a PIN per number.
+
+Then `twilio_create_port_in` files the order. Submit all 10 in **one port order** so they
+share a single LOA and a single completion date — a single cutover beats ten staggered
+ones. Note that **Twilio generates the LOA itself** from `losing_carrier_information` and
+emails it to the authorized representative for digital signature; the response's
+`signature_request_url` is that link. There is no LOA PDF to hand-fill —
+`callrail-port-loa.md` exists to get the *field values* right, since a name or address
+mismatch is what gets ports rejected.
+
+⚠️ **One manual step remains:** `create_port_in` requires at least one uploaded document
+SID (one must be a Utility Bill), and the MCP has no document-upload tool. Upload in
+Console → Phone Numbers → Porting, then pass the SID.
 
 Twilio will want: the number list above, the losing-carrier account number + PIN, the BTN,
-the service address, and the signed LOA.
+and the service address.
 
 **Requested firm order date:** pick a weekday morning. Ports complete during business
 hours and each number is briefly unreachable at the moment of cutover, so a Tuesday–
@@ -106,16 +157,17 @@ Source mapping to apply on import:
 | `+16183669977` | Google Local Services Ads | static |
 | `+16183682902` | GBP Edwardsville | static, location Edwardsville |
 | `+16183504451` | GBP O'Fallon | static, location O'Fallon |
+| `+16184145907` | Google Ads (call-only asset) | static |
 | `+16182059820`, `+16186815764`, `+16183504871`, `+16183504252`, `+16183522730` | website DNI pool | **pool** |
 
 ## 7. Draft email to CallRail support
 
 > **To:** support@callrail.com
-> **Subject:** Port-out request — Arbor Management (account 408466063) — 9 numbers
+> **Subject:** Port-out request — Arbor Management (account 408466063) — 10 numbers
 >
 > Hello,
 >
-> I'd like to begin porting nine tracking numbers off CallRail to another carrier
+> I'd like to begin porting all ten tracking numbers off CallRail to another carrier
 > (Twilio). The account will remain active and paid until every port completes.
 >
 > Account: Arbor Management — account ID 408466063
@@ -123,18 +175,15 @@ Source mapping to apply on import:
 >
 > Numbers to port:
 > (618) 205-3094, (618) 366-9977, (618) 368-2902, (618) 350-4451, (618) 205-9820,
-> (618) 681-5764, (618) 350-4871, (618) 350-4252, (618) 352-2730
+> (618) 681-5764, (618) 350-4871, (618) 350-4252, (618) 352-2730, (618) 414-5907
 >
 > Could you please provide:
-> 1. Confirmation that all nine numbers are portable, and the underlying carrier of
+> 1. Confirmation that all ten numbers are portable, and the underlying carrier of
 >    record for each.
 > 2. The account number and PIN/passcode the winning carrier should use.
 > 3. The BTN (billing telephone number) associated with the account.
 > 4. A CSR (customer service record), if you're able to issue one.
 > 5. The service address on file, exactly as it should appear on the LOA.
->
-> One number on the account — (618) 414-5907 — is **not** being ported and can lapse
-> with the account when we close it later.
 >
 > Thanks,
 > Justin Hays

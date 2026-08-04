@@ -67,7 +67,7 @@ are attached only to **REMOVED** campaigns, and `47402561065` is PAUSED at accou
 | **618 414 5907** | **SWAP, don't port** | Lives in exactly one editable place (a Google Ads call asset). Repoint the asset to `+16184278164`, which is already provisioned and wired. No port, no downtime. |
 | **pool ×5** | **PORT — and reuse them as the app's own DNI pool** | *Reversed 2026-08-04.* Customers do dial pool numbers directly — see below. Porting keeps the digits alive **and** supplies the pool, so there is nothing to buy. |
 
-That is **9 ports** (8 if LSA proves re-pointable) and **1 asset swap**. Nothing is dropped.
+That is **10 ports** — every number on the account, a FULL port (9 if LSA proves re-pointable). Nothing is swapped and nothing is dropped.
 
 ### Why the pool numbers get ported (this reverses the first draft)
 
@@ -150,7 +150,7 @@ No live change has been made. Everything below is approved in principle but expl
 
 **Justin owns:**
 
-1. **Request port-out info + LOA from CallRail support** for all 9 numbers. Free,
+1. **Request port-out info + LOA from CallRail support** for all 10 numbers. Free,
    non-committal, and it is the 1–4 week long pole — starting it early costs nothing.
 2. Confirm whether the **LSA number (618-366-9977) can be re-pointed** inside the Local
    Services Ads product. If it can, it drops off the port list.
@@ -206,7 +206,7 @@ Drop `data-shadow` at cutover, in the same deploy that removes CallRail's `swap.
 | Step | State |
 |---|---|
 | 0 — Inventory | **Done** (this document). Open: print/wraps audit, forwarding destination. |
-| 1 — Stand up Twilio in parallel | **Started** — 1 of ~9 numbers provisioned (`+16184278164`). |
+| 1 — Stand up Twilio in parallel | **Started** — `+16184278164` provisioned; the rest arrive via the port rather than being bought. |
 | 2 — Website shadow run | **Not started.** `app.arbor-mgmt.com/track.js` is live and serving (HTTP 200), but arbor-mgmt.com carries only CallRail's `swap.js`. |
 | 3 — Parallel validation | Not started. |
 | 4 — Ports out of CallRail | Not started — **this is the long pole (1–4 weeks); start it early.** |

@@ -57,7 +57,7 @@ send this to CallRail if they accept a free-form LOA.
 | Contact email | justin@arbor-mgmt.com |
 | Contact phone | ⬜ *(use a number **not** on the port list — a ported number can be unreachable at cutover, which is exactly when the port team may need to call)* |
 
-### Numbers to port (9)
+### Numbers to port (10)
 
 | # | Number |
 |---|---|
@@ -70,20 +70,21 @@ send this to CallRail if they accept a free-form LOA.
 | 7 | (618) 350-4871 |
 | 8 | (618) 350-4252 |
 | 9 | (618) 352-2730 |
+| 10 | (618) 414-5907 |
 
-**Partial port.** This is a partial port — (618) 414-5907 stays behind and the account
-remains open. Say so explicitly on the LOA; a partial port left unmarked is sometimes
-processed as a full account transfer, which would take the remaining number and close
-the account early.
+**Full port.** All 10 numbers on the CallRail account are being ported (revised
+2026-08-04 — 618-414-5907 was added; see `callrail-port-packet.md`). No partial-port
+marking is needed, which removes one rejection risk. **But the CallRail account must
+still stay open and paid** until every port completes and the Google Ads / GA4
+integrations are rebuilt — do not let "full port" be read as an instruction to close the
+account early.
 
 ### Authorization statement
 
 > I, the undersigned, am authorized to act on behalf of the account holder named above.
 > I authorize Twilio and its underlying carriers to act as my agent to transfer the
-> telephone numbers listed above from the current provider to Twilio. I understand this
-> is a **partial port** and that the remaining number(s) and the account with the current
-> provider are to remain active. I certify the information above is accurate and matches
-> the current provider's records.
+> telephone numbers listed above from the current provider to Twilio. I certify the
+> information above is accurate and matches the current provider's records.
 
 | | |
 |---|---|
@@ -106,7 +107,7 @@ Fill in as CallRail responds, then transfer to the LOA above.
 
 | Question asked | CallRail's answer | Date |
 |---|---|---|
-| All 9 numbers portable? | ⬜ | |
+| All 10 numbers portable? | ⬜ | |
 | Underlying carrier of record | ⬜ | |
 | Account number for port team | ⬜ | |
 | Account PIN / passcode | ⬜ | |
@@ -122,9 +123,9 @@ Fill in as CallRail responds, then transfer to the LOA above.
 - [ ] Company name matches the CallRail invoice **character for character**
 - [ ] Service address matches, including suite/unit
 - [ ] Account number and PIN came from CallRail in writing, not guessed
-- [ ] All 9 numbers typed correctly — re-read digit by digit against the packet
-- [ ] Marked as a **partial port**, with the account to remain active
-- [ ] Contact phone is **not** one of the 9 numbers being ported
+- [ ] All 10 numbers typed correctly — re-read digit by digit against the packet
+- [ ] Contact details confirm the **account is to remain active** until all ports finish
+- [ ] Contact phone is **not** one of the 10 numbers being ported
 - [ ] Signature is Justin's (sole authorized admin on the account)
 - [ ] CallRail account is **paid and current** — an unpaid account fails the port
 
