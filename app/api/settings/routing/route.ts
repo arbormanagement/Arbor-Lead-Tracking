@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { getSession } from "@/lib/auth";
+import { authorizeAdmin, unauthorized } from "@/lib/admin-auth";
 import { setSetting } from "@/lib/settings";
 import { DEFAULT_FORWARD_KEY } from "@/lib/routing";
 import { normalizePhone } from "@/lib/phone";
@@ -25,8 +25,8 @@ export const runtime = "nodejs";
 const Body = z.object({ defaultForward: z.string() });
 
 export async function POST(req: Request) {
-  const session = await getSession();
-  if (!session) return Response.json({ error: "unauthorized" }, { status: 401 });
+  const auth = await authorizeAdmin(req);
+  if (!auth.ok) return unauthorized();
 
   const parsed = Body.safeParse(await req.json().catch(() => null));
   if (!parsed.success) return Response.json({ error: "invalid input" }, { status: 400 });

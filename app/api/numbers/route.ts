@@ -1,6 +1,6 @@
 import { eq } from "drizzle-orm";
 import { z } from "zod";
-import { getSession } from "@/lib/auth";
+import { authorizeAdmin, unauthorized, forbidden } from "@/lib/admin-auth";
 import { db } from "@/lib/db/client";
 import { pools, sources } from "@/lib/db/schema";
 import { provisionNumber } from "@/lib/twilio/numbers";
@@ -30,12 +30,21 @@ const Body = z.object({
 });
 
 export async function POST(req: Request) {
-  const session = await getSession();
-  if (!session) return Response.json({ error: "unauthorized" }, { status: 401 });
+  const auth = await authorizeAdmin(req);
+  if (!auth.ok) return unauthorized();
 
   const parsed = Body.safeParse(await req.json().catch(() => null));
   if (!parsed.success) return Response.json({ error: "invalid input" }, { status: 400 });
   const b = parsed.data;
+
+  // Importing an already-owned number is free and reversible; buying one costs
+  // money every month until somebody notices. A machine token may do the former
+  // only — purchases stay behind an interactive login.
+  if (auth.via === "token" && (b.areaCode || b.purchasePhoneNumber || b.tollFree)) {
+    return forbidden(
+      "token auth may only import an already-owned number (importPhoneNumber); purchasing requires an admin session",
+    );
+  }
 
   if (!b.areaCode && !b.importPhoneNumber && !b.purchasePhoneNumber && !b.tollFree) {
     return Response.json(

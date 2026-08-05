@@ -82,6 +82,13 @@ export const env = createEnv({
     // Shared secret the cron worker sends (Authorization: Bearer) to trigger
     // /api/cron/* — keeps the sync jobs from being runnable by anyone.
     CRON_SECRET: z.string().optional(),
+
+    // Machine credential for a narrow set of admin routes (see lib/admin-auth.ts).
+    // Lets automation import a transferred number or set the routing default
+    // without an interactive login. Deliberately NOT a general admin bypass:
+    // each route opts in, and token callers cannot purchase numbers. Unset (the
+    // default) disables token auth entirely — session-only, as before.
+    ADMIN_API_TOKEN: z.string().min(24).optional(),
   },
   client: {},
   // Next.js inlines process.env at build; pass through explicitly.
@@ -129,6 +136,7 @@ export const env = createEnv({
     GA4_PROPERTY_ID: process.env.GA4_PROPERTY_ID,
     FACEBOOK_VERIFY_TOKEN: process.env.FACEBOOK_VERIFY_TOKEN,
     CRON_SECRET: process.env.CRON_SECRET,
+    ADMIN_API_TOKEN: process.env.ADMIN_API_TOKEN,
   },
   // Allow `npm run build` / lint without a full env (skips validation when set).
   skipValidation:
