@@ -2,7 +2,7 @@ import { eq } from "drizzle-orm";
 import { z } from "zod";
 import { authorizeAdmin, unauthorized, forbidden } from "@/lib/admin-auth";
 import { db } from "@/lib/db/client";
-import { pools, sources } from "@/lib/db/schema";
+import { pools, sources, trackingNumbers } from "@/lib/db/schema";
 import { provisionNumber } from "@/lib/twilio/numbers";
 
 export const runtime = "nodejs";
@@ -87,4 +87,35 @@ async function resolveSource(key: string): Promise<string | null> {
   await db.insert(sources).values({ key, displayName: key }).onConflictDoNothing({ target: sources.key });
   const [s] = await db.select({ id: sources.id }).from(sources).where(eq(sources.key, key)).limit(1);
   return s?.id ?? null;
+}
+
+/**
+ * List tracking numbers. Read-only, and the counterpart the token flow needs:
+ * PATCH /api/numbers/[id] takes a row id, and without this there is no way for a
+ * machine caller to discover one. Also the verification step after a cutover
+ * import — confirming a number actually landed with the right source and
+ * forward destination.
+ */
+export async function GET(req: Request) {
+  const auth = await authorizeAdmin(req);
+  if (!auth.ok) return unauthorized();
+
+  const rows = await db
+    .select({
+      id: trackingNumbers.id,
+      phoneNumber: trackingNumbers.phoneNumber,
+      friendlyName: trackingNumbers.friendlyName,
+      pool: trackingNumbers.pool,
+      status: trackingNumbers.status,
+      isStatic: trackingNumbers.isStatic,
+      staticSourceId: trackingNumbers.staticSourceId,
+      location: trackingNumbers.location,
+      forwardDestination: trackingNumbers.forwardDestination,
+      recordCalls: trackingNumbers.recordCalls,
+      twilioSid: trackingNumbers.twilioSid,
+    })
+    .from(trackingNumbers)
+    .orderBy(trackingNumbers.createdAt);
+
+  return Response.json({ ok: true, numbers: rows });
 }
