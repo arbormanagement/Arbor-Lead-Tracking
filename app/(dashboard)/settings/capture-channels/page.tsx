@@ -32,7 +32,7 @@ export default async function CaptureChannelsPage() {
       </div>
 
       <div className="cards" style={{ marginBottom: 22 }}>
-        <Link href="/numbers" className="card pad" style={{ display: "block" }}>
+        <Link href="/settings/numbers" className="card pad" style={{ display: "block" }}>
           <div className="label">☎ Call tracking →</div>
           <div className="value" style={{ fontSize: 20 }}>{numAgg?.active ?? 0} active</div>
           <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>{numAgg?.pool ?? 0} in website pool · {callCount?.n ?? 0} calls tracked</div>

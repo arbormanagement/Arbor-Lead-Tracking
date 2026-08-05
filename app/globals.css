@@ -13,7 +13,9 @@
   --border-soft: #202832;
   --text: #e8edf2;
   --muted: #97a3af;
-  --faint: #616c78;
+  /* Lightest text tier that still passes WCAG AA (4.5:1) on --panel at the
+     10.5px table-header size — #616c78 measured 3.26:1. */
+  --faint: #8a95a2;
 
   --accent: #4ade80;            /* brand green — UI accent (buttons, active, links) */
   --accent-press: #33c06b;
@@ -132,6 +134,27 @@ table { width: 100%; border-collapse: collapse; background: var(--panel); border
    readable column widths and scrolls sideways instead of crushing the layout. */
 .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
 .table-scroll > table { min-width: 640px; }
+/* Sideways-scroll affordance: shadows hug the clipped edge and fade out when
+   that edge is fully scrolled into view (background-attachment: local trick). */
+.table-scroll {
+  background:
+    linear-gradient(to right, var(--bg), transparent 14px) left / 28px 100%,
+    linear-gradient(to left, var(--bg), transparent 14px) right / 28px 100%,
+    radial-gradient(farthest-side at 0 50%, rgba(0,0,0,.45), transparent) left / 14px 100%,
+    radial-gradient(farthest-side at 100% 50%, rgba(0,0,0,.45), transparent) right / 14px 100%;
+  background-repeat: no-repeat;
+  background-attachment: local, local, scroll, scroll;
+}
+/* Data that must never break mid-value (phone numbers, timestamps, money). */
+.nowrap { white-space: nowrap; }
+/* Lower-priority columns step aside on phones so the answer columns
+   (stage/value) fit without scrolling; the min-width floor and wide cell
+   padding go with them, since both assume the full column set. */
+@media (max-width: 640px) {
+  .col-hide-sm { display: none; }
+  .table-scroll > table { min-width: 0; }
+  thead th, tbody td { padding-left: 10px; padding-right: 10px; }
+}
 thead th { text-align: left; color: var(--faint); font-weight: 600; font-size: 10.5px; text-transform: uppercase; letter-spacing: .6px; padding: 11px 16px; border-bottom: 1px solid var(--border); background: var(--panel); }
 tbody td { padding: 12px 16px; border-bottom: 1px solid var(--border-soft); }
 tbody tr:last-child td { border-bottom: none; }

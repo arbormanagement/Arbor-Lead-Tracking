@@ -40,7 +40,7 @@ export function RoutingForm({ initial, envFallback }: { initial: string; envFall
       </div>
       <p className="muted" style={{ fontSize: 12.5, marginTop: 0, marginBottom: 12 }}>
         Where a call rings when its tracking number has no per-number forward set. Each number
-        in <a href="/numbers" style={{ color: "var(--accent)" }}>/numbers</a> can override this.
+        in <a href="/settings/numbers" style={{ color: "var(--accent)" }}>Numbers</a> can override this.
       </p>
       <input
         value={value}

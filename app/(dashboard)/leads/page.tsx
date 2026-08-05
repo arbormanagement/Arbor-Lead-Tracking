@@ -197,17 +197,17 @@ export default async function InboxPage({
     const t = TYPE_META[r.type] ?? { ic: "•", label: r.type };
     return (
       <tr key={r.id}>
-        <td className="muted mono" style={{ whiteSpace: "nowrap" }}>{dateTime(r.occurredAt)}</td>
-        <td><span className="src"><span style={{ opacity: 0.85 }}>{t.ic}</span>{t.label}</span></td>
+        <td className="muted mono nowrap">{dateTime(r.occurredAt)}</td>
+        <td className="col-hide-sm"><span className="src"><span style={{ opacity: 0.85 }}>{t.ic}</span>{t.label}</span></td>
         <td>
           <Link href={`/leads/${r.id}`} className="rowlink">
             <div style={{ fontWeight: 600 }}>{r.name || formatPhoneDisplay(r.phone) || r.email || "—"}</div>
             {(r.name && (r.phone || r.email)) && (
-              <div className="muted" style={{ fontSize: 12 }}>{formatPhoneDisplay(r.phone) || r.email}</div>
+              <div className="muted nowrap" style={{ fontSize: 12 }}>{formatPhoneDisplay(r.phone) || r.email}</div>
             )}
           </Link>
         </td>
-        <td className="muted">
+        <td className="muted col-hide-sm">
           {r.sourceKey ?? "—"}
           {r.selfReportedSource && (
             <div style={{ fontSize: 11, marginTop: 2 }} title="Caller's own answer to 'how did you hear about us'">
@@ -216,7 +216,7 @@ export default async function InboxPage({
           )}
         </td>
         <td><span className={r.isSpam ? "badge bad" : stageClass(r.status)}>{r.isSpam ? "spam" : r.status}</span></td>
-        <td>{r.type === "call" ? <LeadToggle leadId={r.id} isLead={r.isLead} manual={r.isLeadManual ?? false} /> : <span className="muted" style={{ fontSize: 12 }}>✓</span>}</td>
+        <td className="col-hide-sm">{r.type === "call" ? <LeadToggle leadId={r.id} isLead={r.isLead} manual={r.isLeadManual ?? false} /> : <span className="muted" style={{ fontSize: 12 }}>✓</span>}</td>
         <td className="mono" style={{ textAlign: "right" }}>
           {r.sales ? <span style={{ color: "var(--accent)", fontWeight: 700 }}>{dollars(r.sales)}</span>
             : r.quote ? <span className="muted">{dollars(r.quote)} quoted</span> : "—"}
@@ -251,13 +251,14 @@ export default async function InboxPage({
 
   const tableHead = (
     <thead>
+      {/* Source and Lead? hide on phones so Stage/Value stay in view. */}
       <tr>
         <th>When</th>
-        <th>Type</th>
+        <th className="col-hide-sm">Type</th>
         <th>Contact</th>
-        <th>Source</th>
+        <th className="col-hide-sm">Source</th>
         <th>Stage</th>
-        <th>Lead?</th>
+        <th className="col-hide-sm">Lead?</th>
         <th style={{ textAlign: "right" }}>Value</th>
       </tr>
     </thead>

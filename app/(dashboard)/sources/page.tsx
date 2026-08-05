@@ -129,7 +129,16 @@ export default async function SourcesPage({ searchParams }: { searchParams: Prom
               const cancelled = cancelledByKey.get(r.key ?? null) ?? 0;
               const cpl = r.leads && r.spend ? dollars(Math.round(r.spend / r.leads)) : "—";
               const roasNum = r.spend ? r.revenue / r.spend : 0;
-              const roas = r.spend ? roasNum.toFixed(1) + "×" : r.revenue > 0 ? "organic" : "—";
+              // Spend with no revenue yet is a wait-state, not a 0.0× verdict.
+              const roas =
+                r.spend && r.revenue > 0
+                  ? roasNum.toFixed(1) + "×"
+                  : r.revenue > 0
+                    ? "organic"
+                    : r.spend
+                      ? "no rev yet"
+                      : "—";
+              const winning = r.spend > 0 && r.revenue > 0;
               return (
                 <tr key={r.key ?? `u${i}`}>
                   <td><span className="src"><span className="dot" style={{ background: SRC_HUES[i % SRC_HUES.length] }} />{r.name ?? r.key ?? "Unattributed"}</span></td>
@@ -142,8 +151,8 @@ export default async function SourcesPage({ searchParams }: { searchParams: Prom
                   <td className="mono muted">{cpl}</td>
                   <td>
                     <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                      <span className="mono" style={{ color: r.spend ? "var(--accent)" : "var(--muted)", fontWeight: 700, minWidth: 42 }}>{roas}</span>
-                      {r.spend > 0 && <span className="bar"><i style={{ width: Math.max(4, Math.min(100, (roasNum / maxRoas) * 100)) + "%" }} /></span>}
+                      <span className={winning ? "mono" : ""} style={{ color: winning ? "var(--accent)" : "var(--muted)", fontWeight: winning ? 700 : 500, fontSize: winning ? undefined : 12, minWidth: 42 }}>{roas}</span>
+                      {winning && <span className="bar"><i style={{ width: Math.max(4, Math.min(100, (roasNum / maxRoas) * 100)) + "%" }} /></span>}
                     </div>
                   </td>
                 </tr>
