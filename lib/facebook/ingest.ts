@@ -4,16 +4,24 @@ import { campaigns, facebookLeads, leads, sources } from "@/lib/db/schema";
 import { normalizeEmail, normalizePhone } from "@/lib/phone";
 import type { FbLeadDetail } from "@/lib/integrations/facebook";
 
+/** Outcome of an ingest attempt — `excluded` means the ad's campaign is flagged as
+ *  non-customer-acquisition (recruiting), so the submission is deliberately dropped. */
+export type IngestResult = "created" | "duplicate" | "excluded";
+
 /**
  * Insert a Facebook lead-gen submission as a lead + facebook_leads detail row.
  * Idempotent on fb_leadgen_id (Meta redelivers, and the webhook + poller can both
- * see the same lead). Returns true if a new lead was created, false if it already
- * existed. Shared by the webhook and the polling sync.
+ * see the same lead). Shared by the webhook and the polling sync.
  */
-export async function ingestFacebookLead(detail: FbLeadDetail): Promise<boolean> {
+export async function ingestFacebookLead(detail: FbLeadDetail): Promise<IngestResult> {
   const c = mapFbFields(detail.fieldData);
   const sourceId = await getOrCreateSource("facebook/paid");
-  const campaignId = detail.campaignId ? await resolveCampaign(detail.campaignId, sourceId) : null;
+  const campaign = detail.campaignId ? await resolveCampaign(detail.campaignId, sourceId) : null;
+  // Recruiting campaigns don't produce customers. Drop the submission before it
+  // becomes a lead rather than filtering it downstream — an applicant in the inbox
+  // is noise, and one in the ROI denominator understates the channel that paid.
+  if (campaign?.excluded) return "excluded";
+  const campaignId = campaign?.id ?? null;
   const occurredAt = detail.createdTime ? new Date(detail.createdTime) : new Date();
 
   // One transaction, and the uniquely-constrained facebook_leads row goes in
@@ -33,7 +41,7 @@ export async function ingestFacebookLead(detail: FbLeadDetail): Promise<boolean>
       })
       .onConflictDoNothing({ target: facebookLeads.fbLeadgenId })
       .returning({ id: facebookLeads.id });
-    if (!claimed) return false; // already ingested (redelivery, or the other path won)
+    if (!claimed) return "duplicate"; // already ingested (redelivery, or the other path won)
 
     const [lead] = await tx
       .insert(leads)
@@ -53,7 +61,7 @@ export async function ingestFacebookLead(detail: FbLeadDetail): Promise<boolean>
       .returning({ id: leads.id });
 
     await tx.update(facebookLeads).set({ leadId: lead.id }).where(eq(facebookLeads.id, claimed.id));
-    return true;
+    return "created";
   });
 }
 
@@ -82,15 +90,18 @@ async function getOrCreateSource(key: string): Promise<string | null> {
   return s?.id ?? null;
 }
 
-async function resolveCampaign(externalId: string, sourceId: string | null): Promise<string | null> {
+async function resolveCampaign(
+  externalId: string,
+  sourceId: string | null,
+): Promise<{ id: string; excluded: boolean } | null> {
   await db
     .insert(campaigns)
     .values({ platform: "facebook", externalCampaignId: externalId, sourceId })
     .onConflictDoNothing({ target: [campaigns.platform, campaigns.externalCampaignId] });
   const [c] = await db
-    .select({ id: campaigns.id })
+    .select({ id: campaigns.id, excluded: campaigns.excluded })
     .from(campaigns)
     .where(and(eq(campaigns.platform, "facebook"), eq(campaigns.externalCampaignId, externalId)))
     .limit(1);
-  return c?.id ?? null;
+  return c ?? null;
 }

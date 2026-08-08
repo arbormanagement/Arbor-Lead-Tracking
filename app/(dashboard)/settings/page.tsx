@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { sql } from "drizzle-orm";
 import { getSession } from "@/lib/auth";
+import { excludedCampaignIds } from "@/lib/campaigns";
 import { db } from "@/lib/db/client";
 import { syncRuns, trackingNumbers } from "@/lib/db/schema";
 import { credentialStatus, CREDENTIAL_SPECS } from "@/lib/credentials";
@@ -35,6 +36,7 @@ export default async function SettingsPage() {
       pool: sql<number>`count(*) filter (where not ${trackingNumbers.isStatic} and ${trackingNumbers.status} = 'active')::int`,
     })
     .from(trackingNumbers);
+  const excludedCampaigns = (await excludedCampaignIds()).length;
   const [lastRun] = await db
     .select({ job: syncRuns.job, status: syncRuns.status, startedAt: syncRuns.startedAt })
     .from(syncRuns)
@@ -61,6 +63,13 @@ export default async function SettingsPage() {
           <div className="label"># Tracking numbers →</div>
           <div className="value" style={{ fontSize: 16, marginTop: 6 }}>{numAgg?.active ?? 0} active</div>
           <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>{numAgg?.pool ?? 0} in the website DNI pool · buy, route &amp; release</div>
+        </Link>
+        <Link href="/settings/campaigns" className="card pad" style={{ display: "block" }}>
+          <div className="label">◎ Campaigns →</div>
+          <div className="value" style={{ fontSize: 16, marginTop: 6 }}>
+            {excludedCampaigns > 0 ? `${excludedCampaigns} not counted` : "all counted in ROI"}
+          </div>
+          <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>keep recruiting spend out of customer ROI</div>
         </Link>
         <Link href="/settings/integrations" className="card pad" style={{ display: "block" }}>
           <div className="label">◱ Integrations →</div>

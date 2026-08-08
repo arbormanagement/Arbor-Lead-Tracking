@@ -1,4 +1,5 @@
 import { and, desc, eq, gte, ne, or, sql } from "drizzle-orm";
+import { campaignNotExcluded, excludedCampaignIds } from "@/lib/campaigns";
 import { db } from "@/lib/db/client";
 import { leads, roiDaily, sources } from "@/lib/db/schema";
 import { wholeDollars } from "@/lib/format";
@@ -11,6 +12,9 @@ const SRC_HUES = ["#2ea043", "#4c8dff", "#facc15", "#a371f7", "#e08a4c", "#8b98a
 export default async function OverviewPage() {
   const since = new Date(Date.now() - 30 * 86_400_000);
   const sinceDate = since.toISOString().slice(0, 10);
+  // Recruiting campaigns never count as customer acquisition. roi_daily is already
+  // built without them; the funnel reads `leads` directly, so it filters here.
+  const excluded = await excludedCampaignIds();
 
   // Funnel: captured → qualified (estimate created) → won (approved).
   const [f] = await db
@@ -22,7 +26,14 @@ export default async function OverviewPage() {
       won: sql<number>`count(*) filter (where ${leads.status} = 'won')::int`,
     })
     .from(leads)
-    .where(and(gte(leads.occurredAt, since), eq(leads.isSpam, false), or(ne(leads.type, "call"), eq(leads.isLead, true))));
+    .where(
+      and(
+        gte(leads.occurredAt, since),
+        eq(leads.isSpam, false),
+        or(ne(leads.type, "call"), eq(leads.isLead, true)),
+        campaignNotExcluded(leads.campaignId, excluded),
+      ),
+    );
 
   const captured = f?.captured ?? 0;
   const quoted = f?.quoted ?? 0;
