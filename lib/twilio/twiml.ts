@@ -5,7 +5,11 @@ const VoiceResponse = twilio.twiml.VoiceResponse;
 
 export interface ForwardOptions {
   destination: string;
-  /** Spoken to the answering rep before connect, e.g. "Tree lead — Google Ads". */
+  /** Spoken to the answering rep before connect, e.g. "Tree lead — Google Ads".
+   *  ⚠️ Only set this when the destination is a HUMAN. It plays into the answering
+   *  party's ear, so pointing it at an AI voice agent (Retell/Chloe) feeds the agent's
+   *  ASR a phantom caller utterance that it will answer. See the note in
+   *  app/api/twilio/voice/route.ts — there is deliberately no default whisper. */
   whisper?: string;
   /** Recording-ready callback path under /api/twilio. */
   recordingCallbackPath?: string;

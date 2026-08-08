@@ -106,7 +106,15 @@ export async function POST(req: Request) {
     //    All three are per-number overrides. The greeting is only configurable when
     //    recording is off — with recording on, `forwardTwiml` forces the default
     //    recording notice if no greeting would play (IL/MO mixed consent).
-    const whisper = tn.whisperMessage ?? (sourceKey ? `Tree lead from ${sourceKey}` : "Tree lead");
+    // NO default whisper. A whisper is TwiML on <Number url=…>, which plays into the
+    // ANSWERING party's ear before the caller is bridged — and the forward destination
+    // is Retell's voice agent (Chloe), not a human rep. Retell's ASR transcribes the
+    // whisper as the caller's opening words and Chloe answers it: a "Tree lead from
+    // direct" whisper came back as `User: Direct.` with Chloe cut off mid-greeting
+    // (2026-08-08, first real call after the CallRail cutover). Because answerOnBridge
+    // is on, the caller hears ringback throughout and lands mid-confusion.
+    // Opt in per number only — meaningful again if a number ever forwards to a human.
+    const whisper = tn.whisperMessage || undefined;
     const greeting = tn.greetingEnabled ? (tn.greetingMessage || DEFAULT_RECORDING_NOTICE) : undefined;
     return xmlResponse(
       forwardTwiml({
