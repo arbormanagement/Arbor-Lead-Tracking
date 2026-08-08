@@ -20,7 +20,19 @@ import { withSyncRun } from "./run";
  * Gated: each destination runs only when its credentials + targets are configured
  * (Google conversion-action ids, Meta pixel id) — so this no-ops until wired.
  */
-type EventKind = "qualified" | "won";
+/**
+ * Three tiers, in the order they happen — and in the order Justin ranks them as
+ * bidding signals (2026-08-08):
+ *   lead      — a form submission or a phone call. Earliest and highest volume;
+ *               this is what replaces CallRail's Form Capture + First Time Phone
+ *               Call, which both died when swap.js was removed.
+ *   qualified — the office wrote an estimate for that lead.
+ *   won       — an estimate option was approved.
+ * A single customer legitimately produces all three. Whether that triple-counts
+ * is a Google-side decision (which actions are primary), not ours — we report
+ * each stage once and let the account decide what bids on it.
+ */
+type EventKind = "lead" | "qualified" | "won";
 
 interface Task {
   leadId: string;
@@ -50,10 +62,11 @@ export async function syncConversions({ sinceDays = 90, limit = 500 }: { sinceDa
     const g = await getPlatformCreds("google_ads");
     const googleReady = !!(g.refresh_token && g.developer_token && g.client_id && g.client_secret && g.customer_id);
     const googleAction: Record<EventKind, string | undefined> = {
+      lead: googleReady ? g.conversion_action_lead || undefined : undefined,
       qualified: googleReady ? g.conversion_action_qualified || undefined : undefined,
       won: googleReady ? g.conversion_action_won || undefined : undefined,
     };
-    const googleOn = !!(googleAction.qualified || googleAction.won);
+    const googleOn = !!(googleAction.lead || googleAction.qualified || googleAction.won);
 
     const fb = await getPlatformCreds("facebook");
     const facebookOn = !!fb.conversions_pixel_id && !!fb.access_token;
@@ -94,7 +107,12 @@ export async function syncConversions({ sinceDays = 90, limit = 500 }: { sinceDa
       .leftJoin(numberAssignments, eq(numberAssignments.id, calls.numberAssignmentId))
       .where(
         and(
-          inArray(leads.status, ["qualified", "quoted", "won"]),
+          // Was qualified/quoted/won only, which made an estimate a precondition
+          // for exporting ANYTHING. `new`/`working` are now in scope so the
+          // lead-stage event can fire on the form submission or call itself.
+          // Terminal non-outcomes stay out: a lost/cancelled/duplicate lead has
+          // nothing useful to teach bidding.
+          inArray(leads.status, ["new", "working", "qualified", "quoted", "won"]),
           eq(leads.isSpam, false),
           gte(leads.occurredAt, cutoff),
         ),
@@ -110,9 +128,20 @@ export async function syncConversions({ sinceDays = 90, limit = 500 }: { sinceDa
       // Report the conversion at the time it actually happened — the estimate being
       // written (qualified) or approved (won) — falling back to the lead time. An
       // estimate approved weeks later would otherwise be reported at lead time.
+      // The lead itself always converts at lead time and carries no value — its
+      // worth to bidding is volume and recency, not a dollar figure.
       const events: Array<{ event: EventKind; valueCents: number; convertedAt: Date }> = [
-        { event: "qualified", valueCents: l.quoteValueCents ?? 0, convertedAt: l.estimateCreatedAt ?? l.occurredAt },
+        { event: "lead", valueCents: 0, convertedAt: l.occurredAt },
       ];
+      // Only claim an estimate exists once one actually does. Status alone is not
+      // enough to date it, so an estimate-less lead must not emit `qualified`.
+      if (l.status !== "new" && l.status !== "working") {
+        events.push({
+          event: "qualified",
+          valueCents: l.quoteValueCents ?? 0,
+          convertedAt: l.estimateCreatedAt ?? l.occurredAt,
+        });
+      }
       if (l.status === "won") {
         events.push({
           event: "won",

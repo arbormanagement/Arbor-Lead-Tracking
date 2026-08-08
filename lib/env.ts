@@ -68,6 +68,7 @@ export const env = createEnv({
     // spec envKey missing here is not a fallback that merely goes unused, it is one
     // that silently never works no matter what the host sets.
     GOOGLE_ADS_LSA_CUSTOMER_ID: z.string().optional(),
+    GOOGLE_ADS_CONV_LEAD: z.string().optional(),
     GOOGLE_ADS_CONV_QUALIFIED: z.string().optional(),
     GOOGLE_ADS_CONV_WON: z.string().optional(),
     FACEBOOK_PAGE_ID: z.string().optional(),
@@ -126,6 +127,7 @@ export const env = createEnv({
     FACEBOOK_API_VERSION: process.env.FACEBOOK_API_VERSION,
     FACEBOOK_APP_SECRET: process.env.FACEBOOK_APP_SECRET,
     GOOGLE_ADS_LSA_CUSTOMER_ID: process.env.GOOGLE_ADS_LSA_CUSTOMER_ID,
+    GOOGLE_ADS_CONV_LEAD: process.env.GOOGLE_ADS_CONV_LEAD,
     GOOGLE_ADS_CONV_QUALIFIED: process.env.GOOGLE_ADS_CONV_QUALIFIED,
     GOOGLE_ADS_CONV_WON: process.env.GOOGLE_ADS_CONV_WON,
     FACEBOOK_PAGE_ID: process.env.FACEBOOK_PAGE_ID,
