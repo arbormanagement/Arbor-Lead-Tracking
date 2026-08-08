@@ -2,7 +2,7 @@ import { and, desc, eq, ilike, or, type SQL } from "drizzle-orm";
 import { z } from "zod";
 import { authorizeAdmin, unauthorized } from "@/lib/admin-auth";
 import { db } from "@/lib/db/client";
-import { calls, formSubmissions, leads, sources } from "@/lib/db/schema";
+import { leads, sources } from "@/lib/db/schema";
 
 export const runtime = "nodejs";
 
@@ -93,15 +93,4 @@ export async function GET(req: Request) {
         });
 
   return Response.json({ ok: true, count: filtered.length, leads: filtered });
-}
-
-/** Rows that make a lead real business data rather than a test artifact. */
-export async function leadDependencies(leadId: string) {
-  const [call] = await db.select({ id: calls.id }).from(calls).where(eq(calls.leadId, leadId)).limit(1);
-  const [form] = await db
-    .select({ id: formSubmissions.id })
-    .from(formSubmissions)
-    .where(eq(formSubmissions.leadId, leadId))
-    .limit(1);
-  return { hasCall: !!call, hasFormSubmission: !!form };
 }
