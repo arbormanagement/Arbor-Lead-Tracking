@@ -16,9 +16,16 @@ export interface ForwardOptions {
   /** Status callback for the dial leg. */
   actionPath?: string;
   /** Pre-call message played to the caller before dialing (e.g. a recording notice).
-   *  When `record` is on and this is unset, the default recording notice plays
-   *  instead — a notice is mandatory whenever we record (IL/MO mixed consent). */
-  greeting?: string;
+   *
+   *  Tri-state, and the distinction is load-bearing:
+   *    • `string`    — play this.
+   *    • `undefined` — nothing configured; when `record` is on the default recording
+   *                    notice plays, so no caller path is ever recorded silently.
+   *    • `null`      — DELIBERATELY suppressed. Only pass this when the destination
+   *                    announces the recording itself (Chloe opens with "on a recorded
+   *                    line"), otherwise recording a caller in IL/MO with no notice at
+   *                    all is a mixed-consent problem. */
+  greeting?: string | null;
   /** Record the call (dual-channel). Default true. */
   record?: boolean;
   timeoutSec?: number;
@@ -42,10 +49,14 @@ export function forwardTwiml(opts: ForwardOptions): string {
   const vr = new VoiceResponse();
   const record = opts.record !== false; // default on
 
-  // Pre-call message. When recording is on a notice is REQUIRED (mixed consent) —
-  // fall back to the default so no caller path can be recorded silently. With
-  // recording off the greeting stays fully optional per number in the app.
-  const greeting = opts.greeting ?? (record ? DEFAULT_RECORDING_NOTICE : undefined);
+  // Pre-call message. `null` means the caller was deliberately opted out (the
+  // destination does its own disclosure); `undefined` means nothing was configured,
+  // and when recording is on we force the notice so no caller path is recorded
+  // silently. With recording off the greeting is fully optional per number.
+  const greeting =
+    opts.greeting === null
+      ? undefined
+      : (opts.greeting ?? (record ? DEFAULT_RECORDING_NOTICE : undefined));
   if (greeting) {
     vr.say({ voice: "Polly.Joanna" }, greeting);
   }
