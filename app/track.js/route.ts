@@ -115,6 +115,48 @@ const SNIPPET = String.raw`(function () {
     send(merge({ event: 'pageview' }));
 
     // Pool-based DNI — swap displayed numbers to this session's tracking number.
+    //
+    // The swap CANNOT be a one-shot pass. arbor-mgmt.com is a React SPA: this
+    // snippet is async in <head>, so the assign response lands before React has
+    // rendered anything and querySelectorAll matches zero tel: links. The number
+    // then never swaps, which silently costs every website call its click id —
+    // the whole point of DNI. Client-side routing re-renders the same problem on
+    // every navigation. So keep the assigned number and re-apply it whenever the
+    // DOM changes; the data-arbor-swapped marker makes re-runs idempotent and
+    // cheap, and stops our own writes from re-triggering the observer forever.
+    var assigned = null;
+    var swapQueued = false;
+
+    function applySwap() {
+      swapQueued = false;
+      if (assigned) swapNumbers(assigned.e164, assigned.display);
+    }
+
+    function queueSwap() {
+      if (swapQueued || !assigned) return;
+      swapQueued = true;
+      // rAF coalesces a burst of React mutations into one pass; the setTimeout
+      // fallback covers background tabs, where rAF may never fire.
+      if (window.requestAnimationFrame) window.requestAnimationFrame(applySwap);
+      else setTimeout(applySwap, 16);
+    }
+
+    function watchForLateNodes() {
+      if (!window.MutationObserver) {
+        // No observer (very old browsers): poll briefly so a render that lands
+        // after the assign response still gets swapped.
+        var tries = 0;
+        var iv = setInterval(function () {
+          applySwap();
+          if (++tries > 40) clearInterval(iv); // ~10s
+        }, 250);
+        return;
+      }
+      new MutationObserver(queueSwap).observe(document.documentElement, {
+        childList: true, subtree: true
+      });
+    }
+
     function swapNumbers(e164, display) {
       var tel = 'tel:' + e164;
       var marked = document.querySelectorAll('[data-arbor-phone]');
@@ -145,7 +187,12 @@ const SNIPPET = String.raw`(function () {
       });
       fetch(ASSIGN, { method: 'POST', body: body, headers: { 'Content-Type': 'text/plain' } })
         .then(function (r) { return r.json(); })
-        .then(function (d) { if (d && d.number) swapNumbers(d.number, d.display || d.number); })
+        .then(function (d) {
+          if (!d || !d.number) return;
+          assigned = { e164: d.number, display: d.display || d.number };
+          applySwap();          // whatever is already rendered
+          watchForLateNodes();  // everything React renders afterwards
+        })
         .catch(function () {});
     })();
 
