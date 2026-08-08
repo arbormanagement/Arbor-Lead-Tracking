@@ -69,6 +69,9 @@ export interface HcpEstimateDTO {
   approvedAmountCents: number;
   address?: unknown;
   createdAtHcp?: Date | null;
+  /** When the estimate VISIT is booked (HCP schedule.scheduled_start). Null until
+   *  the office puts it on the calendar, and stays null if it never happens. */
+  scheduledStartHcp?: Date | null;
   approvedAtHcp?: Date | null;
   /** HCP's own updated_at — bumps on any change (approval, cancel, price edit). */
   updatedAtHcp?: Date | null;

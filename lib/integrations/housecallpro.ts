@@ -219,6 +219,10 @@ function mapEstimate(e: Record<string, unknown>): HcpEstimateDTO {
     approvedAmountCents,
     address: e.address ?? null,
     createdAtHcp: parseDate(e.created_at),
+    // The booked estimate visit. Only present once the office puts it on the
+    // calendar — 29% of estimates never get one (cancelled, or still "needs
+    // scheduling"), so a null here is meaningful, not missing data.
+    scheduledStartHcp: parseDate((e.schedule as Record<string, unknown>)?.scheduled_start),
     approvedAtHcp: won ? approvedAt ?? parseDate(e.updated_at ?? e.created_at) : null,
     updatedAtHcp: parseDate(e.updated_at ?? e.created_at),
     raw: e,

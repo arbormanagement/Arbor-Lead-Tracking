@@ -358,6 +358,12 @@ export const hcpEstimates = pgTable(
     address: jsonb("address"),
     location: locationEnum("location").default("unknown"),
     createdAtHcp: timestamp("created_at_hcp", { withTimezone: true }),
+    // The estimate VISIT being booked — HCP's schedule.scheduled_start. Distinct
+    // from createdAtHcp: an estimate is created the moment the office writes it,
+    // but only becomes a real appointment once a date is set, and ~29% never get
+    // one (cancelled or still "needs scheduling"). Conflating the two overstates
+    // the funnel, which is why this is its own column rather than derived.
+    scheduledStartHcp: timestamp("scheduled_start_hcp", { withTimezone: true }),
     approvedAtHcp: timestamp("approved_at_hcp", { withTimezone: true }),
     // HCP's own updated_at — lets attribution re-derive leads whose estimate
     // changed long after creation (late approval, cancellation, price edit).

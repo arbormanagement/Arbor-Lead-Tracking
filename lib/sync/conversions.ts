@@ -27,12 +27,15 @@ import { withSyncRun } from "./run";
  *               this is what replaces CallRail's Form Capture + First Time Phone
  *               Call, which both died when swap.js was removed.
  *   qualified — the office wrote an estimate for that lead.
+ *   scheduled — that estimate got a date on the calendar. Not the same as being
+ *               written: ~29% of estimates never get one (cancelled, or still
+ *               "needs scheduling"), so this is a genuine step, not a rename.
  *   won       — an estimate option was approved.
  * A single customer legitimately produces all three. Whether that triple-counts
  * is a Google-side decision (which actions are primary), not ours — we report
  * each stage once and let the account decide what bids on it.
  */
-type EventKind = "lead" | "qualified" | "won";
+type EventKind = "lead" | "qualified" | "scheduled" | "won";
 
 interface Task {
   leadId: string;
@@ -64,9 +67,10 @@ export async function syncConversions({ sinceDays = 90, limit = 500 }: { sinceDa
     const googleAction: Record<EventKind, string | undefined> = {
       lead: googleReady ? g.conversion_action_lead || undefined : undefined,
       qualified: googleReady ? g.conversion_action_qualified || undefined : undefined,
+      scheduled: googleReady ? g.conversion_action_scheduled || undefined : undefined,
       won: googleReady ? g.conversion_action_won || undefined : undefined,
     };
-    const googleOn = !!(googleAction.lead || googleAction.qualified || googleAction.won);
+    const googleOn = !!(googleAction.lead || googleAction.qualified || googleAction.scheduled || googleAction.won);
 
     const fb = await getPlatformCreds("facebook");
     const facebookOn = !!fb.conversions_pixel_id && !!fb.access_token;
@@ -98,6 +102,7 @@ export async function syncConversions({ sinceDays = 90, limit = 500 }: { sinceDa
         salesValueCents: leads.salesValueCents,
         occurredAt: leads.occurredAt,
         estimateCreatedAt: hcpEstimates.createdAtHcp,
+        estimateScheduledAt: hcpEstimates.scheduledStartHcp,
         estimateApprovedAt: hcpEstimates.approvedAtHcp,
       })
       .from(leads)
@@ -141,6 +146,15 @@ export async function syncConversions({ sinceDays = 90, limit = 500 }: { sinceDa
           valueCents: l.quoteValueCents ?? 0,
           convertedAt: l.estimateCreatedAt ?? l.occurredAt,
         });
+        // Only when a date actually exists. Reporting it at estimate-creation time
+        // would claim an appointment that may never have been booked.
+        if (l.estimateScheduledAt) {
+          events.push({
+            event: "scheduled",
+            valueCents: l.quoteValueCents ?? 0,
+            convertedAt: l.estimateScheduledAt,
+          });
+        }
       }
       if (l.status === "won") {
         events.push({
