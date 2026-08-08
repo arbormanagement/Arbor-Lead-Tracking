@@ -1,7 +1,7 @@
 import { and, desc, eq, gt, isNull, lt, sql } from "drizzle-orm";
 import { ulid } from "ulid";
 import { db } from "@/lib/db/client";
-import { numberAssignments, trackingNumbers } from "@/lib/db/schema";
+import { numberAssignments, sources, trackingNumbers } from "@/lib/db/schema";
 
 const LEASE_MINUTES = 30;
 const MAX_ACTIVE_LEASES_PER_VISITOR = 2;
@@ -145,17 +145,33 @@ export async function leaseNumber(snap: AttributionSnapshot, sid: string, vid: s
 }
 
 /**
- * Pool-exhaustion fallback: any static number we own, so the page still shows a
+ * Pool-exhaustion fallback: a static number we own, so the page still shows a
  * tracked number and the call resolves to that number's static source. Returns null
- * if we have no static number — then the page keeps its own hard-coded number.
+ * if we have no usable static number — then the page keeps its own hard-coded number.
+ *
+ * Choosing by `createdAt` was actively harmful: the oldest static row is the TEST
+ * line (+1 618 427 8164, created long before the ten transferred numbers), so every
+ * exhausted-pool visitor was shown the test number and their call was attributed to
+ * source `test` — losing the real source and click id, and polluting reporting with
+ * customer calls. Observed live 2026-08-08.
+ *
+ * So: never hand out the test line, and prefer the number that is genuinely the
+ * site's public default (`direct`) over whatever happens to sort first.
  */
+const FALLBACK_EXCLUDED_SOURCES = ["test"];
+const FALLBACK_PREFERRED_SOURCE = "direct";
+
 export async function getFallbackNumber(): Promise<LeaseResult | null> {
-  const [row] = await db
-    .select({ phone: trackingNumbers.phoneNumber })
+  const rows = await db
+    .select({ phone: trackingNumbers.phoneNumber, sourceKey: sources.key })
     .from(trackingNumbers)
+    .leftJoin(sources, eq(sources.id, trackingNumbers.staticSourceId))
     .where(and(eq(trackingNumbers.isStatic, true), eq(trackingNumbers.status, "active")))
-    .orderBy(trackingNumbers.createdAt)
-    .limit(1);
-  if (!row) return null;
-  return { phoneNumber: row.phone, assignmentId: null, reused: false };
+    .orderBy(trackingNumbers.createdAt);
+
+  const usable = rows.filter((r) => !FALLBACK_EXCLUDED_SOURCES.includes(r.sourceKey ?? ""));
+  if (!usable.length) return null;
+
+  const chosen = usable.find((r) => r.sourceKey === FALLBACK_PREFERRED_SOURCE) ?? usable[0];
+  return { phoneNumber: chosen.phone, assignmentId: null, reused: false };
 }
