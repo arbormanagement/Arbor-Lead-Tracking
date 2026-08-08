@@ -37,6 +37,14 @@ import { withSyncRun } from "./run";
  */
 type EventKind = "lead" | "qualified" | "scheduled" | "won";
 
+/** Stage -> Meta standard event. null = not reported to Meta at all. */
+const META_EVENT: Record<EventKind, CapiEvent["eventName"] | null> = {
+  lead: "Lead",
+  qualified: null,
+  scheduled: "Schedule",
+  won: "Purchase",
+};
+
 interface Task {
   leadId: string;
   platform: "google" | "facebook";
@@ -262,14 +270,22 @@ export async function syncConversions({ sinceDays = 90, limit = 500 }: { sinceDa
     }
 
     // ── Meta: batch (event_id dedups server-side, so batch ok/error is safe) ──
-    const fbTasks = todo.filter((t) => t.platform === "facebook");
+    // Meta gets a DISTINCT standard event per stage. Mapping several stages onto
+    // "Lead" would triple-count: eventId is `${leadId}:${event}`, and Meta dedups
+    // on (event_name, event_id) — so same name + different id = separate
+    // conversions, not one. One caller reaching a scheduled estimate would post
+    // three Leads. `qualified` has no honest Meta standard event (an internal
+    // milestone, not a customer action) and is deliberately not sent; Meta's
+    // funnel is Lead -> Schedule -> Purchase.
+    const fbTasks = todo.filter((t) => t.platform === "facebook" && META_EVENT[t.event] !== null);
+
     if (fbTasks.length) {
       try {
         const nowSec = Math.floor(Date.now() / 1000);
         const events: CapiEvent[] = fbTasks.map((t) => {
           const convSec = Math.floor(t.convertedAt.getTime() / 1000);
           return {
-            eventName: t.event === "won" ? "Purchase" : "Lead",
+            eventName: META_EVENT[t.event]!, // non-null: fbTasks filtered these out
             // CAPI rejects the WHOLE batch if any event_time is >7 days old, so a
             // late-approved estimate is reported as recent rather than dropped.
             // Attribution is unaffected: Meta ties the event to the original lead

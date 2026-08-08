@@ -300,7 +300,8 @@ function pruneEmpty<T extends Record<string, unknown>>(o: T): T {
 }
 
 export interface CapiEvent {
-  eventName: "Lead" | "Purchase";
+  /** Meta standard events. "Schedule" = the estimate visit got a date. */
+  eventName: "Lead" | "Schedule" | "Purchase";
   eventTime: number; // unix seconds
   actionSource: "phone_call" | "website" | "system_generated";
   eventId: string; // dedup key
