@@ -103,11 +103,28 @@ export async function POST(req: Request) {
     await recordCall({ callSid, fromE164, tn, assignmentId, sourceKey, destination, status: "ringing" });
 
     // 5) Forward with an optional pre-call message + whisper + (optional) recording.
-    //    All three are per-number overrides. The greeting is only configurable when
-    //    recording is off — with recording on, `forwardTwiml` forces the default
-    //    recording notice if no greeting would play (IL/MO mixed consent).
-    const whisper = tn.whisperMessage ?? (sourceKey ? `Tree lead from ${sourceKey}` : "Tree lead");
-    const greeting = tn.greetingEnabled ? (tn.greetingMessage || DEFAULT_RECORDING_NOTICE) : undefined;
+    //    All three are per-number overrides.
+    //
+    //    `greetingEnabled: false` is honoured as a DELIBERATE opt-out (passed as null),
+    //    rather than being silently overridden by the recording notice as it was before.
+    //    The toggle previously did nothing whenever recording was on, which made the UI
+    //    lie about the call's actual behaviour.
+    //
+    //    ⚠️ Turning it off means the app plays NO recording notice, so the disclosure
+    //    rests entirely on the forward destination announcing it. That holds today only
+    //    because +16182059924 is Chloe, who opens with "on a recorded line" — and note
+    //    that is model-generated (Retell `begin_message` is null), not a fixed script.
+    //    Re-enable the greeting for any number pointed at a human or a bare voicemail.
+    // NO default whisper. A whisper is TwiML on <Number url=…>, which plays into the
+    // ANSWERING party's ear before the caller is bridged — and the forward destination
+    // is Retell's voice agent (Chloe), not a human rep. Retell's ASR transcribes the
+    // whisper as the caller's opening words and Chloe answers it: a "Tree lead from
+    // direct" whisper came back as `User: Direct.` with Chloe cut off mid-greeting
+    // (2026-08-08, first real call after the CallRail cutover). Because answerOnBridge
+    // is on, the caller hears ringback throughout and lands mid-confusion.
+    // Opt in per number only — meaningful again if a number ever forwards to a human.
+    const whisper = tn.whisperMessage || undefined;
+    const greeting = tn.greetingEnabled ? (tn.greetingMessage || DEFAULT_RECORDING_NOTICE) : null;
     return xmlResponse(
       forwardTwiml({
         destination,
