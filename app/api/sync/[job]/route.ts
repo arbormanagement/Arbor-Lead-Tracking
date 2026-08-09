@@ -3,11 +3,13 @@ import { syncSpend } from "@/lib/sync/spend";
 import { syncHcp } from "@/lib/sync/hcp";
 import { runAttribution } from "@/lib/sync/attribution";
 import { syncTranscriptions } from "@/lib/sync/transcribe";
+import { syncMessageClassification } from "@/lib/sync/classify-messages";
+import { backfillCallThreads } from "@/lib/sync/thread-backfill";
 import { syncLsaLeads } from "@/lib/sync/lsa";
 import { syncConversions } from "@/lib/sync/conversions";
 import { syncFacebookLeads } from "@/lib/sync/facebook-leads";
 import { releaseExpired } from "@/lib/dni/assign";
-import { backfillVoiceFallback } from "@/lib/twilio/numbers";
+import { backfillNumberWebhooks } from "@/lib/twilio/numbers";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -40,11 +42,17 @@ export async function POST(_req: Request, { params }: { params: Promise<{ job: s
         await releaseExpired();
         return Response.json({ ok: true, result: "released expired leases" });
       case "twilio-fallback":
-        // Point every tracking number's Twilio voice fallback at its forward
-        // destination, so calls still connect if the app is ever unreachable.
-        return Response.json({ ok: true, result: await backfillVoiceFallback() });
+        // Re-assert every tracking number's Twilio webhooks: the voice fallback
+        // (so calls still connect if the app is unreachable) and the SMS webhook.
+        return Response.json({ ok: true, result: await backfillNumberWebhooks() });
       case "transcribe":
         return Response.json({ ok: true, result: await syncTranscriptions({ limit: 25 }) });
+      case "classify-messages":
+        return Response.json({ ok: true, result: await syncMessageClassification({ limit: 25 }) });
+      case "thread-backfill":
+        // One-shot (repeatable): file pre-inbox calls into conversation threads.
+        // `more: true` in the result means run it again for the next batch.
+        return Response.json({ ok: true, result: await backfillCallThreads() });
       case "lsa":
         return Response.json({ ok: true, result: await syncLsaLeads({ sinceDays: 30 }) });
       case "conversions":
@@ -56,13 +64,17 @@ export async function POST(_req: Request, { params }: { params: Promise<{ job: s
         // leads/estimates get matched in the same run. `?days=N` widens hcp, fbleads
         // AND spend for a historical backfill; attribution + conversions follow.
         const transcribe = await syncTranscriptions({ limit: 25 });
+        const texts = await syncMessageClassification({ limit: 25 });
         const lsa = await syncLsaLeads({ sinceDays: 30 });
         const fbleads = await syncFacebookLeads(days ? { sinceDays: days } : {});
         const hcp = await syncHcp(days ? { sinceDays: days } : {});
         const spend = await syncSpend(days ? { sinceDays: days } : {});
         const attribution = await runAttribution({ windowDays: 90 });
+        // No window override — syncConversions defaults to 90 days to match
+        // Google's click lookback; 60 silently dropped leads whose estimate was
+        // approved 60-90 days after the lead came in.
         const conversions = await syncConversions();
-        return Response.json({ ok: true, result: { transcribe, lsa, fbleads, hcp, spend, attribution, conversions } });
+        return Response.json({ ok: true, result: { transcribe, texts, lsa, fbleads, hcp, spend, attribution, conversions } });
       }
       default:
         return Response.json({ error: `unknown job '${job}'` }, { status: 400 });

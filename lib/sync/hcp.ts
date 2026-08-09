@@ -3,6 +3,7 @@ import { db } from "@/lib/db/client";
 import { hcpCustomers, hcpEstimates, hcpJobs } from "@/lib/db/schema";
 import { revenueProvider } from "@/lib/integrations";
 import { normalizeEmail, normalizePhone } from "@/lib/phone";
+import { linkContactsToHcpCustomers } from "@/lib/contacts/link-hcp";
 import { incrementalWindowDays, withSyncRun } from "./run";
 
 // Fixed window for jobs (whose server-side scheduled_start filter must stay broad).
@@ -200,10 +201,17 @@ export async function syncHcp(
         }),
     );
 
+    // Now that customers are fresh, tie inbox threads to them. This is the
+    // direction the per-contact lookup can't cover: someone texts as a stranger
+    // on Monday and is created in HousecallPro on Tuesday — their thread should
+    // start showing their name without them having to text again.
+    const { linked } = await linkContactsToHcpCustomers();
+
     const wonEstimates = estimates.filter((e) => e.won).length;
     const wonValueCents = estimates.filter((e) => e.won).reduce((s, e) => s + (e.approvedAmountCents || 0), 0);
     return {
       customers: customers.length,
+      contactsLinked: linked,
       jobs: jobs.length,
       estimates: estimates.length,
       wonEstimates,

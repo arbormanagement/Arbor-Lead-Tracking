@@ -1,15 +1,9 @@
-import { and, desc, eq, gt, isNull, or } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { db } from "@/lib/db/client";
-import {
-  calls,
-  campaigns,
-  leads,
-  numberAssignments,
-  sources,
-  spamRules,
-  trackingNumbers,
-} from "@/lib/db/schema";
+import { calls, campaigns, leads, numberAssignments, trackingNumbers } from "@/lib/db/schema";
 import { validateTwilioSignature, parseTwilioForm } from "@/lib/twilio/signature";
+import { ensureSourceId, isHardSpamNumber, resolveInboundAttribution } from "@/lib/twilio/inbound";
+import { recordThreadActivity, upsertThread } from "@/lib/messaging/thread";
 import { getDefaultForwardNumber } from "@/lib/routing";
 import {
   DEFAULT_RECORDING_NOTICE,
@@ -23,8 +17,6 @@ import { env } from "@/lib/env";
 
 export const runtime = "nodejs";
 
-const GRACE_MS = 15 * 60 * 1000; // resolve a recently-released lease to its source
-
 /**
  * Hard ceiling on attribution work before we forward anyway. Twilio gives the
  * webhook ~15s, but the caller hears silence the whole time, so the real budget is
@@ -33,7 +25,7 @@ const GRACE_MS = 15 * 60 * 1000; // resolve a recently-released lease to its sou
  * A try/catch alone does NOT enforce this: it fires on a thrown error, never on
  * slowness. A saturated-but-alive pool (max 5 connections, shared with the
  * dashboard) or a DB accepting connections but responding slowly would block this
- * route through ~8-11 sequential round-trips with no bail-out — the caller hears
+ * route through its sequential round-trips with no bail-out — the caller hears
  * dead air until Twilio times out and falls back. This deadline is what makes the
  * "never leave a caller in dead air" promise actually hold.
  */
@@ -66,17 +58,15 @@ export async function POST(req: Request) {
   try {
     // The losing side keeps running: `recordCall` is idempotent on
     // twilio_call_sid, so a lookup that lands after the deadline still records
-    // the call. We trade attribution-in-the-TwiML for never stalling the caller.
+    // the call and threads it. We trade attribution-in-the-TwiML for never
+    // stalling the caller.
     return xmlResponse(await Promise.race([buildCallTwiml(params, dest), deadline]));
   } finally {
     clearTimeout(timer);
   }
 }
 
-async function buildCallTwiml(
-  params: Record<string, string>,
-  dest: { current: string },
-): Promise<string> {
+async function buildCallTwiml(params: Record<string, string>, dest: { current: string }): Promise<string> {
   const callSid = params.CallSid;
   const fromRaw = params.From;
   const calledNumber = params.To; // the tracking number that was dialed
@@ -108,42 +98,10 @@ async function buildCallTwiml(
     // 2) Resolve attribution.
     //    Static numbers map straight to their source; pooled numbers resolve to
     //    the most-recent (active or recently-released) session lease.
-    let sourceKey: string | null = null;
-    let assignmentId: string | null = null;
-    // The full lease, not just its source. Everything else frozen onto it at
-    // assign time (campaign, keyword, click ids, landing page, session/visitor)
-    // belongs on the lead too — see recordCall.
-    let lease: typeof numberAssignments.$inferSelect | null = null;
-
-    if (tn.isStatic && tn.staticSourceId) {
-      const [src] = await db
-        .select({ key: sources.key })
-        .from(sources)
-        .where(eq(sources.id, tn.staticSourceId))
-        .limit(1);
-      sourceKey = src?.key ?? null;
-    } else {
-      const graceCutoff = new Date(Date.now() - GRACE_MS);
-      const [assignment] = await db
-        .select()
-        .from(numberAssignments)
-        .where(
-          and(
-            eq(numberAssignments.trackingNumberId, tn.id),
-            or(isNull(numberAssignments.releasedAt), gt(numberAssignments.releasedAt, graceCutoff)),
-          ),
-        )
-        .orderBy(desc(numberAssignments.assignedAt))
-        .limit(1);
-      if (assignment) {
-        assignmentId = assignment.id;
-        sourceKey = assignment.source ?? null;
-        lease = assignment;
-      }
-    }
+    const { sourceKey, assignmentId, lease } = await resolveInboundAttribution(tn);
 
     // 3) Spam pre-check (hard rules only — keep it fast).
-    if (fromE164 && (await isHardSpam(fromE164))) {
+    if (fromE164 && (await isHardSpamNumber(fromE164))) {
       await recordCall({ callSid, fromE164, tn, assignmentId, lease, sourceKey, destination, status: "rejected_spam" });
       return rejectTwiml();
     }
@@ -164,6 +122,8 @@ async function buildCallTwiml(
     //    because +16182059924 is Chloe, who opens with "on a recorded line" — and note
     //    that is model-generated (Retell `begin_message` is null), not a fixed script.
     //    Re-enable the greeting for any number pointed at a human or a bare voicemail.
+    //    A CUSTOM greeting no longer suppresses the notice — forwardTwiml appends it
+    //    unless the configured text already mentions recording.
     // NO default whisper. A whisper is TwiML on <Number url=…>, which plays into the
     // ANSWERING party's ear before the caller is bridged — and the forward destination
     // is Retell's voice agent (Chloe), not a human rep. Retell's ASR transcribes the
@@ -187,22 +147,6 @@ async function buildCallTwiml(
   }
 }
 
-async function isHardSpam(fromE164: string): Promise<boolean> {
-  const rules = await db
-    .select()
-    .from(spamRules)
-    .where(and(eq(spamRules.field, "from_number"), eq(spamRules.enabled, true), eq(spamRules.action, "reject")));
-  return rules.some((r) => {
-    try {
-      return new RegExp(r.pattern).test(fromE164);
-    } catch {
-      // A bad pattern must never 500 the hot path — skip the rule and surface it.
-      console.warn("[twilio/voice] invalid spam rule pattern — skipping:", r.pattern);
-      return false;
-    }
-  });
-}
-
 async function recordCall(args: {
   callSid: string;
   fromE164: string | null;
@@ -215,26 +159,13 @@ async function recordCall(args: {
 }) {
   const { callSid, fromE164, tn, assignmentId, lease, sourceKey, destination, status } = args;
 
-  // Resolve source id (best-effort) for the denormalized lead row. Create the
-  // row when missing — a DNI lease can freeze a key (e.g. facebook/organic)
-  // before any pageview reached /api/track to create it (ad-blocked snippet).
-  let sourceId: string | null = null;
-  if (sourceKey) {
-    let [src] = await db.select({ id: sources.id }).from(sources).where(eq(sources.key, sourceKey)).limit(1);
-    if (!src) {
-      await db
-        .insert(sources)
-        .values({ key: sourceKey, displayName: sourceKey })
-        .onConflictDoNothing({ target: sources.key });
-      [src] = await db.select({ id: sources.id }).from(sources).where(eq(sources.key, sourceKey)).limit(1);
-    }
-    sourceId = src?.id ?? null;
-  }
+  // Resolve source id (best-effort) for the denormalized lead row.
+  const sourceId = await ensureSourceId(sourceKey);
 
   // Link to an EXISTING campaign by name only. The lease carries `utm_campaign`
   // text, while campaigns are keyed (platform, external_campaign_id) by the spend
-  // sync — so we match if the ad platform's campaign name happens to be what the
-  // URL carried, and otherwise leave it null. Deliberately never creates a row:
+  // sync — so we match when the ad platform's campaign name is what the URL
+  // carried, and otherwise leave it null. Deliberately never creates a row:
   // minting campaigns from arbitrary query-string text would pollute the dimension
   // that drives ROI grouping and the recruiting-exclusion UI.
   let campaignId: string | null = null;
@@ -276,19 +207,40 @@ async function recordCall(args: {
   // Another delivery won the race — its call row (and lead) already exist.
   if (!inserted) return;
 
+  // Thread it FIRST, so the lead is born already attached to the caller's
+  // conversation — a returning customer's new call joins the thread that already
+  // holds their form submission and last month's texts. Best-effort: the inbox is
+  // a read surface, and a threading failure must never cost us the forward TwiML.
+  let thread: Awaited<ReturnType<typeof upsertThread>> = null;
+  try {
+    thread = await upsertThread(
+      { phone: fromE164 },
+      {
+        endpointKey: tn.phoneNumber,
+        trackingNumberId: tn.id,
+        numberAssignmentId: assignmentId,
+        sourceId,
+      },
+    );
+  } catch (err) {
+    console.error("[twilio/voice] threading failed (call still recorded)", err);
+  }
+
   // Carry the DNI lease's frozen attribution onto the lead. Copying only the
   // source discarded the campaign, keyword, click ids, landing page and the
   // session/visitor link — all captured at assign time and all sitting on the
   // lease. Nothing backfilled them, so every DNI call lead reached `attributions`
   // and campaign-level roi_daily with a NULL campaign and NULL gclid: paid calls
-  // could be attributed to a source but never to the campaign or click that
-  // actually produced them, and the offline-conversion upload had no gclid to send.
+  // could be credited to a source but never to the campaign or click that actually
+  // produced them, and the offline-conversion upload had no gclid to send.
   const [lead] = await db
     .insert(leads)
     .values({
       type: "call",
       status: status === "rejected_spam" ? "spam" : "new",
       phoneE164: fromE164,
+      conversationId: thread?.conversationId ?? null,
+      contactId: thread?.contactId ?? null,
       sourceId,
       location: tn.location ?? "unknown",
       isSpam: status === "rejected_spam",
@@ -306,5 +258,20 @@ async function recordCall(args: {
     })
     .returning({ id: leads.id });
 
-  await db.update(calls).set({ leadId: lead.id }).where(eq(calls.id, inserted.id));
+  if (thread) {
+    try {
+      await recordThreadActivity(thread.conversationId, {
+        channel: "call",
+        direction: "inbound",
+        preview: status === "rejected_spam" ? "Blocked as spam" : "Inbound call",
+      });
+    } catch (err) {
+      console.error("[twilio/voice] thread activity failed (call still recorded)", err);
+    }
+  }
+
+  await db
+    .update(calls)
+    .set({ leadId: lead.id, conversationId: thread?.conversationId ?? null })
+    .where(eq(calls.id, inserted.id));
 }

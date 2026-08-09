@@ -46,6 +46,9 @@ falls back to `DATABASE_URL`.
    - `APP_BASE_URL` (set after step 3 gives you a domain)
    - `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_API_KEY_SID`, `TWILIO_API_KEY_SECRET`,
      `TWILIO_DEFAULT_DESTINATION=+16188368004`, `TWILIO_VOICE_WEBHOOK_BASE`
+   - Optional: `TWILIO_SMS_FORWARD_TO` — a mobile that can read texts, for relaying
+     inbound SMS. Also settable in-app at **Settings → Routing**. Leave unset and texts
+     are still captured in the Inbox, just not relayed anywhere.
    - `FACEBOOK_VERIFY_TOKEN` (any string; reused when subscribing the FB webhook)
    - **Platform API keys (HCP / Google Ads / Facebook / Deepgram) can be skipped here** and
      entered later in the app under **Settings → Integrations** (encrypted at rest).

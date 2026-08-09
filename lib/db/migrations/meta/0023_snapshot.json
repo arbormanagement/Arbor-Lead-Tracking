@@ -1,6 +1,6 @@
 {
-  "id": "4080571a-a573-485a-a2d0-0e1cb14328dd",
-  "prevId": "c8d35d61-3fc1-46cf-8ed7-5d18496d9246",
+  "id": "275a5dbc-6cb9-472e-9c58-8093487beef3",
+  "prevId": "0937997c-3557-4f3c-b372-0b05b70bc44a",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -245,6 +245,21 @@
           "columns": [
             {
               "expression": "lead_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "attributions_touch_type_idx": {
+          "name": "attributions_touch_type_idx",
+          "columns": [
+            {
+              "expression": "touch_type",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -578,6 +593,21 @@
           "columns": [
             {
               "expression": "tracking_number_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "calls_created_at_idx": {
+          "name": "calls_created_at_idx",
+          "columns": [
+            {
+              "expression": "created_at",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -2633,6 +2663,21 @@
           "method": "btree",
           "with": {}
         },
+        "leads_campaign_idx": {
+          "name": "leads_campaign_idx",
+          "columns": [
+            {
+              "expression": "campaign_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
         "leads_type_external_id_uq": {
           "name": "leads_type_external_id_uq",
           "columns": [
@@ -3216,7 +3261,7 @@
               "nulls": "last"
             }
           ],
-          "isUnique": false,
+          "isUnique": true,
           "where": "released_at IS NULL",
           "concurrently": false,
           "method": "btree",
@@ -3501,39 +3546,6 @@
         }
       },
       "indexes": {
-        "roi_daily_key_uq": {
-          "name": "roi_daily_key_uq",
-          "columns": [
-            {
-              "expression": "date",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "source_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "campaign_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "location",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
         "roi_daily_date_idx": {
           "name": "roi_daily_date_idx",
           "columns": [
@@ -3579,7 +3591,18 @@
         }
       },
       "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
+      "uniqueConstraints": {
+        "roi_daily_key_uq": {
+          "name": "roi_daily_key_uq",
+          "nullsNotDistinct": true,
+          "columns": [
+            "date",
+            "source_id",
+            "campaign_id",
+            "location"
+          ]
+        }
+      },
       "policies": {},
       "checkConstraints": {},
       "isRLSEnabled": false
@@ -3818,6 +3841,22 @@
             }
           ],
           "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "sync_runs_one_running_uq": {
+          "name": "sync_runs_one_running_uq",
+          "columns": [
+            {
+              "expression": "job",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"sync_runs\".\"status\" = 'running'",
           "concurrently": false,
           "method": "btree",
           "with": {}

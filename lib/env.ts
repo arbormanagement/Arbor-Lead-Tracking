@@ -43,6 +43,9 @@ export const env = createEnv({
     TWILIO_API_KEY_SECRET: z.string().optional(),
     TWILIO_DEFAULT_DESTINATION: z.string().default("+16188368004"),
     TWILIO_VOICE_WEBHOOK_BASE: z.string().url().optional(),
+    // Where inbound texts are relayed. No default: the call default may point at
+    // the voice agent, which cannot read a text (see lib/routing.ts).
+    TWILIO_SMS_FORWARD_TO: z.string().optional(),
 
     DEEPGRAM_API_KEY: z.string().optional(),
     BLOB_READ_WRITE_TOKEN: z.string().optional(),
@@ -120,6 +123,7 @@ export const env = createEnv({
     TWILIO_API_KEY_SECRET: process.env.TWILIO_API_KEY_SECRET,
     TWILIO_DEFAULT_DESTINATION: process.env.TWILIO_DEFAULT_DESTINATION,
     TWILIO_VOICE_WEBHOOK_BASE: process.env.TWILIO_VOICE_WEBHOOK_BASE,
+    TWILIO_SMS_FORWARD_TO: process.env.TWILIO_SMS_FORWARD_TO,
     DEEPGRAM_API_KEY: process.env.DEEPGRAM_API_KEY,
     BLOB_READ_WRITE_TOKEN: process.env.BLOB_READ_WRITE_TOKEN,
     ARBOR_MCP_URL: process.env.ARBOR_MCP_URL,

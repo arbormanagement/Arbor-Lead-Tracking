@@ -10,7 +10,7 @@
 UPDATE "sync_runs" SET
   "status" = 'error',
   "finished_at" = COALESCE("finished_at", now()),
-  "error" = COALESCE("error", 'superseded — concurrent run reconciled by migration 0021')
+  "error" = COALESCE("error", 'superseded — concurrent run reconciled by migration 0022')
 WHERE "status" = 'running'
   AND "id" NOT IN (
     SELECT DISTINCT ON ("job") "id" FROM "sync_runs"

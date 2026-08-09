@@ -1,14 +1,14 @@
-import { and, desc, eq, gte, ne, or, sql } from "drizzle-orm";
+import { and, desc, eq, gte, sql } from "drizzle-orm";
 import Link from "next/link";
 import type { ReactNode } from "react";
 import { campaignNotExcluded, excludedCampaignIds } from "@/lib/campaigns";
 import { db } from "@/lib/db/client";
 import { campaigns, leads, sources } from "@/lib/db/schema";
 import { dateTime, dollars } from "@/lib/format";
+import { isQualifiedLead } from "@/lib/leads/qualified";
 import { formatPhoneDisplay } from "@/lib/phone";
 import { pickDays, timeframeLabel } from "@/lib/timeframes";
 import { businessDate } from "@/lib/tz";
-import { LeadToggle } from "../lead-toggle";
 import { ViewControls } from "./view-controls";
 import { DIMS, parseGroups, type Dim } from "./view";
 import { stageClass, TYPE_META } from "./stage";
@@ -16,7 +16,8 @@ import { stageClass, TYPE_META } from "./stage";
 export const dynamic = "force-dynamic";
 
 // ── Grouping / pivot ──────────────────────────────────────────────────────────
-const STAGE_ORDER = ["new", "qualified", "quoted", "won", "lost", "cancelled", "spam"];
+// No "spam" — spam can't reach this page (see isQualifiedLead).
+const STAGE_ORDER = ["new", "working", "qualified", "quoted", "won", "lost", "cancelled"];
 const DATE_DIMS: Dim[] = ["day", "week", "month"];
 
 interface Row {
@@ -34,9 +35,8 @@ interface Row {
   sales: number | null;
   quote: number | null;
   occurredAt: Date;
-  isSpam: boolean | null;
-  isLead: boolean | null;
-  isLeadManual: boolean | null;
+  /** Why this counts as a lead (classifier verdict or the human override). */
+  leadReason: string | null;
 }
 
 interface Agg {
@@ -74,7 +74,7 @@ function dimKey(r: Row, dim: Dim): string {
   switch (dim) {
     case "source": return r.sourceKey ?? "unattributed";
     case "campaign": return r.campaignName ?? "no campaign";
-    case "stage": return r.isSpam ? "spam" : r.status;
+    case "stage": return r.status;
     case "type": return r.type;
     case "location": return r.location ?? "unknown";
     // Business-timezone buckets. toISOString() would put a 10pm CT lead in
@@ -160,11 +160,8 @@ export default async function InboxPage({
   const days = pickDays(daysParam, 90);
   const since = new Date(Date.now() - days * 86_400_000);
 
-  // A call only counts as a lead once classified (caller requested an estimate);
-  // forms/FB/etc. are inherently leads. So the inbox = non-call types OR lead-calls.
-  const leadOnly = or(ne(leads.type, "call"), eq(leads.isLead, true));
   // Recruiting/brand campaigns are not customer acquisition — they must not appear
-  // in the inbox or its dollar totals, or grouped-by-source figures here will not
+  // in this list or its dollar totals, or grouped-by-source figures here will not
   // reconcile with the Sources page (which reads roi_daily, where they are excluded).
   const excludedIds = await excludedCampaignIds();
 
@@ -184,41 +181,40 @@ export default async function InboxPage({
       sales: leads.salesValueCents,
       quote: leads.quoteValueCents,
       occurredAt: leads.occurredAt,
-      isSpam: leads.isSpam,
-      isLead: leads.isLead,
-      isLeadManual: leads.isLeadManual,
+      leadReason: leads.leadReason,
     })
     .from(leads)
     .leftJoin(sources, eq(leads.sourceId, sources.id))
     .leftJoin(campaigns, eq(leads.campaignId, campaigns.id))
-    .where(and(gte(leads.occurredAt, since), leadOnly, campaignNotExcluded(leads.campaignId, excludedIds)))
+    .where(and(gte(leads.occurredAt, since), isQualifiedLead, campaignNotExcluded(leads.campaignId, excludedIds)))
     .orderBy(desc(leads.occurredAt))
     // Grouped views aggregate, so they get the full window; the flat list stays short.
     .limit(groups.length ? 1000 : 200);
 
   const rows: Row[] = fetched;
 
-  // Counted over the same population the table renders, minus spam — and the spam
-  // count is surfaced alongside so the two reconcile. The table deliberately shows
-  // spam rows (there is no other place to review a bad spam call), and the group
-  // aggregates count them, so reporting only a spam-free total here left the
-  // subtitle silently disagreeing with the sum of the visible group counts.
+  // Counted over EXACTLY the population the table renders — same predicate, same
+  // campaign exclusion — so the subtitle can never disagree with the sum of the
+  // visible group counts. (Spam needs no special handling here: isQualifiedLead
+  // already excludes it from both, so a spam-only filter would always be zero.)
   const [agg] = await db
     .select({
-      total: sql<number>`count(*) filter (where ${leads.isSpam} = false)::int`,
-      quoted: sql<number>`count(*) filter (where ${leads.isSpam} = false and ${leads.quoteValueCents} > 0)::int`,
-      won: sql<number>`count(*) filter (where ${leads.isSpam} = false and ${leads.status} = 'won')::int`,
-      spam: sql<number>`count(*) filter (where ${leads.isSpam})::int`,
+      total: sql<number>`count(*)::int`,
+      quoted: sql<number>`count(*) filter (where ${leads.quoteValueCents} > 0)::int`,
+      won: sql<number>`count(*) filter (where ${leads.status} = 'won')::int`,
     })
     .from(leads)
-    .where(and(gte(leads.occurredAt, since), leadOnly, campaignNotExcluded(leads.campaignId, excludedIds)));
+    .where(and(gte(leads.occurredAt, since), isQualifiedLead, campaignNotExcluded(leads.campaignId, excludedIds)));
 
   const leadRow = (r: Row) => {
     const t = TYPE_META[r.type] ?? { ic: "•", label: r.type };
     return (
       <tr key={r.id}>
         <td className="muted mono nowrap">{dateTime(r.occurredAt)}</td>
-        <td className="col-hide-sm"><span className="src"><span style={{ opacity: 0.85 }}>{t.ic}</span>{t.label}</span></td>
+        {/* Reason on hover — "why is this in my leads?" answered without a click. */}
+        <td className="col-hide-sm" title={r.leadReason ?? undefined}>
+          <span className="src"><span style={{ opacity: 0.85 }}>{t.ic}</span>{t.label}</span>
+        </td>
         <td>
           <Link href={`/leads/${r.id}`} className="rowlink">
             <div style={{ fontWeight: 600 }}>{r.name || formatPhoneDisplay(r.phone) || r.email || "—"}</div>
@@ -235,8 +231,7 @@ export default async function InboxPage({
             </div>
           )}
         </td>
-        <td><span className={r.isSpam ? "badge bad" : stageClass(r.status)}>{r.isSpam ? "spam" : r.status}</span></td>
-        <td className="col-hide-sm">{r.type === "call" ? <LeadToggle leadId={r.id} isLead={r.isLead} manual={r.isLeadManual ?? false} /> : <span className="muted" style={{ fontSize: 12 }}>✓</span>}</td>
+        <td><span className={stageClass(r.status)}>{r.status}</span></td>
         <td className="mono" style={{ textAlign: "right" }}>
           {r.sales ? <span style={{ color: "var(--accent)", fontWeight: 700 }}>{dollars(r.sales)}</span>
             : r.quote ? <span className="muted">{dollars(r.quote)} quoted</span> : "—"}
@@ -256,7 +251,7 @@ export default async function InboxPage({
       const rowKey = `${keyPrefix}/${dim}:${k}`;
       return [
         <tr key={rowKey} style={{ background: "var(--panel-2)" }}>
-          <td colSpan={6} style={depth > 0 ? { paddingLeft: 16 + depth * 18, fontSize: 12.5 } : undefined}>
+          <td colSpan={5} style={depth > 0 ? { paddingLeft: 16 + depth * 18, fontSize: 12.5 } : undefined}>
             {depth > 0 && <span style={{ color: "var(--faint)", marginRight: 7 }}>↳</span>}
             <GroupHeadLabel k={k} dim={dim} a={a} />
           </td>
@@ -271,14 +266,13 @@ export default async function InboxPage({
 
   const tableHead = (
     <thead>
-      {/* Source and Lead? hide on phones so Stage/Value stay in view. */}
+      {/* Type and Source hide on phones so Stage/Value stay in view. */}
       <tr>
         <th>When</th>
         <th className="col-hide-sm">Type</th>
         <th>Contact</th>
         <th className="col-hide-sm">Source</th>
         <th>Stage</th>
-        <th className="col-hide-sm">Lead?</th>
         <th style={{ textAlign: "right" }}>Value</th>
       </tr>
     </thead>
@@ -352,7 +346,7 @@ export default async function InboxPage({
         <div>
           <h1 className="page-title">Leads</h1>
           <p className="page-sub">
-            Real leads only — a call appears when the caller requested an estimate · {agg?.total ?? 0} leads · {agg?.quoted ?? 0} quoted · {agg?.won ?? 0} won{(agg?.spam ?? 0) > 0 ? ` · ${agg!.spam} spam (shown, not counted)` : ""} · {timeframeLabel(days)}
+            Confirmed estimate requests only · {agg?.total ?? 0} leads · {agg?.quoted ?? 0} quoted · {agg?.won ?? 0} won · {timeframeLabel(days)}
           </p>
         </div>
         <div className="controls">
@@ -361,7 +355,10 @@ export default async function InboxPage({
       </div>
 
       {rows.length === 0 ? (
-        <div className="empty">No leads captured yet.</div>
+        <div className="empty">
+          No confirmed estimate requests in this window.{" "}
+          <Link href="/inbox" className="link">Check the inbox</Link> for calls and texts still awaiting review.
+        </div>
       ) : (
         <>
           {groups.length >= 2 && pivot()}

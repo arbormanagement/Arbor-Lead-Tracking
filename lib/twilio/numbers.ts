@@ -86,12 +86,28 @@ function voiceFallbackFor(destination: string): { voiceFallbackUrl: string; voic
 }
 
 /**
- * Point every active tracking number's voice fallback at its forward destination
- * (or the account default). Idempotent — safe to re-run after changing routing.
+ * Inbound SMS webhook. No Twilio-side fallback equivalent to the voice twimlet:
+ * if the app is down Twilio retries, and the /sms route is idempotent, so a text
+ * is delayed rather than lost.
  */
-export async function backfillVoiceFallback() {
+function smsWebhookFor(base: string): { smsUrl: string; smsMethod: "POST" } {
+  return { smsUrl: `${base}/sms`, smsMethod: "POST" };
+}
+
+/**
+ * Re-assert every active tracking number's Twilio-side webhooks: the voice
+ * fallback (pointed at its forward destination or the account default) and the
+ * inbound SMS webhook. Idempotent — safe to re-run after changing routing, and
+ * run hourly by the `twilio-fallback` cron so no number can drift.
+ *
+ * This is also how numbers provisioned before SMS support existed — the ten
+ * transferred from CallRail — get their `smsUrl` set without anyone touching the
+ * Twilio console. Until it runs, a text to those numbers goes nowhere.
+ */
+export async function backfillNumberWebhooks() {
   const client = await getTwilioClient();
   const defaultForward = await getDefaultForwardNumber();
+  const base = await webhookBase();
   const rows = await db.select().from(trackingNumbers).where(eq(trackingNumbers.status, "active"));
 
   let updated = 0;
@@ -99,7 +115,10 @@ export async function backfillVoiceFallback() {
   for (const row of rows) {
     if (!row.twilioSid) continue;
     try {
-      await client.incomingPhoneNumbers(row.twilioSid).update(voiceFallbackFor(row.forwardDestination ?? defaultForward));
+      await client.incomingPhoneNumbers(row.twilioSid).update({
+        ...voiceFallbackFor(row.forwardDestination ?? defaultForward),
+        ...smsWebhookFor(base),
+      });
       updated++;
     } catch (err) {
       errors.push(`${row.phoneNumber}: ${err instanceof Error ? err.message : String(err)}`);
@@ -120,6 +139,7 @@ export async function provisionNumber(opts: ProvisionOpts) {
     voiceUrl: `${base}/voice`,
     voiceMethod: "POST" as const,
     ...voiceFallbackFor(opts.forwardDestination ?? (await getDefaultForwardNumber())),
+    ...smsWebhookFor(base),
     statusCallback: `${base}/status`,
     statusCallbackMethod: "POST" as const,
     friendlyName: opts.friendlyName ?? `arbor:${opts.pool}`,

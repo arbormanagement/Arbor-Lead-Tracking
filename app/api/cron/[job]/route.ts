@@ -4,11 +4,13 @@ import { syncSpend } from "@/lib/sync/spend";
 import { syncHcp } from "@/lib/sync/hcp";
 import { runAttribution } from "@/lib/sync/attribution";
 import { syncTranscriptions } from "@/lib/sync/transcribe";
+import { syncMessageClassification } from "@/lib/sync/classify-messages";
+import { backfillCallThreads } from "@/lib/sync/thread-backfill";
 import { syncLsaLeads } from "@/lib/sync/lsa";
 import { syncConversions } from "@/lib/sync/conversions";
 import { syncFacebookLeads } from "@/lib/sync/facebook-leads";
 import { releaseExpired } from "@/lib/dni/assign";
-import { backfillVoiceFallback } from "@/lib/twilio/numbers";
+import { backfillNumberWebhooks } from "@/lib/twilio/numbers";
 
 export const runtime = "nodejs";
 
@@ -37,6 +39,13 @@ export async function GET(req: Request, { params }: { params: Promise<{ job: str
         return Response.json({ ok: true, job, result: "released expired leases" });
       case "transcribe":
         return Response.json({ ok: true, job, result: await syncTranscriptions({ limit: 25 }) });
+      case "classify-messages":
+        return Response.json({ ok: true, job, result: await syncMessageClassification({ limit: 25 }) });
+      case "thread-backfill":
+        // Both the history backfill and the ongoing repair path: threading in the
+        // /voice hot path is best-effort (it must never cost a forward), so any
+        // call that missed its thread is picked up here on the next tick.
+        return Response.json({ ok: true, job, result: await backfillCallThreads() });
       case "hcp":
         return Response.json({ ok: true, job, result: await syncHcp() });
       case "spend":
@@ -50,9 +59,10 @@ export async function GET(req: Request, { params }: { params: Promise<{ job: str
       case "fbleads":
         return Response.json({ ok: true, job, result: await syncFacebookLeads() });
       case "twilio-fallback":
-        // Self-healing: re-assert every tracking number's Twilio voice fallback
-        // (outage protection) so no number can drift or be missed by a manual path.
-        return Response.json({ ok: true, job, result: await backfillVoiceFallback() });
+        // Self-healing: re-assert every tracking number's Twilio webhooks — voice
+        // fallback (outage protection) and inbound SMS — so no number can drift or
+        // be missed by a manual path.
+        return Response.json({ ok: true, job, result: await backfillNumberWebhooks() });
       // Convenience aggregates so a single daily cron can do the revenue→ROI chain.
       case "revenue": {
         const hcp = await syncHcp();
