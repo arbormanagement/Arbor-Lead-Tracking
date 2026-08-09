@@ -1,12 +1,13 @@
 import { and, desc, eq, gte, sql, type SQL } from "drizzle-orm";
 import Link from "next/link";
 import { db } from "@/lib/db/client";
-import { contacts, conversations } from "@/lib/db/schema";
+import { contacts, conversations, hcpCustomers } from "@/lib/db/schema";
 import { dateTime } from "@/lib/format";
 import { CHANNEL_META, type ThreadChannel } from "@/lib/messaging/channels";
 import { formatPhoneDisplay } from "@/lib/phone";
 import { pickDays, timeframeLabel } from "@/lib/timeframes";
 import { ChannelTabs } from "./channel-tabs";
+import { contactName } from "./contact-name";
 import { parseChannel, parseState, type Channel } from "./channels";
 import { InboxControls } from "./inbox-controls";
 
@@ -49,9 +50,14 @@ export default async function InboxPage({
         phone: contacts.primaryPhone,
         email: contacts.primaryEmail,
         optedOut: contacts.smsOptedOutAt,
+        // HousecallPro owns the customer record — read the name through the
+        // link rather than trusting whatever a web form happened to capture.
+        hcpFirst: hcpCustomers.firstName,
+        hcpLast: hcpCustomers.lastName,
       })
       .from(conversations)
       .innerJoin(contacts, eq(conversations.contactId, contacts.id))
+      .leftJoin(hcpCustomers, eq(contacts.hcpCustomerId, hcpCustomers.id))
       .where(and(...filters))
       .orderBy(desc(conversations.lastActivityAt))
       .limit(ROW_LIMIT),
@@ -119,9 +125,18 @@ export default async function InboxPage({
                     <td>
                       <Link href={`/inbox/${t.id}`} className="rowlink">
                         <div style={{ fontWeight: unreadRow ? 700 : 600 }}>
-                          {t.name || displayContact(t.phone) || t.email || "Unknown"}
+                          {contactName(t) || displayContact(t.phone) || t.email || "Unknown"}
+                          {t.hcpFirst || t.hcpLast ? (
+                            <span
+                              className="badge"
+                              title="Existing HousecallPro customer"
+                              style={{ marginLeft: 7, fontSize: 10, fontWeight: 600 }}
+                            >
+                              customer
+                            </span>
+                          ) : null}
                         </div>
-                        {(t.name || t.email) && t.phone && (
+                        {(contactName(t) || t.email) && t.phone && (
                           <div className="muted nowrap" style={{ fontSize: 12 }}>{displayContact(t.phone)}</div>
                         )}
                       </Link>

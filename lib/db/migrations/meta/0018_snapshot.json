@@ -1,5 +1,5 @@
 {
-  "id": "dbcefa7b-cf3b-4c67-abb5-392e6bd212a1",
+  "id": "441a24f9-d063-46d6-9354-6cf013a9aaaf",
   "prevId": "48002dae-5f0e-4132-a39f-2686f78d4ed4",
   "version": "7",
   "dialect": "postgresql",
@@ -884,6 +884,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "hcp_customer_id": {
+          "name": "hcp_customer_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "primary_phone": {
           "name": "primary_phone",
           "type": "text",
@@ -931,8 +937,38 @@
           "default": "now()"
         }
       },
-      "indexes": {},
-      "foreignKeys": {},
+      "indexes": {
+        "contacts_hcp_customer_idx": {
+          "name": "contacts_hcp_customer_idx",
+          "columns": [
+            {
+              "expression": "hcp_customer_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "contacts_hcp_customer_id_hcp_customers_id_fk": {
+          "name": "contacts_hcp_customer_id_hcp_customers_id_fk",
+          "tableFrom": "contacts",
+          "tableTo": "hcp_customers",
+          "columnsFrom": [
+            "hcp_customer_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},

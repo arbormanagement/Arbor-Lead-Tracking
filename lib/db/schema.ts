@@ -409,6 +409,13 @@ export const hcpEstimates = pgTable(
 export const contacts = pgTable("contacts", {
   id: id(),
   displayName: text("display_name"),
+  /**
+   * The HousecallPro customer this person turned out to be, matched on phone or
+   * email. A LINK, not a copy: HCP owns the customer record, so their name,
+   * address and history are read through this rather than duplicated here. Null
+   * simply means "not a customer yet" — which is most of the inbox.
+   */
+  hcpCustomerId: text("hcp_customer_id").references(() => hcpCustomers.id),
   // Best-known primaries, for display and for picking a reply target.
   primaryPhone: text("primary_phone"),
   primaryEmail: text("primary_email"),
@@ -422,7 +429,7 @@ export const contacts = pgTable("contacts", {
   lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).notNull().defaultNow(),
   createdAt: createdAt(),
   updatedAt: updatedAt(),
-});
+}, (t) => [index("contacts_hcp_customer_idx").on(t.hcpCustomerId)]);
 
 /**
  * Every phone/email known to belong to a contact — the index identity resolution

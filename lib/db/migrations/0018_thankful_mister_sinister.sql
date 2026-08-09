@@ -15,6 +15,7 @@ CREATE TABLE "contact_identifiers" (
 CREATE TABLE "contacts" (
 	"id" text PRIMARY KEY NOT NULL,
 	"display_name" text,
+	"hcp_customer_id" text,
 	"primary_phone" text,
 	"primary_email" text,
 	"sms_opted_out_at" timestamp with time zone,
@@ -69,6 +70,7 @@ ALTER TABLE "form_submissions" ADD COLUMN "conversation_id" text;--> statement-b
 ALTER TABLE "leads" ADD COLUMN "conversation_id" text;--> statement-breakpoint
 ALTER TABLE "leads" ADD COLUMN "contact_id" text;--> statement-breakpoint
 ALTER TABLE "contact_identifiers" ADD CONSTRAINT "contact_identifiers_contact_id_contacts_id_fk" FOREIGN KEY ("contact_id") REFERENCES "public"."contacts"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "contacts" ADD CONSTRAINT "contacts_hcp_customer_id_hcp_customers_id_fk" FOREIGN KEY ("hcp_customer_id") REFERENCES "public"."hcp_customers"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "conversations" ADD CONSTRAINT "conversations_contact_id_contacts_id_fk" FOREIGN KEY ("contact_id") REFERENCES "public"."contacts"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "conversations" ADD CONSTRAINT "conversations_source_id_sources_id_fk" FOREIGN KEY ("source_id") REFERENCES "public"."sources"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "conversations" ADD CONSTRAINT "conversations_tracking_number_id_tracking_numbers_id_fk" FOREIGN KEY ("tracking_number_id") REFERENCES "public"."tracking_numbers"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
@@ -77,6 +79,7 @@ ALTER TABLE "messages" ADD CONSTRAINT "messages_conversation_id_conversations_id
 ALTER TABLE "messages" ADD CONSTRAINT "messages_lead_id_leads_id_fk" FOREIGN KEY ("lead_id") REFERENCES "public"."leads"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 CREATE UNIQUE INDEX "contact_identifiers_kind_value_uq" ON "contact_identifiers" USING btree ("kind","value");--> statement-breakpoint
 CREATE INDEX "contact_identifiers_contact_idx" ON "contact_identifiers" USING btree ("contact_id");--> statement-breakpoint
+CREATE INDEX "contacts_hcp_customer_idx" ON "contacts" USING btree ("hcp_customer_id");--> statement-breakpoint
 CREATE UNIQUE INDEX "conversations_contact_uq" ON "conversations" USING btree ("contact_id");--> statement-breakpoint
 CREATE INDEX "conversations_last_activity_idx" ON "conversations" USING btree ("last_activity_at");--> statement-breakpoint
 CREATE INDEX "conversations_state_idx" ON "conversations" USING btree ("state");--> statement-breakpoint

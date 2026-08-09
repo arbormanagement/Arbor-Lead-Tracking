@@ -2,6 +2,7 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { contactIdentifiers, contacts } from "@/lib/db/schema";
 import { normalizeEmail, normalizePhone } from "@/lib/phone";
+import { linkContactToHcpCustomer } from "./link-hcp";
 
 export interface ContactInput {
   phone?: string | null;
@@ -109,6 +110,19 @@ export async function resolveContact(input: ContactInput): Promise<typeof contac
     .insert(contactIdentifiers)
     .values(ids.map((i) => ({ contactId: contact.id, kind: i.kind, value: i.value })))
     .onConflictDoNothing();
+
+  // Is this an existing HousecallPro customer? One indexed lookup, and only when
+  // we don't already know — so a chatty thread doesn't re-ask on every message.
+  // Best-effort: this runs on the <3s voice path, and a name in the inbox is
+  // never worth risking a call forward. The post-HCP-sync sweep is the backstop.
+  if (!contact.hcpCustomerId) {
+    try {
+      const hcpId = await linkContactToHcpCustomer(contact.id);
+      if (hcpId) contact = { ...contact, hcpCustomerId: hcpId };
+    } catch (err) {
+      console.error("[contacts] HCP link failed (contact still resolved)", err);
+    }
+  }
 
   return contact;
 }

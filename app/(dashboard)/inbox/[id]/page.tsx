@@ -8,6 +8,7 @@ import {
   conversations,
   facebookLeads,
   formSubmissions,
+  hcpCustomers,
   leads,
   messages,
   sources,
@@ -18,6 +19,7 @@ import { markThreadRead } from "@/lib/messaging/thread";
 import { formatPhoneDisplay } from "@/lib/phone";
 import { LeadToggle } from "../../lead-toggle";
 import { stageClass } from "../../leads/stage";
+import { contactName } from "../contact-name";
 import { ReplyBox } from "./reply-box";
 import { ThreadStateButton } from "./thread-state";
 
@@ -25,7 +27,14 @@ export const dynamic = "force-dynamic";
 
 /** One entry in the timeline, normalized across the four activity tables. */
 type Entry =
-  | { kind: "call"; at: Date; row: typeof calls.$inferSelect }
+  | {
+      kind: "call";
+      at: Date;
+      row: typeof calls.$inferSelect;
+      dialedNumber: string | null;
+      dialedName: string | null;
+      leadReason: string | null;
+    }
   | { kind: "message"; at: Date; row: typeof messages.$inferSelect }
   | { kind: "form"; at: Date; row: typeof formSubmissions.$inferSelect }
   | { kind: "facebook"; at: Date; row: typeof facebookLeads.$inferSelect };
@@ -45,11 +54,15 @@ export default async function ThreadPage({ params }: { params: Promise<{ id: str
       sourceKey: sources.key,
       sourceName: sources.displayName,
       numberLabel: trackingNumbers.friendlyName,
+      hcpFirst: hcpCustomers.firstName,
+      hcpLast: hcpCustomers.lastName,
+      hcpExternalId: hcpCustomers.hcpCustomerId,
     })
     .from(conversations)
     .innerJoin(contacts, eq(conversations.contactId, contacts.id))
     .leftJoin(sources, eq(conversations.sourceId, sources.id))
     .leftJoin(trackingNumbers, eq(conversations.trackingNumberId, trackingNumbers.id))
+    .leftJoin(hcpCustomers, eq(contacts.hcpCustomerId, hcpCustomers.id))
     .where(eq(conversations.id, id))
     .limit(1);
   if (!row) notFound();
@@ -57,7 +70,18 @@ export default async function ThreadPage({ params }: { params: Promise<{ id: str
   const { thread, contact } = row;
 
   const [callRows, messageRows, formRows, fbRows, leadRows] = await Promise.all([
-    db.select().from(calls).where(eq(calls.conversationId, thread.id)).orderBy(asc(calls.createdAt)),
+    // Join the tracking number so the card can say which of your numbers they
+    // actually dialed — that's the whole point of running ten of them.
+    db
+      .select({
+        call: calls,
+        dialedNumber: trackingNumbers.phoneNumber,
+        dialedName: trackingNumbers.friendlyName,
+      })
+      .from(calls)
+      .leftJoin(trackingNumbers, eq(calls.trackingNumberId, trackingNumbers.id))
+      .where(eq(calls.conversationId, thread.id))
+      .orderBy(asc(calls.createdAt)),
     db.select().from(messages).where(eq(messages.conversationId, thread.id)).orderBy(asc(messages.occurredAt)),
     db.select().from(formSubmissions).where(eq(formSubmissions.conversationId, thread.id)),
     db.select().from(facebookLeads).where(eq(facebookLeads.conversationId, thread.id)),
@@ -67,14 +91,29 @@ export default async function ThreadPage({ params }: { params: Promise<{ id: str
   // Opening the thread is what "read" means here.
   await markThreadRead(thread.id);
 
+  // "Why is this a lead (or not)?" lives on the lead, but it's the call it was
+  // judged from — so surface it on the call card where the transcript is.
+  const reasonByLead = new Map(leadRows.map((l) => [l.id, l.leadReason]));
+
   const entries: Entry[] = [
-    ...callRows.map((r) => ({ kind: "call" as const, at: r.createdAt, row: r })),
+    ...callRows.map((r) => ({
+      kind: "call" as const,
+      at: r.call.createdAt,
+      row: r.call,
+      dialedNumber: r.dialedNumber,
+      dialedName: r.dialedName,
+      leadReason: r.call.leadId ? reasonByLead.get(r.call.leadId) ?? null : null,
+    })),
     ...messageRows.map((r) => ({ kind: "message" as const, at: r.occurredAt, row: r })),
     ...formRows.map((r) => ({ kind: "form" as const, at: r.submittedAt, row: r })),
     ...fbRows.map((r) => ({ kind: "facebook" as const, at: r.createdTime ?? r.createdAt, row: r })),
   ].sort((a, b) => a.at.getTime() - b.at.getTime());
 
-  const who = contact.displayName || displayContact(contact.primaryPhone) || contact.primaryEmail || "Unknown";
+  const who =
+    contactName({ name: contact.displayName, hcpFirst: row.hcpFirst, hcpLast: row.hcpLast }) ||
+    displayContact(contact.primaryPhone) ||
+    contact.primaryEmail ||
+    "Unknown";
   const current = leadRows[0] ?? null;
   const canText = Boolean(contact.primaryPhone && thread.lastEndpointKey?.startsWith("+"));
 
@@ -84,7 +123,18 @@ export default async function ThreadPage({ params }: { params: Promise<{ id: str
 
       <div className="page-head">
         <div>
-          <h1 className="page-title">{who}</h1>
+          <h1 className="page-title">
+            {who}
+            {row.hcpExternalId && (
+              <span
+                className="badge"
+                title={`HousecallPro customer ${row.hcpExternalId}`}
+                style={{ marginLeft: 10, fontSize: 11, verticalAlign: "middle" }}
+              >
+                HCP customer
+              </span>
+            )}
+          </h1>
           <p className="page-sub">
             {entries.length} {entries.length === 1 ? "interaction" : "interactions"}
             {contact.primaryPhone ? <> · {displayContact(contact.primaryPhone)}</> : null}
@@ -127,7 +177,7 @@ export default async function ThreadPage({ params }: { params: Promise<{ id: str
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           {entries.map((e) => {
-            if (e.kind === "call") return <CallEntry key={`c${e.row.id}`} call={e.row} />;
+            if (e.kind === "call") return <CallEntry key={`c${e.row.id}`} entry={e} />;
             if (e.kind === "message") return <MessageEntry key={`m${e.row.id}`} message={e.row} />;
             if (e.kind === "form") return <FormEntry key={`f${e.row.id}`} form={e.row} />;
             return <FacebookEntry key={`fb${e.row.id}`} fb={e.row} />;
@@ -146,9 +196,28 @@ export default async function ThreadPage({ params }: { params: Promise<{ id: str
   );
 }
 
-function CallEntry({ call }: { call: typeof calls.$inferSelect }) {
+/** One definition row, skipped entirely when there's nothing to say. */
+function Row({ label, children }: { label: string; children: React.ReactNode }) {
+  if (children == null || children === "" || children === false) return null;
+  return (
+    <div className="def">
+      <span className="def-k">{label}</span>
+      <span className="def-v">{children}</span>
+    </div>
+  );
+}
+
+function CallEntry({
+  entry,
+}: {
+  entry: { row: typeof calls.$inferSelect; dialedNumber: string | null; dialedName: string | null; leadReason: string | null };
+}) {
+  const { row: call, dialedNumber, dialedName, leadReason } = entry;
   const voicemail = call.voicemail && !call.answered;
   const status = voicemail ? "voicemail" : call.status ?? "—";
+  const spamScore = call.spamScore != null ? Number(call.spamScore) : null;
+  const confidence = call.transcriptConfidence != null ? Number(call.transcriptConfidence) : null;
+
   return (
     <div className="card">
       <div className="card-head">
@@ -156,16 +225,55 @@ function CallEntry({ call }: { call: typeof calls.$inferSelect }) {
         <span className="muted">{dateTime(call.createdAt)}</span>
       </div>
       <div className="card-body">
-        <div style={{ display: "flex", gap: 7, alignItems: "center", flexWrap: "wrap", marginBottom: 8 }}>
+        <div style={{ display: "flex", gap: 7, alignItems: "center", flexWrap: "wrap", marginBottom: 10 }}>
           <span className={call.answered ? "badge win" : voicemail ? "badge warn" : "badge"}>{status}</span>
           {call.durationSec ? <span className="mono muted">{durationLabel(call.durationSec)}</span> : null}
           {call.intentLabel && <span className="badge">{call.intentLabel}</span>}
+          {spamScore != null && spamScore >= 0.5 && <span className="badge bad">spam {spamScore.toFixed(2)}</span>}
         </div>
-        {call.summary && <p style={{ margin: "0 0 8px" }}>{call.summary}</p>}
-        {call.recordingUrl && (
+
+        {call.summary && <p style={{ margin: "0 0 12px" }}>{call.summary}</p>}
+
+        <div className="def-list" style={{ marginBottom: call.recordingUrl || call.transcript ? 12 : 0 }}>
+          <Row label="They dialed">
+            {dialedNumber ? formatPhoneDisplay(dialedNumber) : null}
+            {dialedName ? <span className="muted"> · {dialedName}</span> : null}
+          </Row>
+          <Row label="Rang">{call.toDestination ? formatPhoneDisplay(call.toDestination) : null}</Row>
+          <Row label="Heard via">
+            {call.selfReportedSource ? <span className="badge info">{call.selfReportedSource}</span> : null}
+          </Row>
+          <Row label="Lead reason">{leadReason}</Row>
+        </div>
+
+        {call.recordingUrl ? (
           <audio controls preload="none" style={{ width: "100%", height: 34 }} src={`/api/calls/${call.id}/recording`} />
+        ) : (
+          <p className="muted" style={{ margin: 0, fontSize: 12 }}>
+            {call.answered ? "No recording saved for this call." : "Not answered — nothing recorded."}
+          </p>
         )}
-        {call.transcript && <div className="transcript" aria-label="Call transcript">{call.transcript}</div>}
+
+        {call.transcript ? (
+          // Collapsed by default: a five-minute call is a wall of text, and the
+          // summary above is usually the answer. Open it when you want the words.
+          <details style={{ marginTop: 12 }}>
+            <summary
+              style={{ cursor: "pointer", fontSize: 12.5, color: "var(--muted)", userSelect: "none" }}
+            >
+              Transcript
+              {confidence != null ? ` · ${Math.round(confidence * 100)}% confidence` : ""}
+              {call.transcriptProvider ? ` · ${call.transcriptProvider}` : ""}
+            </summary>
+            <div className="transcript" aria-label="Call transcript">{call.transcript}</div>
+          </details>
+        ) : call.recordingUrl ? (
+          <p className="muted" style={{ margin: "10px 0 0", fontSize: 12 }}>
+            {call.transcribeError
+              ? `Transcription failed: ${call.transcribeError}`
+              : "Transcript pending — transcription runs every 10 minutes."}
+          </p>
+        ) : null}
       </div>
     </div>
   );
