@@ -152,6 +152,11 @@ export const campaigns = pgTable(
     name: text("name"),
     status: text("status"),
     location: locationEnum("location").default("unknown"),
+    // Non-customer-acquisition campaigns (arborist recruiting, brand awareness):
+    // their spend and their leads are kept for the record but never counted in ROI.
+    // Recruiting dollars in the denominator with no revenue in the numerator drag
+    // the whole channel's ROAS down, so the rollup and the ingest both skip these.
+    excluded: boolean("excluded").notNull().default(false),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },

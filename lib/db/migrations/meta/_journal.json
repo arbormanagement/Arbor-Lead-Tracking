@@ -131,8 +131,29 @@
     {
       "idx": 18,
       "version": "7",
-      "when": 1786284505323,
-      "tag": "0018_thankful_mister_sinister",
+      "when": 1786277571193,
+      "tag": "0018_campaign_excluded",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1786277583778,
+      "tag": "0019_flag_recruiting_campaign",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1786277584807,
+      "tag": "0020_purge_recruiting_data",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1786291317508,
+      "tag": "0021_lovely_dracula",
       "breakpoints": true
     }
   ]

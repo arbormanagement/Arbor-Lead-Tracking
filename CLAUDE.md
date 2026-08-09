@@ -62,7 +62,7 @@ Edwardsville + O'Fallon). WhatConverts-style. Single-tenant. Owner: Justin
 - `lib/contacts/resolve.ts` — identity resolution (phone/email → one person).
 - `lib/contacts/link-hcp.ts` — **this app stores no customer data; it links to HousecallPro.** `contacts.hcp_customer_id` is matched on the same normalized phone/email key the ROI pipeline already uses, so a thread and its revenue agree on who the customer is by construction. Names are read through the join, never copied — a fix in HCP shows up immediately. Linking runs both ways: inline when a contact is first resolved, and as a sweep after each HCP sync (for the stranger who becomes a customer later). A match also **adopts the HCP record's other identifiers**, so someone who only ever texted is still recognized when they first email.
 - `lib/messaging/thread.ts` — threading. Attribution snapshotted at thread creation only fills gaps afterwards, so a rotated DNI lease can't rewrite the source that earned the original call. `last_endpoint_key` is the deliberate exception — it must track the newest inbound endpoint because that's the reply-to.
-- `lib/messaging/send.ts` — outbound SMS, consent-gated. **A2P 10DLC: brand `BNaaa7ccb11b86fc05a110ef1441fc0025`, campaign `CZPD8CT` (VERIFIED, LOW_VOLUME) on messaging service `MG2fea0b23db4aa369705393147cc857ba`.** A number only sends under that campaign once it's in the service's sender pool — as of 2026-08-09 only `+16183103486` is.
+- `lib/messaging/send.ts` — outbound SMS, consent-gated. **A2P 10DLC: brand `BNaaa7ccb11b86fc05a110ef1441fc0025`, campaign `CZPD8CT` (VERIFIED, LOW_VOLUME) on messaging service `MG2fea0b23db4aa369705393147cc857ba`.** A number only sends under that campaign once it's in the service's sender pool — as of 2026-08-09 **all 12 local numbers are in it**. (The unused toll-free `+18334791834` was released the same day; toll-free uses a separate verification track, not 10DLC.) The service has `use_inbound_webhook_on_number: true`, which is what keeps inbound texts arriving at each number's own `smsUrl` rather than being hijacked to the service.
 - `lib/mcp/client.ts` — `executeTool`/`executeTools` over MCP JSON-RPC.
 - `lib/attribution/classify.ts` — click-id/utm/referrer → source key + DNI pool.
 
@@ -133,4 +133,14 @@ things from it that constrain this codebase:
 - **Texts only work if the number's Twilio `smsUrl` is set.** `backfillNumberWebhooks`
   (hourly `twilio-fallback` cron) re-asserts it on every active number, which is how the
   ten CallRail-transferred numbers got it. Same Monitor Alerts diagnostic as below applies.
+- Not every campaign is customer acquisition. Recruiting/brand campaigns are flagged
+  `campaigns.excluded` (Settings → Campaigns) and are kept out of every ROI number —
+  `roi_daily`, the overview funnel, the sources page — while their spend stays on record.
+  The Facebook ingest also drops submissions from an excluded campaign, so applicants never
+  become leads. Predicate helpers live in `lib/campaigns.ts`; apply them to any NEW surface
+  that reads `leads` or `ad_spend` directly, or recruiting dollars land in an ROAS denominator
+  with no revenue behind them.
+  **The inbox is such a surface, deliberately un-excluded:** a recruiting enquiry is still
+  someone contacting the business, so it threads and shows in `/inbox` — it just never
+  becomes a lead, so it stays out of ROI either way.
 - Spend sync is self-healing (`lib/sync/spend.ts`): rolling 35-day re-pull (platforms restate) + automatic cold-start backfill reaching to each platform's earliest lead (≤365d — spend with no leads to match is deliberately not fetched), keyed `(platform, external_campaign_id, date)`. No manual backfills.

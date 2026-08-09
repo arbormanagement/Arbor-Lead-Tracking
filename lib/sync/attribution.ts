@@ -1,4 +1,5 @@
 import { and, asc, desc, eq, gte, inArray, lte, ne, or, sql } from "drizzle-orm";
+import { campaignNotExcluded, excludedCampaignIds } from "@/lib/campaigns";
 import { db } from "@/lib/db/client";
 import {
   adSpend,
@@ -31,6 +32,8 @@ const INSERT_CHUNK = 500;
  *                          with web tracking in Phase 3; the table already supports it).
  *   3. rebuildRoiDaily     aggregate leads + ad_spend into roi_daily per
  *                          (date, source, campaign, location) with CPL/CPA/ROI.
+ *                          Campaigns flagged `excluded` (recruiting) contribute
+ *                          neither spend nor leads — see `lib/campaigns.ts`.
  *
  * Reuses the normalized phone_e164 / email_lc columns written by the HCP sync.
  */
@@ -297,6 +300,11 @@ async function rebuildRoiDaily(windowDays: number): Promise<number> {
   const since = new Date(Date.now() - windowDays * 86_400_000);
   const sinceDate = since.toISOString().slice(0, 10);
 
+  // Non-customer-acquisition campaigns (recruiting) contribute neither spend nor
+  // leads to ROI. Resolved once and applied to both sides of the rollup so a
+  // campaign flagged in Settings drops out on the next run, with no cleanup needed.
+  const excluded = await excludedCampaignIds();
+
   // Source-key → id, so ad spend (which carries platform, not source) can roll up.
   const sourceRows = await db.select({ id: sources.id, key: sources.key }).from(sources);
   const sourceIdByKey = new Map(sourceRows.map((s) => [s.key, s.id]));
@@ -327,7 +335,14 @@ async function rebuildRoiDaily(windowDays: number): Promise<number> {
       quote: leads.quoteValueCents,
     })
     .from(leads)
-    .where(and(eq(leads.isSpam, false), gte(leads.occurredAt, since), or(ne(leads.type, "call"), eq(leads.isLead, true))));
+    .where(
+      and(
+        eq(leads.isSpam, false),
+        gte(leads.occurredAt, since),
+        or(ne(leads.type, "call"), eq(leads.isLead, true)),
+        campaignNotExcluded(leads.campaignId, excluded),
+      ),
+    );
 
   for (const l of leadRows) {
     const row = bump({
@@ -361,7 +376,7 @@ async function rebuildRoiDaily(windowDays: number): Promise<number> {
     })
     .from(adSpend)
     .leftJoin(campaigns, eq(adSpend.campaignId, campaigns.id))
-    .where(gte(adSpend.date, sinceDate));
+    .where(and(gte(adSpend.date, sinceDate), campaignNotExcluded(adSpend.campaignId, excluded)));
 
   for (const s of spendRows) {
     const sourceKey = PLATFORM_SOURCE_KEY[s.platform];
