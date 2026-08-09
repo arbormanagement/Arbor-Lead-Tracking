@@ -4,6 +4,7 @@ import { db } from "@/lib/db/client";
 import { formSubmissions, leads, sources, visitors, webSessions } from "@/lib/db/schema";
 import { classifySource } from "@/lib/attribution/classify";
 import { isAllowedOrigin } from "@/lib/origin";
+import { preview, recordThreadActivity, upsertThread } from "@/lib/messaging/thread";
 import { normalizeEmail, normalizePhone } from "@/lib/phone";
 import { clientIp, rateLimit } from "@/lib/rate-limit";
 
@@ -168,6 +169,21 @@ export async function POST(req: Request) {
   // 3) Form submission → web_form lead.
   if (parsed.event === "form_submit" && form) {
     const c = mapFormFields(form.fields);
+
+    // Thread it into the sender's conversation. A form carrying BOTH a phone and
+    // an email is the event that stitches those two identities together, so a
+    // later call from that number lands in the same thread. Best-effort — the
+    // lead is what matters and must be recorded even if threading fails.
+    let thread: Awaited<ReturnType<typeof upsertThread>> = null;
+    try {
+      thread = await upsertThread(
+        { phone: c.phone, email: c.email, name: c.name, at: now },
+        { endpointKey: form.formId ?? "web-form", sourceId },
+      );
+    } catch (err) {
+      console.error("[track] threading failed (form still recorded)", err);
+    }
+
     const [lead] = await db
       .insert(leads)
       .values({
@@ -178,6 +194,8 @@ export async function POST(req: Request) {
         phoneE164: normalizePhone(c.phone),
         emailLc: normalizeEmail(c.email),
         message: c.message,
+        conversationId: thread?.conversationId ?? null,
+        contactId: thread?.contactId ?? null,
         sourceId,
         medium,
         gclid: click.gclid,
@@ -195,12 +213,26 @@ export async function POST(req: Request) {
 
     await db.insert(formSubmissions).values({
       leadId: lead.id,
+      conversationId: thread?.conversationId ?? null,
       webSessionId: sid,
       formId: form.formId,
       pageUrl: form.pageUrl ?? url,
       fields: form.fields,
       submittedAt: now,
     });
+
+    if (thread) {
+      try {
+        await recordThreadActivity(thread.conversationId, {
+          channel: "form",
+          direction: "inbound",
+          preview: preview(c.message) ?? `Form submitted${form.formId ? ` · ${form.formId}` : ""}`,
+          occurredAt: now,
+        });
+      } catch (err) {
+        console.error("[track] thread activity failed (form still recorded)", err);
+      }
+    }
   }
 
   return Response.json({ ok: true }, { headers: CORS });

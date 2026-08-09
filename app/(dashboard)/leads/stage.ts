@@ -10,7 +10,9 @@ export function stageClass(status: string): string {
 
 export const TYPE_META: Record<string, { ic: string; label: string }> = {
   call: { ic: "☎", label: "Call" },
-  web_form: { ic: "✉", label: "Form" },
+  sms: { ic: "💬", label: "Text" },
+  email: { ic: "✉", label: "Email" },
+  web_form: { ic: "▤", label: "Form" },
   facebook_leadgen: { ic: "ⓕ", label: "Facebook" },
   lsa: { ic: "◎", label: "LSA" },
   manual: { ic: "✎", label: "Manual" },

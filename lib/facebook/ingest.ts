@@ -1,6 +1,7 @@
 import { and, eq } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { campaigns, facebookLeads, leads, sources } from "@/lib/db/schema";
+import { preview, recordThreadActivity, upsertThread } from "@/lib/messaging/thread";
 import { normalizeEmail, normalizePhone } from "@/lib/phone";
 import type { FbLeadDetail } from "@/lib/integrations/facebook";
 
@@ -28,7 +29,7 @@ export async function ingestFacebookLead(detail: FbLeadDetail): Promise<IngestRe
   // FIRST: whoever wins the fb_leadgen_id conflict creates the lead, the loser
   // no-ops. The old check-then-insert (lead created before the constraint row)
   // let a webhook/poller race leave an orphan duplicate lead.
-  return db.transaction(async (tx) => {
+  const created = await db.transaction(async (tx) => {
     const [claimed] = await tx
       .insert(facebookLeads)
       .values({
@@ -41,7 +42,7 @@ export async function ingestFacebookLead(detail: FbLeadDetail): Promise<IngestRe
       })
       .onConflictDoNothing({ target: facebookLeads.fbLeadgenId })
       .returning({ id: facebookLeads.id });
-    if (!claimed) return "duplicate"; // already ingested (redelivery, or the other path won)
+    if (!claimed) return null; // already ingested (redelivery, or the other path won)
 
     const [lead] = await tx
       .insert(leads)
@@ -61,8 +62,40 @@ export async function ingestFacebookLead(detail: FbLeadDetail): Promise<IngestRe
       .returning({ id: leads.id });
 
     await tx.update(facebookLeads).set({ leadId: lead.id }).where(eq(facebookLeads.id, claimed.id));
-    return "created";
+    return { leadId: lead.id, facebookLeadId: claimed.id };
   });
+
+  if (!created) return "duplicate";
+
+  // Threading runs AFTER the transaction commits, deliberately: the idempotency
+  // claim above is the thing that must not be held open, and a threading failure
+  // is recoverable (thread-backfill picks it up) while a lost lead is not.
+  try {
+    const thread = await upsertThread(
+      { phone: c.phone, email: c.email, name: c.name, at: occurredAt },
+      { endpointKey: detail.formId ? `fb:${detail.formId}` : "fb:leadgen", sourceId },
+    );
+    if (thread) {
+      await db
+        .update(leads)
+        .set({ conversationId: thread.conversationId, contactId: thread.contactId })
+        .where(eq(leads.id, created.leadId));
+      await db
+        .update(facebookLeads)
+        .set({ conversationId: thread.conversationId })
+        .where(eq(facebookLeads.id, created.facebookLeadId));
+      await recordThreadActivity(thread.conversationId, {
+        channel: "facebook",
+        direction: "inbound",
+        preview: preview(c.message) ?? "Facebook lead form submitted",
+        occurredAt,
+      });
+    }
+  } catch (err) {
+    console.error("[facebook] threading failed (lead recorded)", err);
+  }
+
+  return "created";
 }
 
 function mapFbFields(fieldData: Array<{ name: string; values: string[] }>) {

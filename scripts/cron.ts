@@ -48,6 +48,9 @@ if (!SECRET) throw new Error("[cron] CRON_SECRET must be set (and match the web 
 const JOBS: Array<{ job: string; schedule: string; timeoutMs?: number }> = [
   { job: "reaper", schedule: "*/5 * * * *", timeoutMs: 60_000 },
   { job: "transcribe", schedule: "*/10 * * * *", timeoutMs: 300_000 },
+  // Texts are cheap to classify and gate the Leads list, so run them often —
+  // offset from `transcribe` to keep the two Anthropic-calling jobs apart.
+  { job: "classify-messages", schedule: "3-59/5 * * * *", timeoutMs: 180_000 },
   { job: "hcp", schedule: "7 * * * *", timeoutMs: 600_000 },
   { job: "attribution", schedule: "22 * * * *", timeoutMs: 600_000 },
   { job: "fbleads", schedule: "9,24,39,54 * * * *", timeoutMs: 300_000 },
@@ -55,6 +58,9 @@ const JOBS: Array<{ job: string; schedule: string; timeoutMs?: number }> = [
   { job: "spend", schedule: "37 7 * * *", timeoutMs: 900_000 },
   { job: "lsa", schedule: "47 7 * * *", timeoutMs: 600_000 },
   { job: "twilio-fallback", schedule: "52 * * * *", timeoutMs: 300_000 },
+  // Backfills pre-inbox call history on its first runs, then idles at zero rows —
+  // staying on as the repair path for the voice webhook's best-effort threading.
+  { job: "thread-backfill", schedule: "17 * * * *", timeoutMs: 600_000 },
 ];
 
 const only = process.env.CRON_JOBS?.split(",").map((s) => s.trim()).filter(Boolean);

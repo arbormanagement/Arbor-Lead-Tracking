@@ -8,7 +8,7 @@ import { useRouter } from "next/navigation";
  * hourly crons run, for when you don't want to wait. Spend self-heals (rolling
  * re-pull + automatic cold-start history backfill, see lib/sync/spend.ts), so no
  * backfill button is needed; maintenance endpoints (`/api/sync/all?days=N`,
- * `/api/sync/twilio-fallback`) remain for edge cases.
+ * `/api/sync/twilio-fallback`, `/api/sync/thread-backfill`) remain for edge cases.
  */
 export function SyncButton() {
   const router = useRouter();

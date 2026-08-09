@@ -3,6 +3,7 @@ import { db } from "@/lib/db/client";
 import { calls, leads } from "@/lib/db/schema";
 import { transcribeRecording } from "@/lib/transcription/deepgram";
 import { classifyCallLead } from "@/lib/transcription/classify-lead";
+import { preview, recordThreadActivity } from "@/lib/messaging/thread";
 import { withSyncRun } from "./run";
 
 const SPAM_THRESHOLD = 0.5;
@@ -10,7 +11,13 @@ const SPAM_THRESHOLD = 0.5;
  *  batch backlog (its transcribe_error keeps the last failure for inspection). */
 const MAX_TRANSCRIBE_ATTEMPTS = 3;
 
-type PendingCall = { id: string; leadId: string | null; recordingUrl: string | null };
+type PendingCall = {
+  id: string;
+  leadId: string | null;
+  recordingUrl: string | null;
+  conversationId: string | null;
+  createdAt: Date;
+};
 
 /**
  * Transcribe one call's recording, label intent, score spam, and flip the lead to
@@ -41,6 +48,24 @@ async function runTranscription(call: PendingCall): Promise<"transcribed" | "spa
       transcribeError: null,
     })
     .where(eq(calls.id, call.id));
+
+  // Upgrade the inbox preview from "Inbound call" to what the call was actually
+  // about. Passing the call's own timestamp means `recordThreadActivity` leaves
+  // it alone if anything newer has landed since — a late transcript must not
+  // bury a text that arrived in the meantime.
+  if (call.conversationId && cls.summary) {
+    try {
+      await recordThreadActivity(call.conversationId, {
+        channel: "call",
+        direction: "inbound",
+        preview: preview(cls.summary),
+        occurredAt: call.createdAt,
+        markUnread: false, // already counted when the call came in
+      });
+    } catch (err) {
+      console.error("[transcribe] thread preview update failed", err);
+    }
+  }
 
   if (call.leadId) {
     const spam = cls.spamScore >= SPAM_THRESHOLD;
@@ -76,6 +101,8 @@ export async function transcribeCall(callId: string): Promise<"transcribed" | "s
       leadId: calls.leadId,
       recordingUrl: calls.recordingUrl,
       transcript: calls.transcript,
+      conversationId: calls.conversationId,
+      createdAt: calls.createdAt,
     })
     .from(calls)
     .where(eq(calls.id, callId))
@@ -96,7 +123,13 @@ export async function syncTranscriptions({ limit = 25 }: { limit?: number } = {}
     // Newest first, and skip calls past the retry cap — without both, 25
     // permanently-failing rows in planner order would starve the whole queue.
     const pending = await db
-      .select({ id: calls.id, leadId: calls.leadId, recordingUrl: calls.recordingUrl })
+      .select({
+        id: calls.id,
+        leadId: calls.leadId,
+        recordingUrl: calls.recordingUrl,
+        conversationId: calls.conversationId,
+        createdAt: calls.createdAt,
+      })
       .from(calls)
       .where(
         and(
