@@ -1,5 +1,5 @@
 {
-  "id": "ed2ac1f8-cdc0-4368-8bbc-b9094f4960ec",
+  "id": "dbcefa7b-cf3b-4c67-abb5-392e6bd212a1",
   "prevId": "48002dae-5f0e-4132-a39f-2686f78d4ed4",
   "version": "7",
   "dialect": "postgresql",
@@ -772,6 +772,173 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
+    "public.contact_identifiers": {
+      "name": "contact_identifiers",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "contact_id": {
+          "name": "contact_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "kind": {
+          "name": "kind",
+          "type": "contact_identifier_kind",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "value": {
+          "name": "value",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "contact_identifiers_kind_value_uq": {
+          "name": "contact_identifiers_kind_value_uq",
+          "columns": [
+            {
+              "expression": "kind",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "value",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "contact_identifiers_contact_idx": {
+          "name": "contact_identifiers_contact_idx",
+          "columns": [
+            {
+              "expression": "contact_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "contact_identifiers_contact_id_contacts_id_fk": {
+          "name": "contact_identifiers_contact_id_contacts_id_fk",
+          "tableFrom": "contact_identifiers",
+          "tableTo": "contacts",
+          "columnsFrom": [
+            "contact_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.contacts": {
+      "name": "contacts",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "display_name": {
+          "name": "display_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "primary_phone": {
+          "name": "primary_phone",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "primary_email": {
+          "name": "primary_email",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "sms_opted_out_at": {
+          "name": "sms_opted_out_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "first_seen_at": {
+          "name": "first_seen_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "last_seen_at": {
+          "name": "last_seen_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
     "public.conversations": {
       "name": "conversations",
       "schema": "",
@@ -782,29 +949,25 @@
           "primaryKey": true,
           "notNull": true
         },
-        "lead_id": {
-          "name": "lead_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "contact_key": {
-          "name": "contact_key",
+        "contact_id": {
+          "name": "contact_id",
           "type": "text",
           "primaryKey": false,
           "notNull": true
         },
-        "contact_name": {
-          "name": "contact_name",
+        "state": {
+          "name": "state",
+          "type": "conversation_state",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'open'"
+        },
+        "source_id": {
+          "name": "source_id",
           "type": "text",
           "primaryKey": false,
           "notNull": false
-        },
-        "endpoint_key": {
-          "name": "endpoint_key",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
         },
         "tracking_number_id": {
           "name": "tracking_number_id",
@@ -818,8 +981,8 @@
           "primaryKey": false,
           "notNull": false
         },
-        "source_id": {
-          "name": "source_id",
+        "last_endpoint_key": {
+          "name": "last_endpoint_key",
           "type": "text",
           "primaryKey": false,
           "notNull": false
@@ -829,6 +992,13 @@
           "type": "text",
           "primaryKey": false,
           "notNull": false
+        },
+        "channels": {
+          "name": "channels",
+          "type": "text[]",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'"
         },
         "last_channel": {
           "name": "last_channel",
@@ -862,12 +1032,6 @@
           "notNull": true,
           "default": 0
         },
-        "archived_at": {
-          "name": "archived_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -884,17 +1048,11 @@
         }
       },
       "indexes": {
-        "conversations_contact_endpoint_uq": {
-          "name": "conversations_contact_endpoint_uq",
+        "conversations_contact_uq": {
+          "name": "conversations_contact_uq",
           "columns": [
             {
-              "expression": "contact_key",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "endpoint_key",
+              "expression": "contact_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -920,26 +1078,11 @@
           "method": "btree",
           "with": {}
         },
-        "conversations_lead_idx": {
-          "name": "conversations_lead_idx",
+        "conversations_state_idx": {
+          "name": "conversations_state_idx",
           "columns": [
             {
-              "expression": "lead_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "conversations_contact_idx": {
-          "name": "conversations_contact_idx",
-          "columns": [
-            {
-              "expression": "contact_key",
+              "expression": "state",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -952,12 +1095,25 @@
         }
       },
       "foreignKeys": {
-        "conversations_lead_id_leads_id_fk": {
-          "name": "conversations_lead_id_leads_id_fk",
+        "conversations_contact_id_contacts_id_fk": {
+          "name": "conversations_contact_id_contacts_id_fk",
           "tableFrom": "conversations",
-          "tableTo": "leads",
+          "tableTo": "contacts",
           "columnsFrom": [
-            "lead_id"
+            "contact_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "conversations_source_id_sources_id_fk": {
+          "name": "conversations_source_id_sources_id_fk",
+          "tableFrom": "conversations",
+          "tableTo": "sources",
+          "columnsFrom": [
+            "source_id"
           ],
           "columnsTo": [
             "id"
@@ -984,19 +1140,6 @@
           "tableTo": "number_assignments",
           "columnsFrom": [
             "number_assignment_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "conversations_source_id_sources_id_fk": {
-          "name": "conversations_source_id_sources_id_fk",
-          "tableFrom": "conversations",
-          "tableTo": "sources",
-          "columnsFrom": [
-            "source_id"
           ],
           "columnsTo": [
             "id"
@@ -1193,6 +1336,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "conversation_id": {
+          "name": "conversation_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "fb_leadgen_id": {
           "name": "fb_leadgen_id",
           "type": "text",
@@ -1252,6 +1401,21 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "facebook_leads_conversation_idx": {
+          "name": "facebook_leads_conversation_idx",
+          "columns": [
+            {
+              "expression": "conversation_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
@@ -1261,6 +1425,19 @@
           "tableTo": "leads",
           "columnsFrom": [
             "lead_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "facebook_leads_conversation_id_conversations_id_fk": {
+          "name": "facebook_leads_conversation_id_conversations_id_fk",
+          "tableFrom": "facebook_leads",
+          "tableTo": "conversations",
+          "columnsFrom": [
+            "conversation_id"
           ],
           "columnsTo": [
             "id"
@@ -1287,6 +1464,12 @@
         },
         "lead_id": {
           "name": "lead_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "conversation_id": {
+          "name": "conversation_id",
           "type": "text",
           "primaryKey": false,
           "notNull": false
@@ -1345,6 +1528,21 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "form_submissions_conversation_idx": {
+          "name": "form_submissions_conversation_idx",
+          "columns": [
+            {
+              "expression": "conversation_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
@@ -1354,6 +1552,19 @@
           "tableTo": "leads",
           "columnsFrom": [
             "lead_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "form_submissions_conversation_id_conversations_id_fk": {
+          "name": "form_submissions_conversation_id_conversations_id_fk",
+          "tableFrom": "form_submissions",
+          "tableTo": "conversations",
+          "columnsFrom": [
+            "conversation_id"
           ],
           "columnsTo": [
             "id"
@@ -2055,6 +2266,18 @@
           "primaryKey": false,
           "notNull": true
         },
+        "conversation_id": {
+          "name": "conversation_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "contact_id": {
+          "name": "contact_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "status": {
           "name": "status",
           "type": "lead_status",
@@ -2391,6 +2614,32 @@
         }
       },
       "foreignKeys": {
+        "leads_conversation_id_conversations_id_fk": {
+          "name": "leads_conversation_id_conversations_id_fk",
+          "tableFrom": "leads",
+          "tableTo": "conversations",
+          "columnsFrom": [
+            "conversation_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "leads_contact_id_contacts_id_fk": {
+          "name": "leads_contact_id_contacts_id_fk",
+          "tableFrom": "leads",
+          "tableTo": "contacts",
+          "columnsFrom": [
+            "contact_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
         "leads_source_id_sources_id_fk": {
           "name": "leads_source_id_sources_id_fk",
           "tableFrom": "leads",
@@ -4136,6 +4385,22 @@
     }
   },
   "enums": {
+    "public.contact_identifier_kind": {
+      "name": "contact_identifier_kind",
+      "schema": "public",
+      "values": [
+        "phone",
+        "email"
+      ]
+    },
+    "public.conversation_state": {
+      "name": "conversation_state",
+      "schema": "public",
+      "values": [
+        "open",
+        "closed"
+      ]
+    },
     "public.conversion_export_status": {
       "name": "conversion_export_status",
       "schema": "public",

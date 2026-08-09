@@ -52,6 +52,10 @@ export const leadTypeEnum = pgEnum("lead_type", [
 // `conversations` spine, so the inbox is one list regardless of how someone reached us.
 export const messageChannelEnum = pgEnum("message_channel", ["sms", "email"]);
 export const messageDirectionEnum = pgEnum("message_direction", ["inbound", "outbound"]);
+export const contactIdentifierKindEnum = pgEnum("contact_identifier_kind", ["phone", "email"]);
+// Threads are worked, not just read: `closed` is "dealt with", and the inbox
+// defaults to open so it drains like a real inbox instead of growing forever.
+export const conversationStateEnum = pgEnum("conversation_state", ["open", "closed"]);
 export const leadStatusEnum = pgEnum("lead_status", [
   "new",
   "working",
@@ -394,11 +398,117 @@ export const hcpEstimates = pgTable(
 );
 
 // ── Leads (unified) ──────────────────────────────────────────────────────────
+/**
+ * A person. The inbox threads on this, not on a phone number, which is what lets
+ * "Sarah filled in the form on Monday" and "Sarah called on Thursday" be the same
+ * conversation instead of two strangers.
+ *
+ * A contact is never authoritative business data — HousecallPro owns the customer
+ * record. This is only an identity spine for grouping inbound activity.
+ */
+export const contacts = pgTable("contacts", {
+  id: id(),
+  displayName: text("display_name"),
+  // Best-known primaries, for display and for picking a reply target.
+  primaryPhone: text("primary_phone"),
+  primaryEmail: text("primary_email"),
+  /**
+   * Set when the person replies STOP (or Twilio reports carrier opt-out, error
+   * 21610). Blocks app-originated sends — the block is legally required and lives
+   * on the person, not the thread, so it survives them starting a new one.
+   */
+  smsOptedOutAt: timestamp("sms_opted_out_at", { withTimezone: true }),
+  firstSeenAt: timestamp("first_seen_at", { withTimezone: true }).notNull().defaultNow(),
+  lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).notNull().defaultNow(),
+  createdAt: createdAt(),
+  updatedAt: updatedAt(),
+});
+
+/**
+ * Every phone/email known to belong to a contact — the index identity resolution
+ * runs on. One value maps to exactly one contact (unique on kind+value), so a form
+ * carrying both a phone and an email is what stitches those two identities together.
+ */
+export const contactIdentifiers = pgTable(
+  "contact_identifiers",
+  {
+    id: id(),
+    contactId: text("contact_id")
+      .notNull()
+      .references(() => contacts.id),
+    kind: contactIdentifierKindEnum("kind").notNull(),
+    value: text("value").notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    uniqueIndex("contact_identifiers_kind_value_uq").on(t.kind, t.value),
+    index("contact_identifiers_contact_idx").on(t.contactId),
+  ],
+);
+
+/**
+ * A conversation thread — the spine of the inbox. ONE per contact, holding every
+ * way that person has ever reached us: calls, texts, form submissions, Facebook
+ * lead forms, later email. Each of those tables carries a `conversation_id` and the
+ * thread view unions them into a single timeline.
+ *
+ * One-per-contact is deliberate. A returning customer who calls in March and again
+ * in September is one relationship with two leads, not two conversations — which is
+ * exactly what "capture every way customers reach out, even if they aren't a new
+ * lead" needs. Lead-level attribution stays on `leads`; the snapshot here is
+ * first-touch, for showing where the relationship started.
+ */
+export const conversations = pgTable(
+  "conversations",
+  {
+    id: id(),
+    contactId: text("contact_id")
+      .notNull()
+      .references(() => contacts.id),
+    state: conversationStateEnum("state").notNull().default("open"),
+    // First-touch snapshot — where this relationship came from.
+    sourceId: text("source_id").references(() => sources.id),
+    trackingNumberId: text("tracking_number_id").references(() => trackingNumbers.id),
+    numberAssignmentId: text("number_assignment_id").references(() => numberAssignments.id),
+    /**
+     * Arbor-side endpoint of the most recent inbound activity — the tracking number
+     * to reply FROM, so the customer sees the number they already contacted rather
+     * than a stranger's.
+     */
+    lastEndpointKey: text("last_endpoint_key"),
+    subject: text("subject"), // email threads only
+    /**
+     * Every channel this thread has ever carried. Denormalized so the inbox's
+     * channel tabs are one indexed predicate instead of an EXISTS across four
+     * activity tables — and so "Texts" means "threads with texts in them", not
+     * "threads whose newest message happens to be a text".
+     */
+    channels: text("channels").array().notNull().default([]),
+    // Denormalized "last activity" so the inbox list needs no per-thread subquery.
+    lastChannel: text("last_channel"), // 'call' | 'sms' | 'email' | 'form' | 'facebook'
+    lastDirection: text("last_direction"), // 'inbound' | 'outbound'
+    lastPreview: text("last_preview"),
+    lastActivityAt: timestamp("last_activity_at", { withTimezone: true }).notNull().defaultNow(),
+    // Inbound activity nobody has opened yet. Bumped on inbound, zeroed on read.
+    unreadCount: integer("unread_count").notNull().default(0),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    uniqueIndex("conversations_contact_uq").on(t.contactId),
+    index("conversations_last_activity_idx").on(t.lastActivityAt),
+    index("conversations_state_idx").on(t.state),
+  ],
+);
+
 export const leads = pgTable(
   "leads",
   {
     id: id(),
     type: leadTypeEnum("type").notNull(),
+    // The thread this lead came out of. Many leads over time can share one thread.
+    conversationId: text("conversation_id").references(() => conversations.id),
+    contactId: text("contact_id").references(() => contacts.id),
     status: leadStatusEnum("status").notNull().default("new"),
     // Contact
     name: text("name"),
@@ -459,50 +569,6 @@ export const leads = pgTable(
     uniqueIndex("leads_type_external_id_uq")
       .on(t.type, t.externalId)
       .where(sql`external_id IS NOT NULL`),
-  ],
-);
-
-/**
- * A conversation thread — the spine of the inbox. One row per (contact, endpoint)
- * pair, where the contact side is an E.164 phone or a lowercased email and the
- * endpoint side is the Arbor address they reached: a tracking number for calls and
- * texts, a mailbox address for email. Calls and messages both hang off it, so a
- * caller who then texts the same tracking number lands in one thread.
- *
- * Attribution is snapshotted here at thread creation (the DNI lease that was live
- * for the first contact), which is what lets a follow-up text three days later
- * still carry the source of the click that started it.
- */
-export const conversations = pgTable(
-  "conversations",
-  {
-    id: id(),
-    leadId: text("lead_id").references(() => leads.id),
-    // Contact side: E.164 phone (call/sms) or lowercased email address.
-    contactKey: text("contact_key").notNull(),
-    contactName: text("contact_name"),
-    // Arbor side: the tracking number that was dialed/texted, or the inbox address.
-    endpointKey: text("endpoint_key").notNull(),
-    trackingNumberId: text("tracking_number_id").references(() => trackingNumbers.id),
-    numberAssignmentId: text("number_assignment_id").references(() => numberAssignments.id),
-    sourceId: text("source_id").references(() => sources.id),
-    subject: text("subject"), // email threads only
-    // Denormalized "last activity" so the inbox list needs no per-thread subquery.
-    lastChannel: text("last_channel"), // 'call' | 'sms' | 'email'
-    lastDirection: text("last_direction"), // 'inbound' | 'outbound'
-    lastPreview: text("last_preview"),
-    lastActivityAt: timestamp("last_activity_at", { withTimezone: true }).notNull().defaultNow(),
-    // Inbound activity nobody has opened yet. Bumped on inbound, zeroed on read.
-    unreadCount: integer("unread_count").notNull().default(0),
-    archivedAt: timestamp("archived_at", { withTimezone: true }),
-    createdAt: createdAt(),
-    updatedAt: updatedAt(),
-  },
-  (t) => [
-    uniqueIndex("conversations_contact_endpoint_uq").on(t.contactKey, t.endpointKey),
-    index("conversations_last_activity_idx").on(t.lastActivityAt),
-    index("conversations_lead_idx").on(t.leadId),
-    index("conversations_contact_idx").on(t.contactKey),
   ],
 );
 
@@ -597,6 +663,7 @@ export const formSubmissions = pgTable(
   {
     id: id(),
     leadId: text("lead_id").references(() => leads.id),
+    conversationId: text("conversation_id").references(() => conversations.id),
     webSessionId: text("web_session_id").references(() => webSessions.id),
     formId: text("form_id"),
     pageUrl: text("page_url"),
@@ -604,7 +671,10 @@ export const formSubmissions = pgTable(
     submittedAt: timestamp("submitted_at", { withTimezone: true }).notNull().defaultNow(),
     createdAt: createdAt(),
   },
-  (t) => [index("form_submissions_lead_idx").on(t.leadId)],
+  (t) => [
+    index("form_submissions_lead_idx").on(t.leadId),
+    index("form_submissions_conversation_idx").on(t.conversationId),
+  ],
 );
 
 export const facebookLeads = pgTable(
@@ -612,6 +682,7 @@ export const facebookLeads = pgTable(
   {
     id: id(),
     leadId: text("lead_id").references(() => leads.id),
+    conversationId: text("conversation_id").references(() => conversations.id),
     fbLeadgenId: text("fb_leadgen_id").notNull(),
     fbFormId: text("fb_form_id"),
     fbAdId: text("fb_ad_id"),
@@ -620,7 +691,10 @@ export const facebookLeads = pgTable(
     createdTime: timestamp("created_time", { withTimezone: true }),
     createdAt: createdAt(),
   },
-  (t) => [uniqueIndex("facebook_leads_leadgen_id_uq").on(t.fbLeadgenId)],
+  (t) => [
+    uniqueIndex("facebook_leads_leadgen_id_uq").on(t.fbLeadgenId),
+    index("facebook_leads_conversation_idx").on(t.conversationId),
+  ],
 );
 
 // ── Attribution & rollups ────────────────────────────────────────────────────
@@ -818,6 +892,8 @@ export const numberAssignmentsRelations = relations(numberAssignments, ({ one })
 }));
 
 export const leadsRelations = relations(leads, ({ one, many }) => ({
+  conversation: one(conversations, { fields: [leads.conversationId], references: [conversations.id] }),
+  contact: one(contacts, { fields: [leads.contactId], references: [contacts.id] }),
   source: one(sources, { fields: [leads.sourceId], references: [sources.id] }),
   campaign: one(campaigns, { fields: [leads.campaignId], references: [campaigns.id] }),
   visitor: one(visitors, { fields: [leads.visitorId], references: [visitors.id] }),
@@ -842,8 +918,18 @@ export const callsRelations = relations(calls, ({ one }) => ({
   }),
 }));
 
+export const contactsRelations = relations(contacts, ({ many }) => ({
+  identifiers: many(contactIdentifiers),
+  conversations: many(conversations),
+  leads: many(leads),
+}));
+
+export const contactIdentifiersRelations = relations(contactIdentifiers, ({ one }) => ({
+  contact: one(contacts, { fields: [contactIdentifiers.contactId], references: [contacts.id] }),
+}));
+
 export const conversationsRelations = relations(conversations, ({ one, many }) => ({
-  lead: one(leads, { fields: [conversations.leadId], references: [leads.id] }),
+  contact: one(contacts, { fields: [conversations.contactId], references: [contacts.id] }),
   source: one(sources, { fields: [conversations.sourceId], references: [sources.id] }),
   trackingNumber: one(trackingNumbers, {
     fields: [conversations.trackingNumberId],
@@ -851,6 +937,9 @@ export const conversationsRelations = relations(conversations, ({ one, many }) =
   }),
   messages: many(messages),
   calls: many(calls),
+  formSubmissions: many(formSubmissions),
+  facebookLeads: many(facebookLeads),
+  leads: many(leads),
 }));
 
 export const messagesRelations = relations(messages, ({ one }) => ({

@@ -102,6 +102,11 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
   return (
     <>
       <Link href="/leads" className="backlink">← Leads</Link>
+      {lead.conversationId && (
+        <Link href={`/inbox/${lead.conversationId}`} className="backlink" style={{ marginLeft: 14 }}>
+          Full conversation →
+        </Link>
+      )}
 
       <div className="page-head">
         <div>

@@ -1,6 +1,7 @@
-import { eq } from "drizzle-orm";
+import { and, desc, eq, inArray } from "drizzle-orm";
 import { db } from "@/lib/db/client";
-import { conversations, leads, messages, trackingNumbers } from "@/lib/db/schema";
+import { leads, messages, trackingNumbers } from "@/lib/db/schema";
+import { clearSmsOptOut, markSmsOptedOut } from "@/lib/contacts/resolve";
 import { env } from "@/lib/env";
 import { preview, recordThreadActivity, upsertThread } from "@/lib/messaging/thread";
 import { normalizePhone } from "@/lib/phone";
@@ -72,10 +73,20 @@ export async function POST(req: Request) {
     const sourceId = await ensureSourceId(sourceKey);
 
     const thread = await upsertThread(
-      { contactKey: fromE164, endpointKey: tn.phoneNumber },
-      { trackingNumberId: tn.id, numberAssignmentId: assignmentId, sourceId },
+      { phone: fromE164 },
+      {
+        endpointKey: tn.phoneNumber,
+        trackingNumberId: tn.id,
+        numberAssignmentId: assignmentId,
+        sourceId,
+      },
     );
     if (!thread) throw new Error("could not open a conversation for this text");
+
+    // Consent bookkeeping. Twilio's Advanced Opt-Out already stops delivery at the
+    // carrier; mirroring it here is what stops the app from *queueing* a send that
+    // would be rejected, and gives the UI something honest to show.
+    await applyOptOutKeywords(thread.contactId, body);
 
     // Idempotency: Twilio retries on any non-2xx, and the unique index on
     // (channel, external_id) is what makes a retry a no-op rather than a
@@ -84,8 +95,7 @@ export async function POST(req: Request) {
     const [inserted] = await db
       .insert(messages)
       .values({
-        conversationId: thread.id,
-        leadId: thread.leadId,
+        conversationId: thread.conversationId,
         channel: "sms",
         direction: "inbound",
         fromAddress: fromE164,
@@ -101,31 +111,21 @@ export async function POST(req: Request) {
 
     if (!inserted) return xmlResponse("<Response/>"); // already ingested
 
-    // One lead per thread: a follow-up text on an existing conversation attaches
-    // to the lead that conversation already has instead of minting a second one.
-    let leadId = thread.leadId;
-    if (!leadId) {
-      const [lead] = await db
-        .insert(leads)
-        .values({
-          type: "sms",
-          status: spam ? "spam" : "new",
-          phoneE164: fromE164,
-          message: body || null,
-          sourceId,
-          location: tn.location ?? "unknown",
-          isSpam: spam,
-          // Left unclassified on purpose — see the note above.
-          isLead: spam ? false : null,
-          leadReason: spam ? "spam rule: blocked number" : null,
-        })
-        .returning({ id: leads.id });
-      leadId = lead.id;
-      await db.update(conversations).set({ leadId }).where(eq(conversations.id, thread.id));
-    }
+    // One OPEN lead per thread. A follow-up text ("it's near the driveway") is part
+    // of the enquiry already in flight, not a second enquiry — but a text months
+    // later, after the last one was won or lost, is genuinely new business and gets
+    // its own lead so the ROI numbers count it.
+    const leadId = await attachToOpenLeadOrCreate({
+      thread,
+      fromE164,
+      body,
+      sourceId,
+      location: tn.location ?? "unknown",
+      spam,
+    });
 
     await db.update(messages).set({ leadId }).where(eq(messages.id, inserted.id));
-    await recordThreadActivity(thread.id, {
+    await recordThreadActivity(thread.conversationId, {
       channel: "sms",
       direction: "inbound",
       preview: preview(body) ?? "(no text)",
@@ -142,6 +142,76 @@ export async function POST(req: Request) {
     // dropped text is not.
     console.error("[twilio/sms] error", err);
     return new Response("error", { status: 500 });
+  }
+}
+
+/** Stages an open lead can still be sitting in — anything past these is finished. */
+const OPEN_STAGES = ["new", "working", "qualified", "quoted"] as const;
+
+/**
+ * Attach this text to the thread's still-open lead, or start a new one.
+ *
+ * The window matters for ROI: without it, every follow-up text would mint a lead
+ * and inflate the count; with a lead reused forever, a repeat customer's second
+ * job would never be counted at all.
+ */
+async function attachToOpenLeadOrCreate(args: {
+  thread: { conversationId: string; contactId: string };
+  fromE164: string;
+  body: string;
+  sourceId: string | null;
+  location: "edwardsville" | "ofallon" | "unknown";
+  spam: boolean;
+}): Promise<string> {
+  const { thread, fromE164, body, sourceId, location, spam } = args;
+
+  const [open] = await db
+    .select({ id: leads.id })
+    .from(leads)
+    .where(and(eq(leads.conversationId, thread.conversationId), inArray(leads.status, [...OPEN_STAGES])))
+    .orderBy(desc(leads.occurredAt))
+    .limit(1);
+  if (open) return open.id;
+
+  const [lead] = await db
+    .insert(leads)
+    .values({
+      type: "sms",
+      status: spam ? "spam" : "new",
+      phoneE164: fromE164,
+      message: body || null,
+      conversationId: thread.conversationId,
+      contactId: thread.contactId,
+      sourceId,
+      location,
+      isSpam: spam,
+      // Left unclassified on purpose — see the note at the top of this file.
+      isLead: spam ? false : null,
+      leadReason: spam ? "spam rule: blocked number" : null,
+    })
+    .returning({ id: leads.id });
+  return lead.id;
+}
+
+/**
+ * Honour STOP/START in the message body.
+ *
+ * Twilio's Advanced Opt-Out handles the carrier side automatically for numbers in
+ * a messaging service; this mirrors the state locally so the app never queues a
+ * send that would come back as error 21610, and so the thread can say plainly that
+ * this person has opted out.
+ */
+const STOP_WORDS = new Set(["stop", "stopall", "unsubscribe", "cancel", "end", "quit", "optout", "revoke"]);
+const START_WORDS = new Set(["start", "unstop", "yes"]);
+
+async function applyOptOutKeywords(contactId: string, body: string) {
+  const word = body.trim().toLowerCase().replace(/[^a-z]/g, "");
+  if (!word) return;
+  try {
+    if (STOP_WORDS.has(word)) await markSmsOptedOut(contactId);
+    else if (START_WORDS.has(word)) await clearSmsOptOut(contactId);
+  } catch (err) {
+    console.error("[twilio/sms] opt-out bookkeeping failed (text still captured)", err);
   }
 }
 

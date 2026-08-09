@@ -149,12 +149,33 @@ async function recordCall(args: {
   // Another delivery won the race — its call row (and lead) already exist.
   if (!inserted) return;
 
+  // Thread it FIRST, so the lead is born already attached to the caller's
+  // conversation — a returning customer's new call joins the thread that already
+  // holds their form submission and last month's texts. Best-effort: the inbox is
+  // a read surface, and a threading failure must never cost us the forward TwiML.
+  let thread: Awaited<ReturnType<typeof upsertThread>> = null;
+  try {
+    thread = await upsertThread(
+      { phone: fromE164 },
+      {
+        endpointKey: tn.phoneNumber,
+        trackingNumberId: tn.id,
+        numberAssignmentId: assignmentId,
+        sourceId,
+      },
+    );
+  } catch (err) {
+    console.error("[twilio/voice] threading failed (call still recorded)", err);
+  }
+
   const [lead] = await db
     .insert(leads)
     .values({
       type: "call",
       status: status === "rejected_spam" ? "spam" : "new",
       phoneE164: fromE164,
+      conversationId: thread?.conversationId ?? null,
+      contactId: thread?.contactId ?? null,
       sourceId,
       location: tn.location ?? "unknown",
       isSpam: status === "rejected_spam",
@@ -162,28 +183,20 @@ async function recordCall(args: {
     })
     .returning({ id: leads.id });
 
-  // Thread it, so a text from the same caller to the same number joins this
-  // conversation instead of starting a parallel one. Best-effort: the inbox is a
-  // read surface, and a threading failure must never cost us the forward TwiML.
-  let conversationId: string | null = null;
-  if (fromE164) {
+  if (thread) {
     try {
-      const thread = await upsertThread(
-        { contactKey: fromE164, endpointKey: tn.phoneNumber },
-        { leadId: lead.id, trackingNumberId: tn.id, numberAssignmentId: assignmentId, sourceId },
-      );
-      conversationId = thread?.id ?? null;
-      if (conversationId) {
-        await recordThreadActivity(conversationId, {
-          channel: "call",
-          direction: "inbound",
-          preview: status === "rejected_spam" ? "Blocked as spam" : "Inbound call",
-        });
-      }
+      await recordThreadActivity(thread.conversationId, {
+        channel: "call",
+        direction: "inbound",
+        preview: status === "rejected_spam" ? "Blocked as spam" : "Inbound call",
+      });
     } catch (err) {
-      console.error("[twilio/voice] threading failed (call recorded)", err);
+      console.error("[twilio/voice] thread activity failed (call still recorded)", err);
     }
   }
 
-  await db.update(calls).set({ leadId: lead.id, conversationId }).where(eq(calls.id, inserted.id));
+  await db
+    .update(calls)
+    .set({ leadId: lead.id, conversationId: thread?.conversationId ?? null })
+    .where(eq(calls.id, inserted.id));
 }

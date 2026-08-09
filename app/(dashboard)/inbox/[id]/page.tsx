@@ -1,26 +1,39 @@
-import { asc, eq } from "drizzle-orm";
+import { asc, desc, eq } from "drizzle-orm";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { db } from "@/lib/db/client";
-import { calls, conversations, leads, messages, sources, trackingNumbers } from "@/lib/db/schema";
+import {
+  calls,
+  contacts,
+  conversations,
+  facebookLeads,
+  formSubmissions,
+  leads,
+  messages,
+  sources,
+  trackingNumbers,
+} from "@/lib/db/schema";
 import { dateTime, dollars, durationLabel } from "@/lib/format";
 import { markThreadRead } from "@/lib/messaging/thread";
 import { formatPhoneDisplay } from "@/lib/phone";
 import { LeadToggle } from "../../lead-toggle";
 import { stageClass } from "../../leads/stage";
+import { ReplyBox } from "./reply-box";
+import { ThreadStateButton } from "./thread-state";
 
 export const dynamic = "force-dynamic";
 
-/** A thread entry, normalized across calls and messages so it renders as one timeline. */
+/** One entry in the timeline, normalized across the four activity tables. */
 type Entry =
   | { kind: "call"; at: Date; row: typeof calls.$inferSelect }
-  | { kind: "message"; at: Date; row: typeof messages.$inferSelect };
+  | { kind: "message"; at: Date; row: typeof messages.$inferSelect }
+  | { kind: "form"; at: Date; row: typeof formSubmissions.$inferSelect }
+  | { kind: "facebook"; at: Date; row: typeof facebookLeads.$inferSelect };
 
 /**
- * One conversation: every call and text with a contact on a given number, oldest
- * first. This is what makes the inbox an inbox rather than a log — a customer who
- * called on Tuesday and texted on Thursday reads as one story, with the
- * attribution the thread was opened with.
+ * One person's whole history with us, oldest first. This is what makes the inbox
+ * an inbox rather than a log: the call, the form they filled in first, and the
+ * texts afterwards read as one story.
  */
 export default async function ThreadPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -28,35 +41,42 @@ export default async function ThreadPage({ params }: { params: Promise<{ id: str
   const [row] = await db
     .select({
       thread: conversations,
+      contact: contacts,
       sourceKey: sources.key,
       sourceName: sources.displayName,
       numberLabel: trackingNumbers.friendlyName,
-      lead: leads,
     })
     .from(conversations)
+    .innerJoin(contacts, eq(conversations.contactId, contacts.id))
     .leftJoin(sources, eq(conversations.sourceId, sources.id))
     .leftJoin(trackingNumbers, eq(conversations.trackingNumberId, trackingNumbers.id))
-    .leftJoin(leads, eq(conversations.leadId, leads.id))
     .where(eq(conversations.id, id))
     .limit(1);
   if (!row) notFound();
 
-  const thread = row.thread;
-  const [callRows, messageRows] = await Promise.all([
+  const { thread, contact } = row;
+
+  const [callRows, messageRows, formRows, fbRows, leadRows] = await Promise.all([
     db.select().from(calls).where(eq(calls.conversationId, thread.id)).orderBy(asc(calls.createdAt)),
     db.select().from(messages).where(eq(messages.conversationId, thread.id)).orderBy(asc(messages.occurredAt)),
+    db.select().from(formSubmissions).where(eq(formSubmissions.conversationId, thread.id)),
+    db.select().from(facebookLeads).where(eq(facebookLeads.conversationId, thread.id)),
+    db.select().from(leads).where(eq(leads.conversationId, thread.id)).orderBy(desc(leads.occurredAt)),
   ]);
 
   // Opening the thread is what "read" means here.
   await markThreadRead(thread.id);
 
   const entries: Entry[] = [
-    ...callRows.map((c) => ({ kind: "call" as const, at: c.createdAt, row: c })),
-    ...messageRows.map((m) => ({ kind: "message" as const, at: m.occurredAt, row: m })),
+    ...callRows.map((r) => ({ kind: "call" as const, at: r.createdAt, row: r })),
+    ...messageRows.map((r) => ({ kind: "message" as const, at: r.occurredAt, row: r })),
+    ...formRows.map((r) => ({ kind: "form" as const, at: r.submittedAt, row: r })),
+    ...fbRows.map((r) => ({ kind: "facebook" as const, at: r.createdTime ?? r.createdAt, row: r })),
   ].sort((a, b) => a.at.getTime() - b.at.getTime());
 
-  const who = thread.contactName || displayContact(thread.contactKey);
-  const lead = row.lead;
+  const who = contact.displayName || displayContact(contact.primaryPhone) || contact.primaryEmail || "Unknown";
+  const current = leadRows[0] ?? null;
+  const canText = Boolean(contact.primaryPhone && thread.lastEndpointKey?.startsWith("+"));
 
   return (
     <>
@@ -66,25 +86,38 @@ export default async function ThreadPage({ params }: { params: Promise<{ id: str
         <div>
           <h1 className="page-title">{who}</h1>
           <p className="page-sub">
-            {entries.length} {entries.length === 1 ? "interaction" : "interactions"} ·{" "}
-            reached {row.numberLabel ? `${row.numberLabel} ` : ""}
-            {displayContact(thread.endpointKey)}
-            {row.sourceKey ? <> · via {row.sourceName ?? row.sourceKey}</> : <> · unattributed</>}
+            {entries.length} {entries.length === 1 ? "interaction" : "interactions"}
+            {contact.primaryPhone ? <> · {displayContact(contact.primaryPhone)}</> : null}
+            {contact.primaryEmail ? <> · {contact.primaryEmail}</> : null}
+            {row.sourceKey ? <> · first came via {row.sourceName ?? row.sourceKey}</> : <> · unattributed</>}
           </p>
         </div>
         <div className="controls">
-          {lead && <span className={stageClass(lead.status)}>{lead.status}</span>}
-          {lead && <LeadToggle leadId={lead.id} isLead={lead.isLead} manual={lead.isLeadManual} />}
-          {lead && <Link href={`/leads/${lead.id}`} className="btn">Lead detail</Link>}
+          {current && <span className={stageClass(current.status)}>{current.status}</span>}
+          {current && <LeadToggle leadId={current.id} isLead={current.isLead} manual={current.isLeadManual} />}
+          {current && <Link href={`/leads/${current.id}`} className="btn">Lead detail</Link>}
+          <ThreadStateButton conversationId={thread.id} state={thread.state} />
         </div>
       </div>
 
-      {lead && (lead.quoteValueCents || lead.salesValueCents) ? (
+      {leadRows.length > 1 && (
+        <p className="muted" style={{ marginTop: -6, marginBottom: 14, fontSize: 12.5 }}>
+          {leadRows.length} separate enquiries from this person over time —{" "}
+          {leadRows.map((l, i) => (
+            <span key={l.id}>
+              {i > 0 && ", "}
+              <Link href={`/leads/${l.id}`} className="link">{dateTime(l.occurredAt)}</Link>
+            </span>
+          ))}
+        </p>
+      )}
+
+      {current && (current.quoteValueCents || current.salesValueCents) ? (
         <p className="muted" style={{ marginTop: -6, marginBottom: 14, fontSize: 13 }}>
-          {lead.quoteValueCents ? <>{dollars(lead.quoteValueCents)} quoted</> : null}
-          {lead.quoteValueCents && lead.salesValueCents ? " · " : null}
-          {lead.salesValueCents ? (
-            <span style={{ color: "var(--accent)", fontWeight: 700 }}>{dollars(lead.salesValueCents)} won</span>
+          {current.quoteValueCents ? <>{dollars(current.quoteValueCents)} quoted</> : null}
+          {current.quoteValueCents && current.salesValueCents ? " · " : null}
+          {current.salesValueCents ? (
+            <span style={{ color: "var(--accent)", fontWeight: 700 }}>{dollars(current.salesValueCents)} won</span>
           ) : null}
         </p>
       ) : null}
@@ -93,18 +126,22 @@ export default async function ThreadPage({ params }: { params: Promise<{ id: str
         <div className="empty">Nothing recorded on this thread yet.</div>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          {entries.map((e) =>
-            e.kind === "call" ? <CallEntry key={`c${e.row.id}`} call={e.row} /> : <MessageEntry key={`m${e.row.id}`} message={e.row} />,
-          )}
+          {entries.map((e) => {
+            if (e.kind === "call") return <CallEntry key={`c${e.row.id}`} call={e.row} />;
+            if (e.kind === "message") return <MessageEntry key={`m${e.row.id}`} message={e.row} />;
+            if (e.kind === "form") return <FormEntry key={`f${e.row.id}`} form={e.row} />;
+            return <FacebookEntry key={`fb${e.row.id}`} fb={e.row} />;
+          })}
         </div>
       )}
 
-      {messageRows.length > 0 && (
-        <p className="muted" style={{ fontSize: 12, marginTop: 16 }}>
-          Replies are sent from your own phone — texts are relayed there as they arrive. Sending from
-          this app needs an A2P 10DLC campaign registered for the Arbor numbers first.
-        </p>
-      )}
+      <ReplyBox
+        conversationId={thread.id}
+        canText={canText}
+        optedOut={Boolean(contact.smsOptedOutAt)}
+        fromNumber={thread.lastEndpointKey}
+        fromLabel={row.numberLabel}
+      />
     </>
   );
 }
@@ -137,11 +174,11 @@ function CallEntry({ call }: { call: typeof calls.$inferSelect }) {
 function MessageEntry({ message }: { message: typeof messages.$inferSelect }) {
   const inbound = message.direction === "inbound";
   const media = Array.isArray(message.media) ? (message.media as Array<{ url?: string; contentType?: string }>) : [];
+  const failed = message.status === "failed";
   return (
     <div
       className="card"
-      // Outbound sits inset and lighter, so the customer's side of the thread reads
-      // down the left edge at a glance.
+      // Outbound sits inset and lighter, so the customer's side reads down the left.
       style={inbound ? undefined : { marginLeft: "12%", background: "var(--panel-2)" }}
     >
       <div className="card-head">
@@ -163,9 +200,9 @@ function MessageEntry({ message }: { message: typeof messages.$inferSelect }) {
           </div>
         )}
         {message.status && message.status !== "received" && (
-          <div className="muted" style={{ fontSize: 11, marginTop: 6 }}>
-            {message.status}
-            {message.errorCode ? ` (${message.errorCode})` : ""}
+          <div style={{ fontSize: 11, marginTop: 6, color: failed ? "var(--danger)" : "var(--muted)" }}>
+            {failed ? "failed to send" : message.status}
+            {message.errorCode ? ` (Twilio ${message.errorCode})` : ""}
           </div>
         )}
       </div>
@@ -173,7 +210,56 @@ function MessageEntry({ message }: { message: typeof messages.$inferSelect }) {
   );
 }
 
+function FormEntry({ form }: { form: typeof formSubmissions.$inferSelect }) {
+  const fields = form.fields && typeof form.fields === "object" ? (form.fields as Record<string, unknown>) : {};
+  const entries = Object.entries(fields).filter(([, v]) => typeof v === "string" || typeof v === "number");
+  return (
+    <div className="card">
+      <div className="card-head">
+        <h3>▤ Website form</h3>
+        <span className="muted">{dateTime(form.submittedAt)}</span>
+      </div>
+      <div className="card-body">
+        <div className="def-list">
+          {form.pageUrl && (
+            <div className="def"><span className="def-k">Page</span><span className="def-v">{form.pageUrl}</span></div>
+          )}
+          {entries.map(([k, v]) => (
+            <div className="def" key={k}>
+              <span className="def-k">{k.replace(/_/g, " ")}</span>
+              <span className="def-v">{String(v)}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function FacebookEntry({ fb }: { fb: typeof facebookLeads.$inferSelect }) {
+  const fields = fb.fields && typeof fb.fields === "object" ? (fb.fields as Record<string, unknown>) : {};
+  const entries = Object.entries(fields).filter(([, v]) => typeof v === "string" || typeof v === "number");
+  return (
+    <div className="card">
+      <div className="card-head">
+        <h3>ⓕ Facebook lead form</h3>
+        <span className="muted">{dateTime(fb.createdTime ?? fb.createdAt)}</span>
+      </div>
+      <div className="card-body">
+        <div className="def-list">
+          {entries.map(([k, v]) => (
+            <div className="def" key={k}>
+              <span className="def-k">{k.replace(/_/g, " ")}</span>
+              <span className="def-v">{String(v)}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function displayContact(value: string | null): string {
-  if (!value) return "—";
+  if (!value) return "";
   return value.includes("@") ? value : formatPhoneDisplay(value) || value;
 }
