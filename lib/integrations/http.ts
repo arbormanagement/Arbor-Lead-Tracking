@@ -24,10 +24,16 @@ function retryDelayMs(res: Response, attempt: number): number {
 export async function fetchWithRetry(
   url: string | URL,
   init?: RequestInit,
-  { retries = 2 }: { retries?: number } = {},
+  { retries = 2, timeoutMs }: { retries?: number; timeoutMs?: number } = {},
 ): Promise<Response> {
   for (let attempt = 0; ; attempt++) {
-    const res = await fetch(url, init);
+    // A fresh deadline per attempt when `timeoutMs` is given. Passing a single
+    // `AbortSignal.timeout()` through `init` instead makes ONE deadline cover
+    // every attempt plus the backoff sleeps between them, so a slow first attempt
+    // leaves the retry no budget and, if the signal fires mid-sleep, the caller
+    // sees a bare "This operation was aborted" instead of the upstream status —
+    // which is then what lands in sync_runs.error.
+    const res = await fetch(url, timeoutMs ? { ...init, signal: AbortSignal.timeout(timeoutMs) } : init);
     if ((res.status !== 429 && res.status < 500) || attempt >= retries) return res;
     // Discard the failed body so the connection can be reused across retries.
     await res.body?.cancel().catch(() => undefined);

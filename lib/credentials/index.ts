@@ -73,10 +73,24 @@ export async function getCredential(platform: string, key: string, tenantId = DE
   return (await getPlatformCreds(platform, tenantId))[key] ?? null;
 }
 
-/** Upsert (or, with an empty value, clear) a credential and bust the cache. */
-export async function setCredential(platform: string, key: string, value: string, tenantId = DEFAULT_TENANT): Promise<void> {
+/**
+ * Upsert (or, with an empty value, clear) a credential and bust the cache.
+ *
+ * `tx` lets a caller saving several fields at once run them as one unit. Saving a
+ * credential set field-by-field outside a transaction can half-apply: a failure
+ * midway leaves, say, a new client_id stored against the old refresh_token, which
+ * authenticates as nothing and is hard to spot because the UI reports every field
+ * as "set".
+ */
+export async function setCredential(
+  platform: string,
+  key: string,
+  value: string,
+  tenantId = DEFAULT_TENANT,
+  tx: Pick<typeof db, "insert" | "delete"> = db,
+): Promise<void> {
   if (!value) {
-    await db
+    await tx
       .delete(integrationCredentials)
       .where(
         and(
@@ -87,7 +101,7 @@ export async function setCredential(platform: string, key: string, value: string
       );
   } else {
     const valueEncrypted = encryptSecret(value);
-    await db
+    await tx
       .insert(integrationCredentials)
       .values({ tenantId, platform, key, valueEncrypted })
       .onConflictDoUpdate({

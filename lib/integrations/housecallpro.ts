@@ -39,8 +39,7 @@ class HousecallProProvider implements RevenueProvider {
         Accept: "application/json",
         "Content-Type": "application/json",
       },
-      signal: AbortSignal.timeout(60_000),
-    });
+    }, { timeoutMs: 60_000 });
     if (!res.ok) throw new Error(`HCP ${res.status} ${path}: ${await res.text()}`);
     return (await res.json()) as T;
   }
@@ -106,13 +105,23 @@ class HousecallProProvider implements RevenueProvider {
   async listJobs({ sinceDays }: { sinceDays: number }): Promise<HcpJobDTO[]> {
     const cfg = await this.config();
     const cutoff = Date.now() - sinceDays * 86_400_000;
-    const min = new Date(cutoff).toISOString();
+    // Windowed on updated_at, like customers and estimates — NOT on
+    // scheduled_start. The RevenueProvider contract is "jobs created/updated
+    // within the window", and filtering by schedule date meant a job scheduled
+    // more than `sinceDays` ago but completed or invoiced today fell outside the
+    // query and never re-synced, so its status and totals froze at whatever the
+    // last in-window pull saw. Weather-delayed tree work makes that ordinary.
+    // The updated_at sort plus the early-stop keeps this to a few pages.
     const rows = await this.paginate(cfg, "/jobs", "jobs", {
       sort_by: "updated_at",
       sort_direction: "desc",
-      scheduled_start_min: min,
     }, cutoff);
-    return rows.map(mapJob);
+    return rows
+      .filter((j) => {
+        const updated = parseDate(j.updated_at ?? j.updated_at_iso);
+        return !updated || updated.getTime() >= cutoff;
+      })
+      .map(mapJob);
   }
 
   async listEstimates({ sinceDays }: { sinceDays: number }): Promise<HcpEstimateDTO[]> {

@@ -43,7 +43,7 @@ async function getPageAccessToken(cfg: FbConfig): Promise<string> {
   const url = new URL(`https://graph.facebook.com/${cfg.apiVersion}/${cfg.pageId}`);
   url.searchParams.set("fields", "access_token");
   url.searchParams.set("access_token", cfg.accessToken);
-  const res = await fetchWithRetry(url, { signal: AbortSignal.timeout(20_000) });
+  const res = await fetchWithRetry(url, undefined, { timeoutMs: 20_000 });
   if (!res.ok) throw new Error(`Facebook page token ${res.status}: ${await res.text()}`);
   const j = (await res.json()) as { access_token?: string };
   if (!j.access_token) {
@@ -73,7 +73,7 @@ class FacebookProvider implements SpendProvider {
     const rows: SpendRow[] = [];
     let next: string | null = url.toString();
     for (let guard = 0; next && guard < 50; guard++) {
-      const res = await fetchWithRetry(next, { signal: AbortSignal.timeout(60_000) });
+      const res = await fetchWithRetry(next, undefined, { timeoutMs: 60_000 });
       if (!res.ok) throw new Error(`Facebook ${res.status}: ${await res.text()}`);
       const body = (await res.json()) as { data?: Array<Record<string, any>>; paging?: { next?: string } };
       for (const r of body.data ?? []) {
@@ -143,8 +143,7 @@ class FacebookProvider implements SpendProvider {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ data, access_token: token }),
-        signal: AbortSignal.timeout(30_000),
-      });
+      }, { timeoutMs: 30_000 });
       const json = await res.json();
       if (!res.ok) return { ok: false, error: `Facebook CAPI ${res.status}: ${JSON.stringify(json)}`, raw: json };
       return { ok: true, raw: json };
@@ -166,7 +165,7 @@ class FacebookProvider implements SpendProvider {
       const url = new URL(`https://graph.facebook.com/${cfg.apiVersion}/${path}`);
       url.searchParams.set("fields", "id,name");
       url.searchParams.set("access_token", cfg.accessToken);
-      const res = await fetchWithRetry(url, { signal: AbortSignal.timeout(30_000) });
+      const res = await fetchWithRetry(url, undefined, { timeoutMs: 30_000 });
       if (!res.ok) {
         if (tolerant) return; // best-effort secondary source
         throw new Error(`Facebook ${res.status}: ${await res.text()}`);
@@ -184,7 +183,7 @@ class FacebookProvider implements SpendProvider {
       const bizUrl = new URL(`https://graph.facebook.com/${cfg.apiVersion}/${cfg.adAccountId}`);
       bizUrl.searchParams.set("fields", "business");
       bizUrl.searchParams.set("access_token", cfg.accessToken);
-      const bizRes = await fetchWithRetry(bizUrl, { signal: AbortSignal.timeout(30_000) });
+      const bizRes = await fetchWithRetry(bizUrl, undefined, { timeoutMs: 30_000 });
       if (bizRes.ok) {
         const j = (await bizRes.json()) as { business?: { id?: string } };
         if (j.business?.id) await pull(`${j.business.id}/adspixels`, true);
@@ -207,7 +206,7 @@ class FacebookProvider implements SpendProvider {
     url.searchParams.set("access_token", pageToken);
     let next: string | null = url.toString();
     for (let guard = 0; next && guard < 25; guard++) {
-      const res = await fetchWithRetry(next, { signal: AbortSignal.timeout(30_000) });
+      const res = await fetchWithRetry(next, undefined, { timeoutMs: 30_000 });
       if (!res.ok) throw new Error(`Facebook forms ${res.status}: ${await res.text()}`);
       const body = (await res.json()) as { data?: Array<{ id: string; name?: string; status?: string; leads_count?: number }>; paging?: { next?: string } };
       for (const f of body.data ?? []) {
@@ -241,7 +240,7 @@ class FacebookProvider implements SpendProvider {
     const out: FbLeadDetail[] = [];
     let next: string | null = first.toString();
     for (let guard = 0; next && guard < 25; guard++) {
-      const res = await fetchWithRetry(next, { signal: AbortSignal.timeout(30_000) });
+      const res = await fetchWithRetry(next, undefined, { timeoutMs: 30_000 });
       if (!res.ok) throw new Error(`Facebook leads ${res.status}: ${await res.text()}`);
       const body = (await res.json()) as {
         data?: Array<{ id: string; created_time?: string; field_data?: Array<{ name: string; values: string[] }>; ad_id?: string; form_id?: string }>;
@@ -292,7 +291,7 @@ class FacebookProvider implements SpendProvider {
       const url = new URL(`https://graph.facebook.com/${cfg.apiVersion}/${adId}`);
       url.searchParams.set("fields", "campaign_id");
       url.searchParams.set("access_token", cfg.accessToken);
-      const res = await fetchWithRetry(url, { signal: AbortSignal.timeout(20_000) });
+      const res = await fetchWithRetry(url, undefined, { timeoutMs: 20_000 });
       if (!res.ok) {
         console.warn(`[facebook] campaign lookup for ad ${adId} failed: ${res.status}`);
         return { failed: true };
@@ -370,7 +369,7 @@ export async function getFacebookLead(leadgenId: string): Promise<FbLeadDetail> 
   url.searchParams.set("fields", "id,created_time,ad_id,form_id,field_data");
   url.searchParams.set("access_token", pageToken);
 
-  const res = await fetchWithRetry(url, { signal: AbortSignal.timeout(30_000) });
+  const res = await fetchWithRetry(url, undefined, { timeoutMs: 30_000 });
   if (!res.ok) throw new Error(`Facebook lead ${res.status}: ${await res.text()}`);
   const j = (await res.json()) as Record<string, any>;
 
@@ -381,7 +380,7 @@ export async function getFacebookLead(leadgenId: string): Promise<FbLeadDetail> 
       const adUrl = new URL(`https://graph.facebook.com/${cfg.apiVersion}/${j.ad_id}`);
       adUrl.searchParams.set("fields", "campaign_id");
       adUrl.searchParams.set("access_token", cfg.accessToken);
-      const adRes = await fetchWithRetry(adUrl, { signal: AbortSignal.timeout(30_000) });
+      const adRes = await fetchWithRetry(adUrl, undefined, { timeoutMs: 30_000 });
       if (adRes.ok) campaignId = ((await adRes.json()) as { campaign_id?: string }).campaign_id;
       else campaignLookupFailed = true;
     } catch {

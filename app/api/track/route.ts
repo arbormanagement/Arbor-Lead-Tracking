@@ -267,7 +267,13 @@ export async function POST(req: Request) {
         webSessionId: sid,
         formId: form.formId,
         pageUrl: form.pageUrl ?? url,
-        fields: form.fields,
+        // Redacted, not raw. The snippet strips password INPUTS, but that is a
+        // client-side check on input.type only: hidden CSRF tokens, and card or
+        // SSN digits typed into an ordinary text box, still arrive here and would
+        // be stored verbatim in jsonb forever. Contact details the app exists to
+        // capture (name/email/phone) are unaffected — they are read from the lead
+        // columns above, not from this blob.
+        fields: redactSensitiveFields(form.fields),
         submittedAt: now,
       });
     }
@@ -297,6 +303,49 @@ function inferLocation(url?: string): "edwardsville" | "ofallon" | "unknown" {
   if (u.includes("edwardsville")) return "edwardsville";
   if (u.includes("ofallon") || u.includes("o-fallon") || u.includes("o'fallon")) return "ofallon";
   return "unknown";
+}
+
+/** Field names that should never be stored, whatever their value. */
+const SENSITIVE_NAME =
+  /pass(word|wd)?|\bpwd\b|secret|token|csrf|nonce|authenticity|api[-_]?key|cvv|cvc|ssn|social.?security|routing|account.?number|card.?number|\bcc\b/i;
+/** Value shapes worth redacting even under an innocuous field name. */
+const CARD_LIKE = /\b(?:\d[ -]*?){13,19}\b/;
+const SSN_LIKE = /\b\d{3}-\d{2}-\d{4}\b/;
+
+function luhnValid(digits: string): boolean {
+  let sum = 0;
+  let double = false;
+  for (let i = digits.length - 1; i >= 0; i--) {
+    let d = digits.charCodeAt(i) - 48;
+    if (double) d = d * 2 > 9 ? d * 2 - 9 : d * 2;
+    sum += d;
+    double = !double;
+  }
+  return sum % 10 === 0;
+}
+
+function redactSensitiveFields(fields: Record<string, string>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(fields)) {
+    if (SENSITIVE_NAME.test(k)) {
+      out[k] = "[redacted]";
+      continue;
+    }
+    if (SSN_LIKE.test(v)) {
+      out[k] = "[redacted]";
+      continue;
+    }
+    // Luhn-check before redacting a long digit run, so a phone number or a
+    // job-reference number isn't mistaken for a card.
+    const m = v.match(CARD_LIKE);
+    const digits = m?.[0].replace(/\D/g, "") ?? "";
+    if (digits.length >= 13 && digits.length <= 19 && luhnValid(digits)) {
+      out[k] = "[redacted]";
+      continue;
+    }
+    out[k] = v;
+  }
+  return out;
 }
 
 function mapFormFields(fields: Record<string, string>) {
