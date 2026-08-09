@@ -61,9 +61,34 @@ const SNIPPET = String.raw`(function () {
     var sid = getCookie('arbor_sid');
     var sidTs = parseInt(getCookie('arbor_sid_ts') || '0', 10);
     var now = Date.now();
-    if (!sid || !sidTs || now - sidTs > SID_MIN * 60000) { sid = uuid(); }
+
+    // A new campaign touch STARTS A NEW SESSION, even mid-visit. Attribution here
+    // is last-touch, and the session row freezes its attribution on insert — so a
+    // visitor who arrives direct, browses, then clicks a Google ad back to the
+    // site inside the 30-minute window would otherwise keep the frozen "direct"
+    // source and never record the gclid, handing the converting click zero credit.
+    // Fingerprint only the campaign-identifying params, so ordinary navigation
+    // (which carries none) never breaks the session.
+    var campNow = (function () {
+      var p = new URLSearchParams(location.search);
+      var keys = ['gclid', 'gbraid', 'wbraid', 'fbclid', 'msclkid', 'utm_source', 'utm_medium', 'utm_campaign'];
+      var parts = [];
+      for (var i = 0; i < keys.length; i++) {
+        var v = p.get(keys[i]);
+        if (v) parts.push(keys[i] + '=' + v);
+      }
+      return parts.join('&');
+    })();
+    var campPrev = getCookie('arbor_camp') || '';
+    var newCampaign = !!campNow && campNow !== campPrev;
+
+    if (!sid || !sidTs || now - sidTs > SID_MIN * 60000 || newCampaign) { sid = uuid(); }
     setCookie('arbor_sid', sid, SID_MIN * 60);
     setCookie('arbor_sid_ts', String(now), SID_MIN * 60);
+    // Remember the campaign this session belongs to, so the NEXT load can tell a
+    // genuinely new touch from a reload of the same one. Only written when the URL
+    // actually carries campaign params — an internal navigation must not clear it.
+    if (campNow) setCookie('arbor_camp', campNow, SID_MIN * 60);
 
     function qp() {
       var p = new URLSearchParams(location.search);

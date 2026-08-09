@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gte, inArray, lte, ne, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNull, lte, ne, or, sql } from "drizzle-orm";
 import { campaignNotExcluded, excludedCampaignIds } from "@/lib/campaigns";
 import { db } from "@/lib/db/client";
 import {
@@ -162,6 +162,20 @@ async function matchLeadsToEstimates(windowDays: number): Promise<{ qualified: n
           eq(leads.isSpam, false),
           gte(leads.occurredAt, windowStart),
           lte(leads.occurredAt, estDate),
+          // Never steal a lead that is already linked to an estimate this run did
+          // not scan. Those leads are outside the reset above, so their stage and
+          // value are frozen history — letting a newer estimate claim one would
+          // OVERWRITE salesValueCents and hcp_estimate_id, and the older won
+          // estimate's revenue would silently vanish from ROI with nothing to
+          // restore it. Leads linked to an estimate we DID scan are fair game:
+          // they were just reset and are being re-derived.
+          or(
+            isNull(leads.hcpEstimateId),
+            inArray(
+              leads.hcpEstimateId,
+              db.select({ id: hcpEstimates.id }).from(hcpEstimates).where(scannedEstimates),
+            ),
+          ),
         ),
       )
       // Last-touch credits the latest lead before the estimate; first-touch the earliest.
@@ -478,7 +492,12 @@ async function rebuildRoiDaily(windowDays: number): Promise<number> {
           revenueCents: r.revenueCents,
           quoteValueCents: r.quoteValueCents,
           // Cost per *qualified* lead (a real opportunity), not per raw contact.
-          costPerLeadCents: r.qualifiedCount ? Math.round(r.spendCents / r.qualifiedCount) : null,
+          // Spend ÷ CAPTURED leads, matching what the overview and sources pages
+          // both display and label as CPL (and what Ads Manager reports). This was
+          // spend ÷ qualified — a cost-per-*qualified*-lead under the name
+          // `cost_per_lead_cents`, so anyone reading roi_daily directly got a
+          // materially different number from the identically-named figure in the UI.
+          costPerLeadCents: r.leadsCount ? Math.round(r.spendCents / r.leadsCount) : null,
           costPerAcquisitionCents: r.wonCount ? Math.round(r.spendCents / r.wonCount) : null,
           roiRatio: r.spendCents ? (r.revenueCents / r.spendCents).toFixed(4) : null,
         })),

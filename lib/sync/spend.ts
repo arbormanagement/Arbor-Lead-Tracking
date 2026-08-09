@@ -47,8 +47,21 @@ export async function syncSpend({ sinceDays }: { sinceDays?: number } = {}) {
         errors.push(`${provider.name}: ${msg}`);
       }
     }
-    if (providers.length > 0 && errors.length === providers.length) {
-      throw new Error(`all spend providers failed — ${errors.join("; ")}`);
+    // Fail the RUN if any provider failed, not only if all of them did.
+    //
+    // Per-provider isolation above is about work, not about reporting: every
+    // provider that succeeded has already upserted its rows, and re-pulling is
+    // idempotent, so throwing here costs nothing and loses nothing. What it buys
+    // is visibility — previously one permanently dead platform (an expired
+    // Facebook token, say) left `sync_runs.status = 'success'` forever with the
+    // error buried in `stats.byProvider`, so the fire-and-log model had nothing to
+    // alert on. By the time anyone noticed, the gap was older than the 35-day
+    // re-pull and unhealable.
+    if (errors.length > 0) {
+      throw new Error(
+        `${errors.length}/${providers.length} spend provider(s) failed — ${errors.join("; ")}` +
+          (upserted > 0 ? ` (${upserted} rows from the others were still written)` : ""),
+      );
     }
 
     return { providers: providers.map((p) => p.name), upserted, byProvider, failedProviders: errors.length };
