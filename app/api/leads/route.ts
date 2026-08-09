@@ -1,4 +1,4 @@
-import { and, desc, eq, ilike, or, type SQL } from "drizzle-orm";
+import { and, desc, eq, ilike, isNotNull, not, or, type SQL } from "drizzle-orm";
 import { z } from "zod";
 import { authorizeAdmin, unauthorized } from "@/lib/admin-auth";
 import { db } from "@/lib/db/client";
@@ -45,7 +45,9 @@ export async function GET(req: Request) {
   if (p.status) where.push(eq(leads.status, p.status));
   if (p.isSpam) where.push(eq(leads.isSpam, p.isSpam === "true"));
   if (p.q) {
-    const like = `%${p.q}%`;
+    // Escape LIKE metacharacters so a search for "50%" or "a_b" is a literal
+    // search rather than a wildcard — `q=%` otherwise matches every lead.
+    const like = `%${p.q.replace(/[\\%_]/g, (ch) => `\\${ch}`)}%`;
     const m = or(
       ilike(leads.name, like),
       ilike(leads.emailLc, like),
@@ -53,6 +55,20 @@ export async function GET(req: Request) {
       ilike(leads.message, like),
     );
     if (m) where.push(m);
+  }
+
+  // In SQL, not in JS after the fact. Filtering the fetched page instead meant a
+  // query could return far fewer rows than `limit` — or none at all — while
+  // matching leads sat just beyond the page, and the reported count described the
+  // filtered page rather than the matches.
+  if (p.hasClickId !== undefined) {
+    const anyClickId = or(
+      isNotNull(leads.gclid),
+      isNotNull(leads.gbraid),
+      isNotNull(leads.wbraid),
+      isNotNull(leads.fbclid),
+    )!;
+    where.push(p.hasClickId === "true" ? anyClickId : not(anyClickId));
   }
 
   const rows = await db
@@ -82,15 +98,7 @@ export async function GET(req: Request) {
     .orderBy(desc(leads.occurredAt))
     .limit(p.limit);
 
-  // Applied after the query rather than in SQL: "carries any click id" spans four
-  // nullable columns, and expressing it as OR(isNotNull…) reads worse than this.
-  const filtered =
-    p.hasClickId === undefined
-      ? rows
-      : rows.filter((r) => {
-          const has = !!(r.gclid || r.gbraid || r.wbraid || r.fbclid);
-          return p.hasClickId === "true" ? has : !has;
-        });
+  const filtered = rows;
 
   return Response.json({ ok: true, count: filtered.length, leads: filtered });
 }

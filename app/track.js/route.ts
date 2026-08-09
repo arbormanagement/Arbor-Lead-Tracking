@@ -213,9 +213,44 @@ const SNIPPET = String.raw`(function () {
           assigned = { e164: d.number, display: d.display || d.number };
           applySwap();          // whatever is already rendered
           watchForLateNodes();  // everything React renders afterwards
+          startHeartbeat(ASSIGN, body);
         })
         .catch(function () {});
     })();
+
+    // Keep the lease alive while the tab is open. The lease runs 30 minutes and is
+    // only renewed by a call to /api/dni/assign, which the snippet otherwise makes
+    // once per hard page load — so a visitor who reads for 40 minutes before
+    // dialing (entirely normal when deciding on tree work) can be looking at a
+    // number whose lease expired and was recycled to someone else, and their call
+    // then freezes the NEW lease's source onto the wrong lead. Re-asserting the
+    // same session id returns and extends the existing lease, so this is a
+    // renewal, not a second number.
+    function startHeartbeat(url, payload) {
+      var EVERY_MS = 10 * 60 * 1000;
+      setInterval(function () {
+        // Don't renew for a backgrounded tab — if they come back, visibilitychange
+        // renews immediately.
+        if (document.hidden) return;
+        fetch(url, { method: 'POST', body: payload, headers: { 'Content-Type': 'text/plain' } })
+          .then(function (r) { return r.json(); })
+          .then(function (d) {
+            if (!d || !d.number) return;
+            // A different number means the old lease was already gone; adopt it.
+            if (d.number !== assigned.e164) {
+              assigned = { e164: d.number, display: d.display || d.number };
+              applySwap();
+            }
+          })
+          .catch(function () {});
+      }, EVERY_MS);
+      document.addEventListener('visibilitychange', function () {
+        if (!document.hidden) {
+          fetch(url, { method: 'POST', body: payload, headers: { 'Content-Type': 'text/plain' } })
+            .catch(function () {});
+        }
+      });
+    }
 
     // Form capture — never block the site's own submit (capture phase, no preventDefault).
     document.addEventListener('submit', function (ev) {

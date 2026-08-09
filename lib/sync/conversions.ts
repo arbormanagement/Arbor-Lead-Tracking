@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, ne, or, sql } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { calls, conversionExports, facebookLeads, hcpEstimates, leads, numberAssignments } from "@/lib/db/schema";
 import { getPlatformCreds } from "@/lib/credentials";
@@ -132,6 +132,13 @@ export async function syncConversions({ sinceDays = 90, limit = 500 }: { sinceDa
           inArray(leads.status, ["new", "working", "qualified", "quoted", "won"]),
           eq(leads.isSpam, false),
           gte(leads.occurredAt, cutoff),
+          // A call lead is only a lead once transcription has classified it, and
+          // that is what also scores it for spam. Exporting on `isLead IS NULL`
+          // raced the classifier: a call arriving shortly before this job ran was
+          // uploaded as a "Lead" conversion and then flagged spam minutes later —
+          // and a sent conversion cannot be retracted, so Google and Meta keep
+          // optimizing toward junk calls. Non-call types are inherently leads.
+          or(ne(leads.type, "call"), eq(leads.isLead, true)),
         ),
       )
       // Deterministic under LIMIT: keep the newest candidates, not planner order.

@@ -46,7 +46,7 @@ export async function runAttribution({
 }: { windowDays?: number; roiWindowDays?: number } = {}) {
   return withSyncRun("attribution.run", async () => {
     const matched = await matchLeadsToEstimates(windowDays);
-    const touches = await rebuildAttributions();
+    const touches = await rebuildAttributions(roiWindowDays);
     const roiRows = await rebuildRoiDaily(roiWindowDays);
     return { qualifiedLeads: matched.qualified, wonLeads: matched.won, attributionTouches: touches, roiRows };
   });
@@ -227,7 +227,17 @@ async function matchLeadsToEstimates(windowDays: number): Promise<{ qualified: n
 }
 
 // ── 2. Attribution trail (last-touch for now) ────────────────────────────────
-async function rebuildAttributions(): Promise<number> {
+/**
+ * `windowDays` bounds the rebuild to recent leads instead of every lead ever.
+ * Unbounded, this re-selected and delete-reinserted the ENTIRE table every hour,
+ * so the work per tick grew forever with no ceiling. A lead's attribution inputs
+ * (source, campaign, click ids, keyword, landing page) are set when it is created
+ * and don't change afterwards, so rebuilding older rows only ever reproduced them
+ * — and the window used here is the same 365 days the ROI rollup covers, which is
+ * wider than any dashboard timeframe.
+ */
+async function rebuildAttributions(windowDays: number): Promise<number> {
+  const since = new Date(Date.now() - windowDays * 86_400_000);
   // Delete-then-insert in one transaction, serialized on an advisory lock so
   // concurrent rebuilds (hourly cron vs dashboard "Run sync now") queue instead
   // of interleaving — two interleaved rebuilds would drop or double touches.
@@ -246,10 +256,22 @@ async function rebuildAttributions(): Promise<number> {
         occurredAt: leads.occurredAt,
       })
       .from(leads)
-      .where(eq(leads.isSpam, false));
+      .where(and(eq(leads.isSpam, false), gte(leads.occurredAt, since)));
 
-    // Full rebuild — clear then insert one 'last' touch per lead.
-    await tx.delete(attributions).where(eq(attributions.touchType, "last"));
+    // Clear then insert one 'last' touch per lead — scoped to the same window, so
+    // touches for older leads are left as frozen history rather than deleted with
+    // nothing to re-insert them.
+    await tx
+      .delete(attributions)
+      .where(
+        and(
+          eq(attributions.touchType, "last"),
+          inArray(
+            attributions.leadId,
+            tx.select({ id: leads.id }).from(leads).where(gte(leads.occurredAt, since)),
+          ),
+        ),
+      );
     if (rows.length === 0) return 0;
 
     for (let i = 0; i < rows.length; i += INSERT_CHUNK) {
