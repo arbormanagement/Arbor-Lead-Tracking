@@ -1,4 +1,5 @@
 import { and, desc, eq, gte, ne, or, sql } from "drizzle-orm";
+import { businessDate } from "@/lib/tz";
 import { campaignNotExcluded, excludedCampaignIds } from "@/lib/campaigns";
 import { db } from "@/lib/db/client";
 import { leads, roiDaily, sources } from "@/lib/db/schema";
@@ -11,7 +12,12 @@ const SRC_HUES = ["#2ea043", "#4c8dff", "#facc15", "#a371f7", "#e08a4c", "#8b98a
 
 export default async function OverviewPage() {
   const since = new Date(Date.now() - 30 * 86_400_000);
-  const sinceDate = since.toISOString().slice(0, 10);
+  // roi_daily.date is a BUSINESS date (America/Chicago), so the window edge
+  // compared against it has to be one too. Deriving it from toISOString() reads a
+  // UTC calendar date, which for most of the day is one day ahead of the business
+  // date — silently trimming or including an extra boundary day, and disagreeing
+  // with the funnel beside it (which windows on a timestamp).
+  const sinceDate = businessDate(since);
   // Recruiting campaigns never count as customer acquisition. roi_daily is already
   // built without them; the funnel reads `leads` directly, so it filters here.
   const excluded = await excludedCampaignIds();

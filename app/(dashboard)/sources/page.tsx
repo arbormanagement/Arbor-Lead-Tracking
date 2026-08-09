@@ -1,4 +1,5 @@
 import { and, desc, eq, gte, isNotNull, ne, or, sql } from "drizzle-orm";
+import { businessDate } from "@/lib/tz";
 import type { AnyPgColumn } from "drizzle-orm/pg-core";
 import Link from "next/link";
 import { campaignNotExcluded, excludedCampaignIds } from "@/lib/campaigns";
@@ -14,8 +15,13 @@ const SRC_HUES = ["#2ea043", "#4c8dff", "#facc15", "#a371f7", "#e08a4c", "#8b98a
 export default async function SourcesPage({ searchParams }: { searchParams: Promise<{ days?: string }> }) {
   const { days: daysParam } = await searchParams;
   const days = pickDays(daysParam, 30);
-  const since = new Date(Date.now() - days * 86_400_000).toISOString().slice(0, 10);
-  const sinceDate = new Date(Date.now() - days * 86_400_000);
+  // Two windows for the two shapes this page reads, and the names say which is
+  // which. `roi_daily.date` is a BUSINESS date (America/Chicago), so its edge must
+  // be one too — a UTC calendar date is a day ahead for most of the day, which
+  // silently shifts which boundary day is included and puts the roi_daily figures
+  // out of step with the lead counts beside them.
+  const windowStart = new Date(Date.now() - days * 86_400_000);
+  const sinceBusinessDate = businessDate(windowStart);
   const leadOnly = or(ne(leads.type, "call"), eq(leads.isLead, true));
   // Recruiting campaigns are not customer acquisition. roi_daily is built without
   // them; the queries below read `leads` directly, so they filter here.
@@ -35,7 +41,7 @@ export default async function SourcesPage({ searchParams }: { searchParams: Prom
     })
     .from(roiDaily)
     .leftJoin(sources, eq(roiDaily.sourceId, sources.id))
-    .where(gte(roiDaily.date, since))
+    .where(gte(roiDaily.date, sinceBusinessDate))
     .groupBy(sources.key, sources.displayName)
     .orderBy(desc(sql`coalesce(sum(${roiDaily.revenueCents}),0)`));
 
@@ -46,7 +52,7 @@ export default async function SourcesPage({ searchParams }: { searchParams: Prom
     .from(leads)
     .leftJoin(sources, eq(leads.sourceId, sources.id))
     .where(
-      and(gte(leads.occurredAt, sinceDate), eq(leads.isSpam, false), leadOnly, eq(leads.status, "cancelled"), notRecruiting),
+      and(gte(leads.occurredAt, windowStart), eq(leads.isSpam, false), leadOnly, eq(leads.status, "cancelled"), notRecruiting),
     )
     .groupBy(sources.key);
   const cancelledByKey = new Map<string | null, number>(cancelledRows.map((c) => [c.key ?? null, c.n]));
