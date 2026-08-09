@@ -1,6 +1,6 @@
 {
-  "id": "4eb6fe0d-8a78-4ccd-b738-44fad9019ff3",
-  "prevId": "aceed724-51cb-4a83-9b64-be33d0564866",
+  "id": "805ab818-035e-4584-8a36-35403ee0f559",
+  "prevId": "b85a1af8-77fd-4e50-9f74-1ff9e69a96fd",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -1352,6 +1352,12 @@
         },
         "created_at_hcp": {
           "name": "created_at_hcp",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "scheduled_start_hcp": {
+          "name": "scheduled_start_hcp",
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false

@@ -42,7 +42,9 @@ export const CREDENTIAL_SPECS: CredSpec[] = [
       // reads it too (cost lands under google/lsa) and LSA leads query it directly.
       { key: "lsa_customer_id", label: "LSA Customer ID (Local Services account)", envKey: "GOOGLE_ADS_LSA_CUSTOMER_ID", placeholder: "e.g. 123-456-7890" },
       // Offline conversion import targets (leave blank to disable that event).
+      { key: "conversion_action_lead", label: "Conv. action — Lead (form or call)", envKey: "GOOGLE_ADS_CONV_LEAD", placeholder: "e.g. 7259060772" },
       { key: "conversion_action_qualified", label: "Conv. action — Qualified Lead (ID or resource name)", envKey: "GOOGLE_ADS_CONV_QUALIFIED", placeholder: "e.g. 7259060772" },
+      { key: "conversion_action_scheduled", label: "Conv. action — Estimate Scheduled (ID or resource name)", envKey: "GOOGLE_ADS_CONV_SCHEDULED", placeholder: "e.g. 7259060772" },
       { key: "conversion_action_won", label: "Conv. action — Won Estimate (ID or resource name)", envKey: "GOOGLE_ADS_CONV_WON", placeholder: "e.g. customers/8300392986/conversionActions/…" },
     ],
   },

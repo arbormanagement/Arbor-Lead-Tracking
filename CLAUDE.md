@@ -39,14 +39,25 @@ inventory, transfer mechanics) plus a summary in that repo's CLAUDE.md. It is ve
 account knowledge, not app documentation, so it sits where every session sees it. Two
 things from it that constrain this codebase:
 
-- `track.js` is deployed on arbor-mgmt.com with **`data-shadow`**, which skips the
-  `/api/dni/assign` call. The attribute is load-bearing: without it the snippet falls back
-  to the oldest active static number and rewrites every `tel:` link on the site, racing
-  CallRail's still-live `swap.js`. Remove it only in the same deploy that removes swap.js.
-- CallRail's numbers are **already Twilio numbers** under CallRail's account, so they will
-  arrive by account transfer rather than a port. Each one still needs the
-  `importPhoneNumber` flow the same day it lands, or calls hit a bare Twilio number with
-  no voice URL.
+- **✅ Phase 6 cutover DONE 2026-08-08.** All 10 CallRail numbers transferred into Arbor's
+  Twilio account and were configured; the website cut over the same day (Arbor-Website
+  PR #14 removed `swap.js` **and** `data-shadow` in one deploy). **Shadow mode is over —
+  `track.js` now calls `/api/dni/assign` and owns the displayed number.** Verified live:
+  session-sticky leases, distinct numbers per visitor, `gclid` frozen onto the lease, and a
+  test call to a leased pool number completing cleanly. Pool = the 5 transferred CallRail
+  pool numbers; the 5 published numbers plus test line `+16184278164` are static.
+- **⚠️ `TWILIO_AUTH_TOKEN` must stay set on the Railway `web` service.** It was unset from
+  the Railway migration until 2026-08-08, and because `/api/twilio/status` and
+  `/api/twilio/recording` **fail CLOSED** (`sig === "unresolved"` → 403 in production;
+  only `/voice` fails open), every status and recording callback was rejected and no
+  recording was ever persisted. Calls still connected, so nothing surfaced in the app.
+  **Diagnostic:** Twilio's Monitor Alerts API logs every non-2xx webhook response as error
+  11200/15003 — `GET https://monitor.twilio.com/v1/Alerts?StartDate=…`. Railway logs showed
+  nothing. Check it after any webhook or credential change; zero alerts is the pass
+  condition.
+- CallRail is **not cancelled** — recordings still need archiving, and the Google Ads + GA4
+  conversion integrations still need rebuilding on the app's own actions. See
+  `callrail-migration/conversion-signal-gate.md` in `arbor-general`.
 
 ## Defaults (Justin can change)
 - v1 channels: calls + web forms + FB leadgen (SMS deferred).

@@ -1,0 +1,1 @@
+ALTER TABLE "hcp_estimates" ADD COLUMN "scheduled_start_hcp" timestamp with time zone;

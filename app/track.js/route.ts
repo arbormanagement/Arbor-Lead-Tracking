@@ -115,24 +115,81 @@ const SNIPPET = String.raw`(function () {
     send(merge({ event: 'pageview' }));
 
     // Pool-based DNI — swap displayed numbers to this session's tracking number.
+    //
+    // The swap CANNOT be a one-shot pass. arbor-mgmt.com is a React SPA: this
+    // snippet is async in <head>, so the assign response lands before React has
+    // rendered anything and querySelectorAll matches zero tel: links. The number
+    // then never swaps, which silently costs every website call its click id —
+    // the whole point of DNI. Client-side routing re-renders the same problem on
+    // every navigation. So keep the assigned number and re-apply it whenever the
+    // DOM changes. swapNumbers compares before it writes, so re-runs are cheap,
+    // idempotent, and able to REPAIR an element a re-render reverted.
+    var assigned = null;
+    var swapQueued = false;
+    var writes = 0;
+
+    function applySwap() {
+      swapQueued = false;
+      if (assigned) swapNumbers(assigned.e164, assigned.display);
+    }
+
+    function queueSwap() {
+      if (swapQueued || !assigned) return;
+      swapQueued = true;
+      // rAF coalesces a burst of React mutations into one pass; the setTimeout
+      // fallback covers background tabs, where rAF may never fire.
+      if (window.requestAnimationFrame) window.requestAnimationFrame(applySwap);
+      else setTimeout(applySwap, 16);
+    }
+
+    function watchForLateNodes() {
+      if (!window.MutationObserver) {
+        // No observer (very old browsers): poll briefly so a render that lands
+        // after the assign response still gets swapped.
+        var tries = 0;
+        var iv = setInterval(function () {
+          applySwap();
+          if (++tries > 40) clearInterval(iv); // ~10s
+        }, 250);
+        return;
+      }
+      new MutationObserver(queueSwap).observe(document.documentElement, {
+        childList: true, subtree: true
+      });
+    }
+
+    // Compare before writing, rather than marking an element done. A "swapped"
+    // marker looks equivalent but is NOT: if the framework later re-renders that
+    // same element back to the hard-coded number, the marker makes us skip it and
+    // the swap is lost for good. Comparing is self-healing, and it is still safe
+    // against an observer loop — once values match we stop writing, so we stop
+    // generating mutations.
     function swapNumbers(e164, display) {
       var tel = 'tel:' + e164;
+      var n = 0;
       var marked = document.querySelectorAll('[data-arbor-phone]');
       for (var i = 0; i < marked.length; i++) {
         var el = marked[i];
-        if (el.getAttribute('data-arbor-swapped')) continue;
-        el.textContent = display;
-        if (el.tagName === 'A') el.setAttribute('href', tel);
-        el.setAttribute('data-arbor-swapped', '1');
+        if (el.textContent !== display) { el.textContent = display; n++; }
+        if (el.tagName === 'A' && el.getAttribute('href') !== tel) {
+          el.setAttribute('href', tel); n++;
+        }
       }
       var links = document.querySelectorAll('a[href^="tel:"]');
       for (var j = 0; j < links.length; j++) {
         var a = links[j];
-        if (a.getAttribute('data-arbor-swapped')) continue;
-        a.setAttribute('href', tel);
-        if (/\d{3}[^\d]*\d{4}/.test(a.textContent || '')) a.textContent = display;
-        a.setAttribute('data-arbor-swapped', '1');
+        if (a.getAttribute('href') !== tel) { a.setAttribute('href', tel); n++; }
+        // Only rewrite link text that IS a phone number — the CTA buttons read
+        // "Call Now" and must keep their label. textContent would also delete
+        // their child <button>, so this guard is load-bearing, not cosmetic.
+        var t = a.textContent || '';
+        if (/\d{3}[^\d]*\d{4}/.test(t) && t !== display) { a.textContent = display; n++; }
       }
+      writes += n;
+      // Support hook: check window.__arborDNI in the console to see whether a
+      // number was assigned and whether anything on the page actually changed.
+      window.__arborDNI = { number: e164, display: display, writes: writes, tels: links.length };
+      return n;
     }
     (function () {
       // Shadow run: no assign call at all — it would both swap the number and burn a
@@ -145,7 +202,12 @@ const SNIPPET = String.raw`(function () {
       });
       fetch(ASSIGN, { method: 'POST', body: body, headers: { 'Content-Type': 'text/plain' } })
         .then(function (r) { return r.json(); })
-        .then(function (d) { if (d && d.number) swapNumbers(d.number, d.display || d.number); })
+        .then(function (d) {
+          if (!d || !d.number) return;
+          assigned = { e164: d.number, display: d.display || d.number };
+          applySwap();          // whatever is already rendered
+          watchForLateNodes();  // everything React renders afterwards
+        })
         .catch(function () {});
     })();
 

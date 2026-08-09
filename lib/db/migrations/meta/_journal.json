@@ -124,22 +124,29 @@
     {
       "idx": 17,
       "version": "7",
-      "when": 1786205535114,
-      "tag": "0017_dusty_firebrand",
+      "when": 1786211014612,
+      "tag": "0017_perpetual_patch",
       "breakpoints": true
     },
     {
       "idx": 18,
       "version": "7",
-      "when": 1786275990848,
-      "tag": "0018_flag_recruiting_campaign",
+      "when": 1786277571193,
+      "tag": "0018_campaign_excluded",
       "breakpoints": true
     },
     {
       "idx": 19,
       "version": "7",
-      "when": 1786276265058,
-      "tag": "0019_purge_recruiting_data",
+      "when": 1786277583778,
+      "tag": "0019_flag_recruiting_campaign",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1786277584807,
+      "tag": "0020_purge_recruiting_data",
       "breakpoints": true
     }
   ]
