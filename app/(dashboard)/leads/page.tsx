@@ -1,11 +1,13 @@
 import { and, desc, eq, gte, ne, or, sql } from "drizzle-orm";
 import Link from "next/link";
 import type { ReactNode } from "react";
+import { campaignNotExcluded, excludedCampaignIds } from "@/lib/campaigns";
 import { db } from "@/lib/db/client";
 import { campaigns, leads, sources } from "@/lib/db/schema";
 import { dateTime, dollars } from "@/lib/format";
 import { formatPhoneDisplay } from "@/lib/phone";
 import { pickDays, timeframeLabel } from "@/lib/timeframes";
+import { businessDate } from "@/lib/tz";
 import { LeadToggle } from "../lead-toggle";
 import { ViewControls } from "./view-controls";
 import { DIMS, parseGroups, type Dim } from "./view";
@@ -57,11 +59,15 @@ function aggregate(rows: Row[]): Agg {
   return a;
 }
 
-/** Monday (UTC) of the lead's week — stable key that also sorts chronologically. */
+/** Monday of the lead's week in BUSINESS time — stable key that also sorts
+ *  chronologically. Derived from the business date so it can't disagree with the
+ *  day grouping (or with roi_daily) at the CT/UTC boundary. */
 function weekKey(d: Date): string {
-  const monday = new Date(d);
-  monday.setUTCDate(d.getUTCDate() - ((d.getUTCDay() + 6) % 7));
-  return monday.toISOString().slice(0, 10);
+  // Anchor to noon UTC on the business date: far enough from either midnight that
+  // the weekday arithmetic can't be dragged across a day by the offset.
+  const anchor = new Date(`${businessDate(d)}T12:00:00Z`);
+  anchor.setUTCDate(anchor.getUTCDate() - ((anchor.getUTCDay() + 6) % 7));
+  return anchor.toISOString().slice(0, 10);
 }
 
 function dimKey(r: Row, dim: Dim): string {
@@ -71,9 +77,13 @@ function dimKey(r: Row, dim: Dim): string {
     case "stage": return r.isSpam ? "spam" : r.status;
     case "type": return r.type;
     case "location": return r.location ?? "unknown";
-    case "day": return r.occurredAt.toISOString().slice(0, 10);
+    // Business-timezone buckets. toISOString() would put a 10pm CT lead in
+    // tomorrow's group while the row's own timestamp renders as today (dateTime
+    // formats in CT), and would disagree with roi_daily/overview for every evening
+    // lead.
+    case "day": return businessDate(r.occurredAt);
     case "week": return weekKey(r.occurredAt);
-    case "month": return r.occurredAt.toISOString().slice(0, 7);
+    case "month": return businessDate(r.occurredAt).slice(0, 7);
   }
 }
 
@@ -153,6 +163,10 @@ export default async function InboxPage({
   // A call only counts as a lead once classified (caller requested an estimate);
   // forms/FB/etc. are inherently leads. So the inbox = non-call types OR lead-calls.
   const leadOnly = or(ne(leads.type, "call"), eq(leads.isLead, true));
+  // Recruiting/brand campaigns are not customer acquisition — they must not appear
+  // in the inbox or its dollar totals, or grouped-by-source figures here will not
+  // reconcile with the Sources page (which reads roi_daily, where they are excluded).
+  const excludedIds = await excludedCampaignIds();
 
   const fetched = await db
     .select({
@@ -177,21 +191,27 @@ export default async function InboxPage({
     .from(leads)
     .leftJoin(sources, eq(leads.sourceId, sources.id))
     .leftJoin(campaigns, eq(leads.campaignId, campaigns.id))
-    .where(and(gte(leads.occurredAt, since), leadOnly))
+    .where(and(gte(leads.occurredAt, since), leadOnly, campaignNotExcluded(leads.campaignId, excludedIds)))
     .orderBy(desc(leads.occurredAt))
     // Grouped views aggregate, so they get the full window; the flat list stays short.
     .limit(groups.length ? 1000 : 200);
 
   const rows: Row[] = fetched;
 
+  // Counted over the same population the table renders, minus spam — and the spam
+  // count is surfaced alongside so the two reconcile. The table deliberately shows
+  // spam rows (there is no other place to review a bad spam call), and the group
+  // aggregates count them, so reporting only a spam-free total here left the
+  // subtitle silently disagreeing with the sum of the visible group counts.
   const [agg] = await db
     .select({
-      total: sql<number>`count(*)::int`,
-      quoted: sql<number>`count(*) filter (where ${leads.quoteValueCents} > 0)::int`,
-      won: sql<number>`count(*) filter (where ${leads.status} = 'won')::int`,
+      total: sql<number>`count(*) filter (where ${leads.isSpam} = false)::int`,
+      quoted: sql<number>`count(*) filter (where ${leads.isSpam} = false and ${leads.quoteValueCents} > 0)::int`,
+      won: sql<number>`count(*) filter (where ${leads.isSpam} = false and ${leads.status} = 'won')::int`,
+      spam: sql<number>`count(*) filter (where ${leads.isSpam})::int`,
     })
     .from(leads)
-    .where(and(gte(leads.occurredAt, since), eq(leads.isSpam, false), leadOnly));
+    .where(and(gte(leads.occurredAt, since), leadOnly, campaignNotExcluded(leads.campaignId, excludedIds)));
 
   const leadRow = (r: Row) => {
     const t = TYPE_META[r.type] ?? { ic: "•", label: r.type };
@@ -332,7 +352,7 @@ export default async function InboxPage({
         <div>
           <h1 className="page-title">Leads</h1>
           <p className="page-sub">
-            Real leads only — a call appears when the caller requested an estimate · {agg?.total ?? 0} leads · {agg?.quoted ?? 0} quoted · {agg?.won ?? 0} won · {timeframeLabel(days)}
+            Real leads only — a call appears when the caller requested an estimate · {agg?.total ?? 0} leads · {agg?.quoted ?? 0} quoted · {agg?.won ?? 0} won{(agg?.spam ?? 0) > 0 ? ` · ${agg!.spam} spam (shown, not counted)` : ""} · {timeframeLabel(days)}
           </p>
         </div>
         <div className="controls">

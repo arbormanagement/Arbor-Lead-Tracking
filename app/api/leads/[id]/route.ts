@@ -81,11 +81,18 @@ export async function DELETE(req: Request, { params }: { params: Promise<{ id: s
 
   // Children first: attributions and conversion_exports are NOT NULL on lead_id,
   // so they must go before the lead itself rather than being nulled out.
-  await db.delete(attributions).where(eq(attributions.leadId, id));
-  await db.delete(conversionExports).where(eq(conversionExports.leadId, id));
-  await db.delete(formSubmissions).where(eq(formSubmissions.leadId, id));
-  await db.update(facebookLeads).set({ leadId: null }).where(eq(facebookLeads.leadId, id));
-  await db.delete(leads).where(eq(leads.id, id));
+  //
+  // All five statements are one transaction. Run loose, a failure partway through
+  // leaves a lead stripped of its attributions and export record but still present
+  // — and the next attribution rebuild happily re-derives a last-touch for it, so
+  // the half-deleted state looks repaired while the export history stays gone.
+  await db.transaction(async (tx) => {
+    await tx.delete(attributions).where(eq(attributions.leadId, id));
+    await tx.delete(conversionExports).where(eq(conversionExports.leadId, id));
+    await tx.delete(formSubmissions).where(eq(formSubmissions.leadId, id));
+    await tx.update(facebookLeads).set({ leadId: null }).where(eq(facebookLeads.leadId, id));
+    await tx.delete(leads).where(eq(leads.id, id));
+  });
 
   return Response.json({
     ok: true,

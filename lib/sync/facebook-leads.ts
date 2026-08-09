@@ -36,6 +36,7 @@ export async function syncFacebookLeads({ sinceDays }: { sinceDays?: number } = 
     let seen = 0;
     let created = 0;
     let excluded = 0;
+    let deferred = 0;
     let failed = 0;
     for (const form of active) {
       const leads = await facebook.listFormLeads(form.id, sinceUnix);
@@ -45,6 +46,7 @@ export async function syncFacebookLeads({ sinceDays }: { sinceDays?: number } = 
           const result = await ingestFacebookLead(detail);
           if (result === "created") created++;
           else if (result === "excluded") excluded++;
+          else if (result === "deferred") deferred++;
         } catch (err) {
           failed++;
           console.error("[fb leads] ingest failed", detail.leadgenId, err);
@@ -55,8 +57,15 @@ export async function syncFacebookLeads({ sinceDays }: { sinceDays?: number } = 
     // A dropped lead must hold the watermark: fail the run so the next tick
     // re-pulls the same window. Everything already ingested is deduped on
     // fb_leadgen_id, so the retry is safe.
-    if (failed > 0) {
-      throw new Error(`${failed} of ${seen} leads failed to ingest (${created} created) — watermark held`);
+    //
+    // Deferrals count the same way. A deferred submission has not been ingested,
+    // so letting the watermark advance past it would lose it outright — the whole
+    // point of deferring is that a later run gets to decide with a working
+    // campaign lookup.
+    if (failed > 0 || deferred > 0) {
+      throw new Error(
+        `${failed} failed + ${deferred} deferred of ${seen} leads (${created} created) — watermark held`,
+      );
     }
 
     return {

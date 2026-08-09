@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { getSession } from "@/lib/auth";
 import { getPlatformCreds } from "@/lib/credentials";
+import { env } from "@/lib/env";
 
 export const runtime = "nodejs";
 export const maxDuration = 30;
@@ -33,7 +34,7 @@ async function probe(platform: string): Promise<{ ok: boolean; error?: string; d
   switch (platform) {
     case "housecallpro": {
       if (!c.api_key) return { ok: false, error: "API key not set" };
-      const base = c.api_base || "https://api.housecallpro.com";
+      const base = c.api_base || env.HCP_API_BASE;
       const res = await fetch(new URL("/customers?page=1&page_size=1", base), {
         headers: { Authorization: `Token ${c.api_key}`, Accept: "application/json" },
         signal: AbortSignal.timeout(20_000),
@@ -57,7 +58,7 @@ async function probe(platform: string): Promise<{ ok: boolean; error?: string; d
     }
     case "facebook": {
       if (!c.access_token || !c.ad_account_id) return { ok: false, error: "Access token / ad account not set" };
-      const v = c.api_version || "v21.0";
+      const v = c.api_version || env.FACEBOOK_API_VERSION;
       const token = c.access_token;
       const graphGet = async (node: string) => {
         const url = new URL(`https://graph.facebook.com/${v}/${node}`);

@@ -1,4 +1,5 @@
 import { getPlatformCreds } from "@/lib/credentials";
+import { env } from "@/lib/env";
 import { fetchWithRetry } from "./http";
 import type { HcpCustomerDTO, HcpEstimateDTO, HcpJobDTO, RevenueProvider } from "./types";
 
@@ -22,7 +23,10 @@ class HousecallProProvider implements RevenueProvider {
   private async config(): Promise<HcpConfig> {
     const c = await getPlatformCreds("housecallpro");
     if (!c.api_key) throw new Error("HousecallPro API key is not configured");
-    return { apiKey: c.api_key, base: c.api_base || "https://api.housecallpro.com" };
+    // env.HCP_API_BASE carries the default. Hardcoding the literal here made the
+    // documented override dead: no credential spec field maps HCP_API_BASE, so
+    // `c.api_base` is always undefined and setting the env var did nothing.
+    return { apiKey: c.api_key, base: c.api_base || env.HCP_API_BASE };
   }
 
   private async get<T = unknown>(cfg: HcpConfig, path: string, query: Record<string, string | number> = {}): Promise<T> {
@@ -57,20 +61,30 @@ class HousecallProProvider implements RevenueProvider {
     const out: Array<Record<string, unknown>> = [];
     const pageSize = 100;
     const MAX_PAGES = 50;
-    for (let page = 1; page <= MAX_PAGES; page++) {
+    let page = 1;
+    for (; page <= MAX_PAGES; page++) {
       const body = await this.get<Record<string, unknown>>(cfg, path, { ...query, page, page_size: pageSize });
       const items =
         (body[listKey] as Array<Record<string, unknown>>) ??
         (body.data as Array<Record<string, unknown>>) ??
         [];
       out.push(...items);
-      if (items.length < pageSize) break;
+      if (items.length < pageSize) return out;
       if (stopOlderThanMs != null) {
         const last = items[items.length - 1];
         const u = parseDate(last?.updated_at ?? last?.updated_at_iso);
-        if (u && u.getTime() < stopOlderThanMs) break; // sorted desc → the rest is older
+        if (u && u.getTime() < stopOlderThanMs) return out; // sorted desc → the rest is older
       }
     }
+    // Fell out of the loop with a full last page: there is more data we did not
+    // fetch. Silence here reads as "complete" — the sync records success and its
+    // watermark advances past records it never saw, so they are only ever
+    // recovered if HCP happens to touch their updated_at again. A 365-day
+    // cold-start is the realistic way to hit this.
+    console.warn(
+      `[hcp] ${path}: hit the ${MAX_PAGES}-page cap (${out.length} rows) — results are TRUNCATED, ` +
+        `narrow the window or raise MAX_PAGES`,
+    );
     return out;
   }
 

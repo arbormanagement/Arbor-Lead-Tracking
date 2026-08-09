@@ -98,15 +98,18 @@ async function upsertSpendRows(rows: SpendRow[]): Promise<number> {
   // toggle that turns the campaign back on.
   const campaignIds = await ensureCampaigns(unique);
 
-  // Excluded (recruiting/brand) campaigns get no ad_spend rows at all. Filtering
-  // them downstream isn't enough on its own: the rolling 35-day re-pull would
-  // reinsert the rows on the next tick and quietly undo any cleanup.
-  const excluded = new Set(await excludedCampaignIds());
-  const writable = unique.filter((r) => {
-    const id = campaignIds.get(`${r.platform}|${r.externalCampaignId}`);
-    return !id || !excluded.has(id);
-  });
-  if (writable.length === 0) return 0;
+  // Spend is recorded for EVERY campaign, including excluded (recruiting/brand)
+  // ones — "their spend stays on record" is the documented contract, and the
+  // campaigns cleanup route says the same thing where it deletes their leads.
+  //
+  // Dropping the rows here instead was not a stricter version of that: exclusion
+  // is already applied on BOTH sides of the roi_daily rollup and on every surface
+  // that reads ad_spend, so a recruiting dollar can't reach an ROAS denominator
+  // either way. What dropping them did do was make the loss permanent — un-flag a
+  // campaign a month later and its spend is simply gone, because the re-pull only
+  // reaches back 35 days and cold-start only fires for a provider with no history
+  // at all.
+  const writable = unique;
 
   const CHUNK = 200;
   for (let i = 0; i < writable.length; i += CHUNK) {

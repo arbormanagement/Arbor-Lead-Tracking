@@ -1,4 +1,5 @@
 import { getPlatformCreds } from "@/lib/credentials";
+import { env } from "@/lib/env";
 import { fetchWithRetry } from "./http";
 import type { SpendProvider, SpendRow } from "./types";
 
@@ -24,7 +25,7 @@ async function fbConfig(): Promise<FbConfig> {
   return {
     accessToken: c.access_token,
     adAccountId: c.ad_account_id,
-    apiVersion: c.api_version || "v21.0",
+    apiVersion: c.api_version || env.FACEBOOK_API_VERSION,
     pageId: c.page_id || DEFAULT_PAGE_ID,
   };
 }
@@ -96,6 +97,7 @@ class FacebookProvider implements SpendProvider {
       }
       next = body.paging?.next ?? null;
     }
+    if (next) console.warn(`[facebook] insights pagination guard hit — spend results TRUNCATED at ${rows.length} rows`);
     return rows;
   }
 
@@ -111,7 +113,7 @@ class FacebookProvider implements SpendProvider {
     const c = await getPlatformCreds("facebook");
     const pixelId = c.conversions_pixel_id;
     const token = c.access_token; // one System User token (with ads_management) writes CAPI
-    const apiVersion = c.api_version || "v21.0";
+    const apiVersion = c.api_version || env.FACEBOOK_API_VERSION;
     if (!pixelId) return { ok: false, error: "Facebook Conversions pixel/dataset id not configured" };
     if (!token) return { ok: false, error: "Facebook Conversions access token not configured" };
 
@@ -213,6 +215,7 @@ class FacebookProvider implements SpendProvider {
       }
       next = body.paging?.next ?? null;
     }
+    if (next) console.warn(`[facebook] leadgen_forms pagination guard hit — form list TRUNCATED at ${out.length}`);
     return out;
   }
 
@@ -255,29 +258,50 @@ class FacebookProvider implements SpendProvider {
       }
       next = body.paging?.next ?? null;
     }
+    if (next) {
+      // Not cosmetic: the sync advances its watermark on success, so leads beyond
+      // the cap are never re-requested and simply never become leads.
+      console.warn(`[facebook] form ${formId}: pagination guard hit — leads TRUNCATED at ${out.length}`);
+    }
 
     // Resolve campaign from ad_id (once per distinct ad) so leads still attribute to
     // a campaign. Best-effort — a failed lookup just leaves the lead at facebook/paid.
-    const adToCampaign = new Map<string, string | undefined>();
+    const adToCampaign = new Map<string, { campaignId?: string; failed: boolean }>();
     for (const d of out) {
       if (!d.adId) continue;
       if (!adToCampaign.has(d.adId)) adToCampaign.set(d.adId, await this.campaignForAd(cfg, d.adId));
-      d.campaignId = adToCampaign.get(d.adId);
+      const r = adToCampaign.get(d.adId)!;
+      d.campaignId = r.campaignId;
+      d.campaignLookupFailed = r.failed;
     }
     return out;
   }
 
-  private async campaignForAd(cfg: FbConfig, adId: string): Promise<string | undefined> {
+  /**
+   * Resolve an ad's campaign.
+   *
+   * `failed` distinguishes "this ad genuinely has no campaign" from "we could not
+   * find out". The difference decides whether a recruiting applicant becomes a
+   * lead: the excluded-campaign check treats an unresolved campaign as
+   * not-excluded, and because ingest is idempotent on fb_leadgen_id the mistake is
+   * permanent — one Graph blip during a hiring campaign puts an applicant in the
+   * inbox and the ROI funnel forever. Callers defer instead.
+   */
+  private async campaignForAd(cfg: FbConfig, adId: string): Promise<{ campaignId?: string; failed: boolean }> {
     try {
       const url = new URL(`https://graph.facebook.com/${cfg.apiVersion}/${adId}`);
       url.searchParams.set("fields", "campaign_id");
       url.searchParams.set("access_token", cfg.accessToken);
       const res = await fetchWithRetry(url, { signal: AbortSignal.timeout(20_000) });
-      if (!res.ok) return undefined;
+      if (!res.ok) {
+        console.warn(`[facebook] campaign lookup for ad ${adId} failed: ${res.status}`);
+        return { failed: true };
+      }
       const j = (await res.json()) as { campaign_id?: string };
-      return j.campaign_id ? String(j.campaign_id) : undefined;
-    } catch {
-      return undefined;
+      return { campaignId: j.campaign_id ? String(j.campaign_id) : undefined, failed: false };
+    } catch (err) {
+      console.warn(`[facebook] campaign lookup for ad ${adId} threw`, err);
+      return { failed: true };
     }
   }
 }
@@ -318,6 +342,10 @@ export interface FbLeadDetail {
   formId?: string;
   adId?: string;
   campaignId?: string;
+  /** The ad's campaign could not be resolved (Graph error), so `campaignId` being
+   *  absent proves nothing. Ingest defers rather than risk admitting a lead from an
+   *  excluded (recruiting) campaign it simply failed to look up. */
+  campaignLookupFailed?: boolean;
   createdTime?: string;
   fieldData: Array<{ name: string; values: string[] }>;
 }
@@ -328,24 +356,36 @@ export interface FbLeadDetail {
  */
 export async function getFacebookLead(leadgenId: string): Promise<FbLeadDetail> {
   const cfg = await fbConfig();
+  // Read the lead node the same way `listFormLeads` does, and for the same two
+  // reasons it was reworked:
+  //   · a PAGE token, not the system-user token — a page-scoped lead read with the
+  //     system token fails with Graph #190;
+  //   · NO campaign_id in `fields` — it is not readable on the lead node and
+  //     requesting it 400s the entire call.
+  // Getting either wrong makes every webhook-delivered lead throw, and because the
+  // 15-minute poller silently backstops it, real-time ingest looks fine while
+  // being permanently dead.
+  const pageToken = await getPageAccessToken(cfg);
   const url = new URL(`https://graph.facebook.com/${cfg.apiVersion}/${leadgenId}`);
-  url.searchParams.set("fields", "id,created_time,ad_id,form_id,campaign_id,field_data");
-  url.searchParams.set("access_token", cfg.accessToken);
+  url.searchParams.set("fields", "id,created_time,ad_id,form_id,field_data");
+  url.searchParams.set("access_token", pageToken);
 
   const res = await fetchWithRetry(url, { signal: AbortSignal.timeout(30_000) });
   if (!res.ok) throw new Error(`Facebook lead ${res.status}: ${await res.text()}`);
   const j = (await res.json()) as Record<string, any>;
 
-  let campaignId: string | undefined = j.campaign_id;
-  if (!campaignId && j.ad_id) {
+  let campaignId: string | undefined;
+  let campaignLookupFailed = false;
+  if (j.ad_id) {
     try {
       const adUrl = new URL(`https://graph.facebook.com/${cfg.apiVersion}/${j.ad_id}`);
       adUrl.searchParams.set("fields", "campaign_id");
       adUrl.searchParams.set("access_token", cfg.accessToken);
       const adRes = await fetchWithRetry(adUrl, { signal: AbortSignal.timeout(30_000) });
       if (adRes.ok) campaignId = ((await adRes.json()) as { campaign_id?: string }).campaign_id;
+      else campaignLookupFailed = true;
     } catch {
-      /* best effort */
+      campaignLookupFailed = true;
     }
   }
 
@@ -354,6 +394,7 @@ export async function getFacebookLead(leadgenId: string): Promise<FbLeadDetail> 
     formId: j.form_id,
     adId: j.ad_id,
     campaignId,
+    campaignLookupFailed,
     createdTime: j.created_time,
     fieldData: Array.isArray(j.field_data) ? j.field_data : [],
   };

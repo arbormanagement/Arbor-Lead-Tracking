@@ -44,8 +44,17 @@ export async function getPlatformCreds(platform: string, tenantId = DEFAULT_TENA
       for (const r of rows) {
         try {
           data[r.key] = decryptSecret(r.value);
-        } catch {
-          /* leave env fallback if a row fails to decrypt (e.g. root key rotated) */
+        } catch (err) {
+          // Leave the env fallback in place, but never do it silently. A rotated
+          // CREDENTIALS_ENCRYPTION_KEY makes EVERY stored secret fail here, and the
+          // app then quietly runs on whatever stale value is still in env — an old
+          // revoked token, or the wrong account entirely — while Settings keeps
+          // showing the credential as set and sourced from the database.
+          console.error(
+            `[credentials] decrypt failed for ${platform}.${r.key} — falling back to env. ` +
+              `If CREDENTIALS_ENCRYPTION_KEY was rotated, re-enter this credential in Settings.`,
+            err,
+          );
         }
       }
     } catch (err) {
