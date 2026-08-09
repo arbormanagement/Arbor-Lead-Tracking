@@ -6,6 +6,19 @@ Edwardsville + O'Fallon). WhatConverts-style. Single-tenant. Owner: Justin
 
 ## What this app is
 - **Native call tracking + DNI on Twilio** — we own the numbers, swap/forward/record/transcribe. Goal: replace CallRail.
+- **Inbox + Leads are two different things, deliberately.** The **Inbox** (`/inbox`) is
+  everything that came in on any channel — calls, texts, later email. **Leads** (`/leads`)
+  is only what has been confirmed to be an estimate request, per the single predicate in
+  `lib/leads/qualified.ts`: not spam, nothing explicitly marked not-a-lead (any type), and
+  for calls/texts an affirmative `is_lead = true` from the classifier or a human. `null`
+  (unclassified) is NOT good enough. Triage — the Lead/Not toggle — lives in the Inbox and
+  on lead detail; the Leads list has no toggle, because every row in it already qualifies.
+- **Texts (SMS/MMS)** on the same tracking numbers as calls: `app/api/twilio/sms/route.ts`
+  attributes them exactly like a call, threads them, and relays them to a human
+  (Settings → Routing → *Text relay number* — separate from call forwarding, which points at
+  the voice agent). Inbound only; replies happen from your own phone. **Sending from the app
+  needs an A2P 10DLC campaign registered for the Arbor numbers first** — that's the gate on
+  two-way texting, not the code.
 - **Web/form tracking** via first-party `track.js` on arbor-mgmt.com.
 - **Facebook lead-gen** via the MCP webhook.
 - **ROI = attributed HousecallPro won-estimate revenue ÷ ad spend**, per source/campaign/location. Revenue event = a customer-approved (won) estimate, valued at the approved-option amount (`hcp_estimates`); completed jobs are still synced (`hcp_jobs`) for secondary completed/invoiced visibility.
@@ -26,10 +39,22 @@ Edwardsville + O'Fallon). WhatConverts-style. Single-tenant. Owner: Justin
 - Auth: HMAC-signed session cookie + scrypt password (`lib/auth.ts`); single admin from `ADMIN_EMAIL`/`ADMIN_PASSWORD_HASH`. Middleware is a presence gate; the dashboard layout does the authoritative check.
 
 ## Key files
-- `lib/db/schema.ts` — full data model (visitors, web_sessions, tracking_numbers, number_assignments, sources, campaigns, ad_spend, hcp_customers, hcp_jobs, leads, calls, form_submissions, facebook_leads, attributions, roi_daily, …).
+- `lib/db/schema.ts` — full data model (visitors, web_sessions, tracking_numbers, number_assignments, sources, campaigns, ad_spend, hcp_customers, hcp_jobs, leads, conversations, calls, messages, form_submissions, facebook_leads, attributions, roi_daily, …).
 - `app/api/twilio/voice/route.ts` — inbound call: resolve tracking number → assignment → source, spam check, persist call+lead, return forward TwiML. **Must respond <3s** — fallback-forwards on any error so no call is lost.
+- `app/api/twilio/sms/route.ts` — inbound text. Same resolution as `/voice` (shared in `lib/twilio/inbound.ts`) but fails **CLOSED** on an unverifiable signature: dead air loses a customer, an unverified write just lets someone forge leads. Idempotent on `MessageSid`.
+- `lib/leads/qualified.ts` — the one definition of "this is really a lead", used by the Leads list, its counters, and the API so they can't disagree.
+- `lib/messaging/thread.ts` — conversation threading. A thread is one `(contact, endpoint)` pair; calls and messages both hang off it. Attribution snapshotted at thread creation only fills gaps afterwards, so a rotated DNI lease can't rewrite the source that earned the original call.
 - `lib/mcp/client.ts` — `executeTool`/`executeTools` over MCP JSON-RPC.
 - `lib/attribution/classify.ts` — click-id/utm/referrer → source key + DNI pool.
+
+## Inbox channels
+- **Calls** → `calls` (recordings, duration, transcripts have no message analogue).
+- **Texts** → `messages` with `channel = 'sms'`.
+- **Email** → the tab ships visible-but-empty. `messages` already stores it (`channel`,
+  `subject`, `body`, `media`, RFC-822 `external_id`), so turning it on is an ingest route
+  plus a mailbox decision — **not** a schema change. Nothing else should need to move.
+- Adding a channel = new enum value + an ingest route that calls `upsertThread` /
+  `recordThreadActivity`. Don't add a table per channel.
 
 ## Phases
 1. Call tracking on **static** numbers (current scaffold). 2. HCP revenue + spend sync + ROI. 3. `track.js` web/form. 4. Pooled DNI. 5. FB leadgen + LSA + Deepgram transcription + spam. 6. CallRail decommission.
@@ -71,4 +96,13 @@ things from it that constrain this codebase:
 - E.164 normalization is load-bearing for lead↔HCP matching/ROI.
 - Scheduled jobs are fire-and-log: a failed run is logged and retried on the next tick, so
   the syncs must stay idempotent + self-healing (rolling re-pulls) rather than assume a retry queue.
+- A text is NOT presumed to be a lead. `/api/twilio/sms` leaves `is_lead` null and the
+  `classify-messages` cron decides from the body — same shape as calls, where the
+  transcription sync decides. Anything that creates a call/text lead must leave that gate closed.
+- Threading in `/voice` is best-effort (wrapped in try/catch — it must never cost a
+  forward). The `thread-backfill` cron is the repair path for calls that missed it, and
+  backfilled the pre-inbox history on its first runs.
+- **Texts only work if the number's Twilio `smsUrl` is set.** `backfillNumberWebhooks`
+  (hourly `twilio-fallback` cron) re-asserts it on every active number, which is how the
+  ten CallRail-transferred numbers got it. Same Monitor Alerts diagnostic as below applies.
 - Spend sync is self-healing (`lib/sync/spend.ts`): rolling 35-day re-pull (platforms restate) + automatic cold-start backfill reaching to each platform's earliest lead (≤365d — spend with no leads to match is deliberately not fetched), keyed `(platform, external_campaign_id, date)`. No manual backfills.

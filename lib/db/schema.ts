@@ -44,7 +44,14 @@ export const leadTypeEnum = pgEnum("lead_type", [
   "facebook_leadgen",
   "lsa",
   "manual",
+  "sms",
+  "email",
 ]);
+// Inbox channels. `call` is stored in `calls` (recordings/duration have no message
+// analogue); `sms`/`email` are rows in `messages`. All three thread into the same
+// `conversations` spine, so the inbox is one list regardless of how someone reached us.
+export const messageChannelEnum = pgEnum("message_channel", ["sms", "email"]);
+export const messageDirectionEnum = pgEnum("message_direction", ["inbound", "outbound"]);
 export const leadStatusEnum = pgEnum("lead_status", [
   "new",
   "working",
@@ -455,11 +462,56 @@ export const leads = pgTable(
   ],
 );
 
+/**
+ * A conversation thread — the spine of the inbox. One row per (contact, endpoint)
+ * pair, where the contact side is an E.164 phone or a lowercased email and the
+ * endpoint side is the Arbor address they reached: a tracking number for calls and
+ * texts, a mailbox address for email. Calls and messages both hang off it, so a
+ * caller who then texts the same tracking number lands in one thread.
+ *
+ * Attribution is snapshotted here at thread creation (the DNI lease that was live
+ * for the first contact), which is what lets a follow-up text three days later
+ * still carry the source of the click that started it.
+ */
+export const conversations = pgTable(
+  "conversations",
+  {
+    id: id(),
+    leadId: text("lead_id").references(() => leads.id),
+    // Contact side: E.164 phone (call/sms) or lowercased email address.
+    contactKey: text("contact_key").notNull(),
+    contactName: text("contact_name"),
+    // Arbor side: the tracking number that was dialed/texted, or the inbox address.
+    endpointKey: text("endpoint_key").notNull(),
+    trackingNumberId: text("tracking_number_id").references(() => trackingNumbers.id),
+    numberAssignmentId: text("number_assignment_id").references(() => numberAssignments.id),
+    sourceId: text("source_id").references(() => sources.id),
+    subject: text("subject"), // email threads only
+    // Denormalized "last activity" so the inbox list needs no per-thread subquery.
+    lastChannel: text("last_channel"), // 'call' | 'sms' | 'email'
+    lastDirection: text("last_direction"), // 'inbound' | 'outbound'
+    lastPreview: text("last_preview"),
+    lastActivityAt: timestamp("last_activity_at", { withTimezone: true }).notNull().defaultNow(),
+    // Inbound activity nobody has opened yet. Bumped on inbound, zeroed on read.
+    unreadCount: integer("unread_count").notNull().default(0),
+    archivedAt: timestamp("archived_at", { withTimezone: true }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    uniqueIndex("conversations_contact_endpoint_uq").on(t.contactKey, t.endpointKey),
+    index("conversations_last_activity_idx").on(t.lastActivityAt),
+    index("conversations_lead_idx").on(t.leadId),
+    index("conversations_contact_idx").on(t.contactKey),
+  ],
+);
+
 export const calls = pgTable(
   "calls",
   {
     id: id(),
     leadId: text("lead_id").references(() => leads.id),
+    conversationId: text("conversation_id").references(() => conversations.id),
     twilioCallSid: text("twilio_call_sid").notNull(),
     trackingNumberId: text("tracking_number_id").references(() => trackingNumbers.id),
     numberAssignmentId: text("number_assignment_id").references(() => numberAssignments.id),
@@ -495,6 +547,48 @@ export const calls = pgTable(
     index("calls_lead_idx").on(t.leadId),
     index("calls_from_idx").on(t.fromNumber),
     index("calls_tracking_number_idx").on(t.trackingNumberId),
+    index("calls_conversation_idx").on(t.conversationId),
+  ],
+);
+
+/**
+ * A single text or email in a thread. Deliberately channel-agnostic: `body` is the
+ * text, `subject` is email-only, `media` holds Twilio MediaUrl* / email attachments.
+ * Adding a channel means a new enum value and an ingest route — not a new table.
+ *
+ * `external_id` is the provider's own id (Twilio MessageSid, RFC-822 Message-ID) and
+ * is the idempotency key: webhooks retry, and mail sync re-reads overlapping windows.
+ */
+export const messages = pgTable(
+  "messages",
+  {
+    id: id(),
+    conversationId: text("conversation_id")
+      .notNull()
+      .references(() => conversations.id),
+    leadId: text("lead_id").references(() => leads.id),
+    channel: messageChannelEnum("channel").notNull(),
+    direction: messageDirectionEnum("direction").notNull(),
+    fromAddress: text("from_address"),
+    toAddress: text("to_address"),
+    subject: text("subject"),
+    body: text("body"),
+    media: jsonb("media"),
+    externalId: text("external_id"),
+    status: text("status"), // provider delivery status (queued/sent/delivered/failed)
+    errorCode: text("error_code"),
+    numSegments: integer("num_segments"),
+    occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    uniqueIndex("messages_channel_external_uq")
+      .on(t.channel, t.externalId)
+      .where(sql`external_id IS NOT NULL`),
+    index("messages_conversation_idx").on(t.conversationId, t.occurredAt),
+    index("messages_lead_idx").on(t.leadId),
+    index("messages_occurred_idx").on(t.occurredAt),
   ],
 );
 
@@ -738,10 +832,33 @@ export const leadsRelations = relations(leads, ({ one, many }) => ({
 
 export const callsRelations = relations(calls, ({ one }) => ({
   lead: one(leads, { fields: [calls.leadId], references: [leads.id] }),
+  conversation: one(conversations, {
+    fields: [calls.conversationId],
+    references: [conversations.id],
+  }),
   trackingNumber: one(trackingNumbers, {
     fields: [calls.trackingNumberId],
     references: [trackingNumbers.id],
   }),
+}));
+
+export const conversationsRelations = relations(conversations, ({ one, many }) => ({
+  lead: one(leads, { fields: [conversations.leadId], references: [leads.id] }),
+  source: one(sources, { fields: [conversations.sourceId], references: [sources.id] }),
+  trackingNumber: one(trackingNumbers, {
+    fields: [conversations.trackingNumberId],
+    references: [trackingNumbers.id],
+  }),
+  messages: many(messages),
+  calls: many(calls),
+}));
+
+export const messagesRelations = relations(messages, ({ one }) => ({
+  conversation: one(conversations, {
+    fields: [messages.conversationId],
+    references: [conversations.id],
+  }),
+  lead: one(leads, { fields: [messages.leadId], references: [leads.id] }),
 }));
 
 export const hcpJobsRelations = relations(hcpJobs, ({ one }) => ({

@@ -1,0 +1,188 @@
+import { eq } from "drizzle-orm";
+import { db } from "@/lib/db/client";
+import { conversations, leads, messages, trackingNumbers } from "@/lib/db/schema";
+import { env } from "@/lib/env";
+import { preview, recordThreadActivity, upsertThread } from "@/lib/messaging/thread";
+import { normalizePhone } from "@/lib/phone";
+import { getSmsForwardNumber } from "@/lib/routing";
+import { getTwilioClient } from "@/lib/twilio/client";
+import { ensureSourceId, isHardSpamNumber, resolveInboundAttribution } from "@/lib/twilio/inbound";
+import { parseTwilioForm, validateTwilioSignature } from "@/lib/twilio/signature";
+import { xmlResponse } from "@/lib/twilio/twiml";
+
+export const runtime = "nodejs";
+export const maxDuration = 30;
+
+/**
+ * Inbound SMS/MMS on a tracking number.
+ *
+ * Mirrors /api/twilio/voice: resolve the number → resolve the DNI lease → spam
+ * pre-check → persist, so a text and a call from the same person on the same
+ * number attribute to the same source and land in the same thread.
+ *
+ * Two deliberate differences from the voice webhook:
+ *  - It fails CLOSED on an unverifiable signature. /voice fails open because dead
+ *    air loses a customer; an unverified text is just a write, and an open write
+ *    endpoint lets anyone forge leads.
+ *  - `is_lead` is left NULL rather than guessed. A text is like a call: it can be
+ *    an existing customer, a vendor, or a wrong number. The `classify-messages`
+ *    cron reads the body and decides, so nothing reaches the Leads list until
+ *    something has actually confirmed it is an estimate request.
+ *
+ * Replies to the customer are not sent from here — the reply TwiML is empty and
+ * the text is relayed to a human (see `getSmsForwardNumber`).
+ */
+export async function POST(req: Request) {
+  const { params, url } = await parseTwilioForm(req);
+  const sig = await validateTwilioSignature(req.headers.get("x-twilio-signature"), url, params);
+  if (sig === "invalid") return new Response("invalid signature", { status: 403 });
+  if (sig === "unresolved" && env.NODE_ENV === "production") {
+    console.error(
+      "[twilio/sms] no auth token available to verify the Twilio signature — rejecting write. Fix the Twilio credentials.",
+    );
+    return new Response("signature unresolved", { status: 403 });
+  }
+
+  const messageSid = params.MessageSid || params.SmsMessageSid;
+  const fromE164 = normalizePhone(params.From);
+  const toNumber = params.To;
+  const body = params.Body ?? "";
+
+  if (!messageSid || !fromE164 || !toNumber) {
+    // Nothing actionable — ack so Twilio stops retrying a malformed delivery.
+    return xmlResponse("<Response/>");
+  }
+
+  try {
+    const [tn] = await db
+      .select()
+      .from(trackingNumbers)
+      .where(eq(trackingNumbers.phoneNumber, toNumber))
+      .limit(1);
+
+    // A text to a number we don't track has no attribution to record and no
+    // thread to file it under. Ack and drop.
+    if (!tn) {
+      console.warn("[twilio/sms] text to untracked number", toNumber);
+      return xmlResponse("<Response/>");
+    }
+
+    const spam = await isHardSpamNumber(fromE164);
+    const { sourceKey, assignmentId } = await resolveInboundAttribution(tn);
+    const sourceId = await ensureSourceId(sourceKey);
+
+    const thread = await upsertThread(
+      { contactKey: fromE164, endpointKey: tn.phoneNumber },
+      { trackingNumberId: tn.id, numberAssignmentId: assignmentId, sourceId },
+    );
+    if (!thread) throw new Error("could not open a conversation for this text");
+
+    // Idempotency: Twilio retries on any non-2xx, and the unique index on
+    // (channel, external_id) is what makes a retry a no-op rather than a
+    // duplicate text and a duplicate lead. Insert FIRST, then act only if this
+    // delivery is the one that won.
+    const [inserted] = await db
+      .insert(messages)
+      .values({
+        conversationId: thread.id,
+        leadId: thread.leadId,
+        channel: "sms",
+        direction: "inbound",
+        fromAddress: fromE164,
+        toAddress: tn.phoneNumber,
+        body,
+        media: collectMedia(params),
+        externalId: messageSid,
+        status: params.SmsStatus ?? "received",
+        numSegments: params.NumSegments ? Number(params.NumSegments) : null,
+      })
+      .onConflictDoNothing()
+      .returning({ id: messages.id });
+
+    if (!inserted) return xmlResponse("<Response/>"); // already ingested
+
+    // One lead per thread: a follow-up text on an existing conversation attaches
+    // to the lead that conversation already has instead of minting a second one.
+    let leadId = thread.leadId;
+    if (!leadId) {
+      const [lead] = await db
+        .insert(leads)
+        .values({
+          type: "sms",
+          status: spam ? "spam" : "new",
+          phoneE164: fromE164,
+          message: body || null,
+          sourceId,
+          location: tn.location ?? "unknown",
+          isSpam: spam,
+          // Left unclassified on purpose — see the note above.
+          isLead: spam ? false : null,
+          leadReason: spam ? "spam rule: blocked number" : null,
+        })
+        .returning({ id: leads.id });
+      leadId = lead.id;
+      await db.update(conversations).set({ leadId }).where(eq(conversations.id, thread.id));
+    }
+
+    await db.update(messages).set({ leadId }).where(eq(messages.id, inserted.id));
+    await recordThreadActivity(thread.id, {
+      channel: "sms",
+      direction: "inbound",
+      preview: preview(body) ?? "(no text)",
+    });
+
+    if (!spam) await relayToHuman({ fromE164, tn, body });
+
+    // Empty TwiML: no auto-reply. Anything we send from here is an
+    // app-originated message to a consumer, which is exactly what A2P 10DLC
+    // registration governs — so replies stay a deliberate, separate decision.
+    return xmlResponse("<Response/>");
+  } catch (err) {
+    // 500 so Twilio retries — the insert is idempotent, so a retry is safe and a
+    // dropped text is not.
+    console.error("[twilio/sms] error", err);
+    return new Response("error", { status: 500 });
+  }
+}
+
+/** Twilio sends MMS attachments as NumMedia + MediaUrl0/MediaContentType0/… */
+function collectMedia(params: Record<string, string>) {
+  const count = Number(params.NumMedia ?? 0);
+  if (!Number.isFinite(count) || count <= 0) return null;
+  const items = [];
+  for (let i = 0; i < count; i++) {
+    const url = params[`MediaUrl${i}`];
+    if (url) items.push({ url, contentType: params[`MediaContentType${i}`] ?? null });
+  }
+  return items.length ? items : null;
+}
+
+/**
+ * Relay the text to a human so nobody has to be watching the dashboard.
+ *
+ * Sent FROM the tracking number the customer texted, which means a reply from the
+ * office goes back to that tracking number and lands in this same thread rather
+ * than reaching the customer — so the relay includes the customer's number to
+ * text directly. Best-effort: a relay failure must not cost us the captured text.
+ */
+async function relayToHuman(args: {
+  fromE164: string;
+  tn: typeof trackingNumbers.$inferSelect;
+  body: string;
+}) {
+  const { fromE164, tn, body } = args;
+  const to = await getSmsForwardNumber();
+  if (!to) return; // relaying deliberately off
+
+  try {
+    const client = await getTwilioClient();
+    const label = tn.friendlyName ? `${tn.friendlyName} ${tn.phoneNumber}` : tn.phoneNumber;
+    await client.messages.create({
+      from: tn.phoneNumber,
+      to,
+      body: `New text to ${label}\nFrom ${fromE164}\n\n${body || "(no text)"}\n\nReply directly to ${fromE164}.`,
+    });
+  } catch (err) {
+    console.error("[twilio/sms] relay failed (text captured)", err);
+  }
+}

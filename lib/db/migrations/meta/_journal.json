@@ -127,6 +127,13 @@
       "when": 1786211014612,
       "tag": "0017_perpetual_patch",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1786276936404,
+      "tag": "0018_oval_blob",
+      "breakpoints": true
     }
   ]
 }

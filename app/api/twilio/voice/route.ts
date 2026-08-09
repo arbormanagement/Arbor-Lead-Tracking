@@ -1,14 +1,9 @@
-import { and, desc, eq, gt, isNull, or } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { db } from "@/lib/db/client";
-import {
-  calls,
-  leads,
-  numberAssignments,
-  sources,
-  spamRules,
-  trackingNumbers,
-} from "@/lib/db/schema";
+import { calls, leads, trackingNumbers } from "@/lib/db/schema";
 import { validateTwilioSignature, parseTwilioForm } from "@/lib/twilio/signature";
+import { ensureSourceId, isHardSpamNumber, resolveInboundAttribution } from "@/lib/twilio/inbound";
+import { recordThreadActivity, upsertThread } from "@/lib/messaging/thread";
 import { getDefaultForwardNumber } from "@/lib/routing";
 import {
   DEFAULT_RECORDING_NOTICE,
@@ -22,8 +17,6 @@ import { normalizePhone } from "@/lib/phone";
 export const runtime = "nodejs";
 // This webhook must answer in well under 3s or the caller hears dead air.
 export const maxDuration = 10;
-
-const GRACE_MS = 15 * 60 * 1000; // resolve a recently-released lease to its source
 
 export async function POST(req: Request) {
   const { params, url } = await parseTwilioForm(req);
@@ -64,37 +57,10 @@ export async function POST(req: Request) {
     // 2) Resolve attribution.
     //    Static numbers map straight to their source; pooled numbers resolve to
     //    the most-recent (active or recently-released) session lease.
-    let sourceKey: string | null = null;
-    let assignmentId: string | null = null;
-
-    if (tn.isStatic && tn.staticSourceId) {
-      const [src] = await db
-        .select({ key: sources.key })
-        .from(sources)
-        .where(eq(sources.id, tn.staticSourceId))
-        .limit(1);
-      sourceKey = src?.key ?? null;
-    } else {
-      const graceCutoff = new Date(Date.now() - GRACE_MS);
-      const [assignment] = await db
-        .select()
-        .from(numberAssignments)
-        .where(
-          and(
-            eq(numberAssignments.trackingNumberId, tn.id),
-            or(isNull(numberAssignments.releasedAt), gt(numberAssignments.releasedAt, graceCutoff)),
-          ),
-        )
-        .orderBy(desc(numberAssignments.assignedAt))
-        .limit(1);
-      if (assignment) {
-        assignmentId = assignment.id;
-        sourceKey = assignment.source ?? null;
-      }
-    }
+    const { sourceKey, assignmentId } = await resolveInboundAttribution(tn);
 
     // 3) Spam pre-check (hard rules only — keep it fast).
-    if (fromE164 && (await isHardSpam(fromE164))) {
+    if (fromE164 && (await isHardSpamNumber(fromE164))) {
       await recordCall({ callSid, fromE164, tn, assignmentId, sourceKey, destination, status: "rejected_spam" });
       return xmlResponse(rejectTwiml());
     }
@@ -140,22 +106,6 @@ export async function POST(req: Request) {
   }
 }
 
-async function isHardSpam(fromE164: string): Promise<boolean> {
-  const rules = await db
-    .select()
-    .from(spamRules)
-    .where(and(eq(spamRules.field, "from_number"), eq(spamRules.enabled, true), eq(spamRules.action, "reject")));
-  return rules.some((r) => {
-    try {
-      return new RegExp(r.pattern).test(fromE164);
-    } catch {
-      // A bad pattern must never 500 the hot path — skip the rule and surface it.
-      console.warn("[twilio/voice] invalid spam rule pattern — skipping:", r.pattern);
-      return false;
-    }
-  });
-}
-
 async function recordCall(args: {
   callSid: string;
   fromE164: string | null;
@@ -167,21 +117,8 @@ async function recordCall(args: {
 }) {
   const { callSid, fromE164, tn, assignmentId, sourceKey, destination, status } = args;
 
-  // Resolve source id (best-effort) for the denormalized lead row. Create the
-  // row when missing — a DNI lease can freeze a key (e.g. facebook/organic)
-  // before any pageview reached /api/track to create it (ad-blocked snippet).
-  let sourceId: string | null = null;
-  if (sourceKey) {
-    let [src] = await db.select({ id: sources.id }).from(sources).where(eq(sources.key, sourceKey)).limit(1);
-    if (!src) {
-      await db
-        .insert(sources)
-        .values({ key: sourceKey, displayName: sourceKey })
-        .onConflictDoNothing({ target: sources.key });
-      [src] = await db.select({ id: sources.id }).from(sources).where(eq(sources.key, sourceKey)).limit(1);
-    }
-    sourceId = src?.id ?? null;
-  }
+  // Resolve source id (best-effort) for the denormalized lead row.
+  const sourceId = await ensureSourceId(sourceKey);
 
   // Repeat-caller detection (one quick indexed lookup — keep the webhook fast).
   // Runs BEFORE the call insert so it doesn't count this very call.
@@ -225,5 +162,28 @@ async function recordCall(args: {
     })
     .returning({ id: leads.id });
 
-  await db.update(calls).set({ leadId: lead.id }).where(eq(calls.id, inserted.id));
+  // Thread it, so a text from the same caller to the same number joins this
+  // conversation instead of starting a parallel one. Best-effort: the inbox is a
+  // read surface, and a threading failure must never cost us the forward TwiML.
+  let conversationId: string | null = null;
+  if (fromE164) {
+    try {
+      const thread = await upsertThread(
+        { contactKey: fromE164, endpointKey: tn.phoneNumber },
+        { leadId: lead.id, trackingNumberId: tn.id, numberAssignmentId: assignmentId, sourceId },
+      );
+      conversationId = thread?.id ?? null;
+      if (conversationId) {
+        await recordThreadActivity(conversationId, {
+          channel: "call",
+          direction: "inbound",
+          preview: status === "rejected_spam" ? "Blocked as spam" : "Inbound call",
+        });
+      }
+    } catch (err) {
+      console.error("[twilio/voice] threading failed (call recorded)", err);
+    }
+  }
+
+  await db.update(calls).set({ leadId: lead.id, conversationId }).where(eq(calls.id, inserted.id));
 }

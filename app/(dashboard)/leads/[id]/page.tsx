@@ -11,6 +11,7 @@ import {
   hcpEstimates,
   hcpJobs,
   leads,
+  messages,
   sources,
   trackingNumbers,
   webSessions,
@@ -68,7 +69,7 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
   if (!row) notFound();
   const lead = row.lead;
 
-  const [callRows, forms, fbRows, touches, session, estimate, job] = await Promise.all([
+  const [callRows, forms, fbRows, messageRows, touches, session, estimate, job] = await Promise.all([
     db
       .select({ call: calls, dialedNumber: trackingNumbers.phoneNumber, dialedName: trackingNumbers.friendlyName })
       .from(calls)
@@ -76,6 +77,7 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
       .where(eq(calls.leadId, lead.id)),
     db.select().from(formSubmissions).where(eq(formSubmissions.leadId, lead.id)),
     db.select().from(facebookLeads).where(eq(facebookLeads.leadId, lead.id)),
+    db.select().from(messages).where(eq(messages.leadId, lead.id)).orderBy(asc(messages.occurredAt)),
     db.select().from(attributions).where(eq(attributions.leadId, lead.id)).orderBy(asc(attributions.occurredAt)),
     lead.webSessionId
       ? db.select().from(webSessions).where(eq(webSessions.id, lead.webSessionId)).limit(1).then((r) => r[0] ?? null)
@@ -99,7 +101,7 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
 
   return (
     <>
-      <Link href="/leads" className="backlink">← Inbox</Link>
+      <Link href="/leads" className="backlink">← Leads</Link>
 
       <div className="page-head">
         <div>
@@ -113,7 +115,10 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
           {lead.isSpam && <span className="badge bad">spam</span>}
           {lead.isDuplicate && <span className="badge muted-strike">duplicate</span>}
           <span className={stageClass(lead.status)}>{lead.status}</span>
-          {lead.type === "call" && <LeadToggle leadId={lead.id} isLead={lead.isLead} manual={lead.isLeadManual ?? false} />}
+          {/* Available on every type, not just calls: a junk form submission has to
+              be ejectable from the Leads list too, and this is the only control that
+              does it (the list itself no longer carries one). */}
+          <LeadToggle leadId={lead.id} isLead={lead.isLead} manual={lead.isLeadManual ?? false} />
         </div>
       </div>
 
@@ -184,14 +189,39 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
             </div>
           ))}
 
-          {lead.message && (
+          {messageRows.length > 0 && (
+            <div className="card">
+              <div className="card-head">
+                <h3>💬 Messages</h3>
+                {messageRows[0].conversationId && (
+                  <Link href={`/inbox/${messageRows[0].conversationId}`} className="link">Open thread →</Link>
+                )}
+              </div>
+              <div className="card-body" style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                {messageRows.map((m) => (
+                  <div key={m.id}>
+                    <div className="muted" style={{ fontSize: 11.5, marginBottom: 2 }}>
+                      {m.direction === "inbound" ? "Received" : "Sent"} · {dateTime(m.occurredAt)}
+                    </div>
+                    <p style={{ margin: 0, whiteSpace: "pre-wrap" }}>
+                      {m.body?.trim() || <span className="muted">(no text)</span>}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* `message` duplicates the first text's body for SMS leads — only worth a
+              card of its own for form/FB leads, which have no message rows. */}
+          {lead.message && messageRows.length === 0 && (
             <div className="card">
               <div className="card-head"><h3>Message</h3></div>
               <div className="card-body"><p style={{ margin: 0, whiteSpace: "pre-wrap" }}>{lead.message}</p></div>
             </div>
           )}
 
-          {callRows.length === 0 && forms.length === 0 && fbRows.length === 0 && !lead.message && (
+          {callRows.length === 0 && forms.length === 0 && fbRows.length === 0 && messageRows.length === 0 && !lead.message && (
             <div className="empty">No interaction details recorded for this lead.</div>
           )}
         </div>
@@ -289,6 +319,12 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
                 <Def label="Phone">{lead.phoneE164 ? <a href={`tel:${lead.phoneE164}`} className="link">{formatPhoneDisplay(lead.phoneE164)}</a> : null}</Def>
                 <Def label="Email">{lead.emailLc ? <a href={`mailto:${lead.emailLc}`} className="link">{lead.emailLc}</a> : null}</Def>
                 <Def label="Returning" title="This contact was seen before this lead">{lead.isFirstTime === false ? "yes" : null}</Def>
+                {/* Why this does (or doesn't) count as an estimate request — the
+                    thing the Leads list filters on. */}
+                <Def label="Lead reason" title="Why this was classified as a lead or not">
+                  {lead.leadReason}
+                  {lead.isLeadManual ? <span className="muted"> · set by hand</span> : null}
+                </Def>
               </div>
             </div>
           </div>

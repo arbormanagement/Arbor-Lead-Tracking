@@ -7,8 +7,10 @@ import { usePathname } from "next/navigation";
 // Settings — the sidebar stays the day-to-day working set.
 const NAV: Array<{ href: string; label: string; ic: string; section?: string }> = [
   { href: "/", label: "Overview", ic: "◧" },
-  { href: "/calls", label: "Calls", ic: "☎" },
-  { href: "/leads", label: "Leads", ic: "✉" },
+  // Inbox = everything that came in (calls, texts, later email). Leads = the
+  // subset confirmed to be estimate requests.
+  { href: "/inbox", label: "Inbox", ic: "☎" },
+  { href: "/leads", label: "Leads", ic: "✦" },
   { href: "/sources", label: "Sources", ic: "◈" },
   { href: "/settings", label: "Settings", ic: "⚙", section: "Admin" },
 ];
