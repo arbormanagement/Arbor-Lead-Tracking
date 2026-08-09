@@ -99,8 +99,11 @@ export default async function DniTestPage({ searchParams }: { searchParams: Prom
         <strong>How to run it:</strong> pick a source preset above → confirm the number swaps and
         the expected source matches → call the swapped number from your phone → open{" "}
         <Link href="/leads" style={{ color: "var(--accent)" }}>/leads</Link> and confirm the call landed with that source.
-        Repeat with a different preset to prove each channel. CallRail is untouched — this page isn’t on
-        arbor-mgmt.com and only swaps its own <code>data-arbor-phone</code> element.
+        Repeat with a different preset to prove each channel. Note this page runs the real snippet, so each
+        visit leases a real number from the pool for 30 minutes. The snippet swaps every{" "}
+        <code>tel:</code> link on whatever page it runs on, not just the{" "}
+        <code>data-arbor-phone</code> element — mark a link (or an ancestor) with{" "}
+        <code>data-arbor-ignore</code> to exclude it.
       </p>
 
       {/* Load the REAL snippet exactly as the live site would (currentScript-derived endpoint). */}

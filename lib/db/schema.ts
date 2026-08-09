@@ -9,6 +9,7 @@ import {
   jsonb,
   numeric,
   uniqueIndex,
+  unique,
   index,
   primaryKey,
 } from "drizzle-orm/pg-core";
@@ -276,8 +277,16 @@ export const numberAssignments = pgTable(
     createdAt: createdAt(),
   },
   (t) => [
-    // Fast "who currently holds this number" — only one active lease per number.
-    index("number_assignments_active_idx")
+    // Fast "who currently holds this number" AND the enforcement of one active
+    // lease per number. This must be UNIQUE: the leasing query picks a free number
+    // with `SELECT … FOR UPDATE SKIP LOCKED` and a `NOT EXISTS` check on active
+    // assignments, but inserting an assignment never modifies the locked
+    // tracking_numbers row, so no EPQ recheck happens. Under READ COMMITTED two
+    // concurrent visitors can both pass `NOT EXISTS` against their own snapshots
+    // and lease the SAME number — after which the voice route resolves the newest
+    // lease and freezes the wrong visitor's source/gclid onto the call. Unique
+    // turns that silent race into a retryable insert failure.
+    uniqueIndex("number_assignments_active_idx")
       .on(t.trackingNumberId)
       .where(sql`released_at IS NULL`),
     index("number_assignments_session_idx").on(t.webSessionId),
@@ -454,6 +463,8 @@ export const leads = pgTable(
     index("leads_source_idx").on(t.sourceId),
     index("leads_status_idx").on(t.status),
     index("leads_hcp_estimate_idx").on(t.hcpEstimateId),
+    // Every ROI surface filters through `campaignNotExcluded(leads.campaignId, …)`.
+    index("leads_campaign_idx").on(t.campaignId),
     uniqueIndex("leads_type_external_id_uq")
       .on(t.type, t.externalId)
       .where(sql`external_id IS NOT NULL`),
@@ -500,6 +511,8 @@ export const calls = pgTable(
     index("calls_lead_idx").on(t.leadId),
     index("calls_from_idx").on(t.fromNumber),
     index("calls_tracking_number_idx").on(t.trackingNumberId),
+    // /calls orders by created_at desc — without this it is a seq scan + sort.
+    index("calls_created_at_idx").on(t.createdAt),
   ],
 );
 
@@ -553,7 +566,9 @@ export const attributions = pgTable(
     occurredAt: timestamp("occurred_at", { withTimezone: true }),
     createdAt: createdAt(),
   },
-  (t) => [index("attributions_lead_idx").on(t.leadId)],
+  // touch_type is indexed because every attribution rebuild issues a
+  // `DELETE WHERE touch_type = 'last'` over the whole table.
+  (t) => [index("attributions_lead_idx").on(t.leadId), index("attributions_touch_type_idx").on(t.touchType)],
 );
 
 export const roiDaily = pgTable(
@@ -579,7 +594,17 @@ export const roiDaily = pgTable(
     updatedAt: updatedAt(),
   },
   (t) => [
-    uniqueIndex("roi_daily_key_uq").on(t.date, t.sourceId, t.campaignId, t.location),
+    // NULLS NOT DISTINCT (PG15+) is load-bearing, not a detail: source_id and
+    // campaign_id are nullable and unattributed rows (no source, no campaign) are
+    // the common case. Under the default NULLS DISTINCT, Postgres treats every
+    // such row as unique, so the constraint silently does NOT fire for exactly the
+    // rows most likely to be duplicated — and every dashboard SUM() over
+    // roi_daily double-counts that day.
+    // Declared as a table constraint rather than uniqueIndex because only the
+    // constraint builder exposes NULLS NOT DISTINCT (it creates a unique index
+    // underneath either way). The rebuild is delete-then-insert, so nothing
+    // targets this in an ON CONFLICT clause.
+    unique("roi_daily_key_uq").on(t.date, t.sourceId, t.campaignId, t.location).nullsNotDistinct(),
     index("roi_daily_date_idx").on(t.date),
   ],
 );
@@ -629,7 +654,19 @@ export const syncRuns = pgTable(
     stats: jsonb("stats"),
     error: text("error"),
   },
-  (t) => [index("sync_runs_job_idx").on(t.job, t.startedAt)],
+  (t) => [
+    index("sync_runs_job_idx").on(t.job, t.startedAt),
+    // At most one in-flight run per job, enforced by the database rather than by
+    // the scheduler. The cron worker's `protect` flag only serializes its own
+    // fetch — on a timeout the web-side handler keeps running while the next tick
+    // fires, so a job can genuinely overlap itself. That interleaves the
+    // attribution rebuild's reset/re-derive passes (corrupting ROI until the next
+    // clean run) and doubles Deepgram spend on transcribe. `withSyncRun` claims
+    // this index and skips the run when the claim is already held.
+    uniqueIndex("sync_runs_one_running_uq")
+      .on(t.job)
+      .where(sql`${t.status} = 'running'`),
+  ],
 );
 
 // ── Conversion exports (closed-loop feedback to ad platforms) ─────────────────

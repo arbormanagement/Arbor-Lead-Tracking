@@ -18,12 +18,25 @@ import {
   xmlResponse,
 } from "@/lib/twilio/twiml";
 import { normalizePhone } from "@/lib/phone";
+import { env } from "@/lib/env";
 
 export const runtime = "nodejs";
-// This webhook must answer in well under 3s or the caller hears dead air.
-export const maxDuration = 10;
 
 const GRACE_MS = 15 * 60 * 1000; // resolve a recently-released lease to its source
+
+/**
+ * Hard ceiling on attribution work before we forward anyway. Twilio gives the
+ * webhook ~15s, but the caller hears silence the whole time, so the real budget is
+ * well under 3s.
+ *
+ * A try/catch alone does NOT enforce this: it fires on a thrown error, never on
+ * slowness. A saturated-but-alive pool (max 5 connections, shared with the
+ * dashboard) or a DB accepting connections but responding slowly would block this
+ * route through ~8-11 sequential round-trips with no bail-out — the caller hears
+ * dead air until Twilio times out and falls back. This deadline is what makes the
+ * "never leave a caller in dead air" promise actually hold.
+ */
+const VOICE_DEADLINE_MS = 2_000;
 
 export async function POST(req: Request) {
   const { params, url } = await parseTwilioForm(req);
@@ -35,17 +48,46 @@ export async function POST(req: Request) {
     return new Response("invalid signature", { status: 403 });
   }
 
+  // Best destination known so far, read by the deadline timer below — so it must
+  // stay a plain synchronous read. Upgraded as we learn more (env default →
+  // account default → per-number override) so a bail-out rings the most correct
+  // number available rather than always the env one.
+  const dest = { current: env.TWILIO_DEFAULT_DESTINATION };
+
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<string>((resolve) => {
+    timer = setTimeout(() => {
+      console.error(`[twilio/voice] exceeded ${VOICE_DEADLINE_MS}ms — forwarding without attribution`);
+      resolve(fallbackTwiml(dest.current));
+    }, VOICE_DEADLINE_MS);
+  });
+
+  try {
+    // The losing side keeps running: `recordCall` is idempotent on
+    // twilio_call_sid, so a lookup that lands after the deadline still records
+    // the call. We trade attribution-in-the-TwiML for never stalling the caller.
+    return xmlResponse(await Promise.race([buildCallTwiml(params, dest), deadline]));
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function buildCallTwiml(
+  params: Record<string, string>,
+  dest: { current: string },
+): Promise<string> {
   const callSid = params.CallSid;
   const fromRaw = params.From;
   const calledNumber = params.To; // the tracking number that was dialed
   const fromE164 = normalizePhone(fromRaw);
 
-  // Account-level forwarding default (Settings → Routing, over env). A matched tracking number may
-  // override this with its own destination below.
-  const accountDefault = await getDefaultForwardNumber();
-  let destination = accountDefault;
-
   try {
+    // Account-level forwarding default (Settings → Routing, over env). A matched tracking number may
+    // override this with its own destination below.
+    const accountDefault = await getDefaultForwardNumber();
+    dest.current = accountDefault;
+    let destination = accountDefault;
+
     // 1) Resolve which tracking number was called.
     const [tn] = await db
       .select()
@@ -55,11 +97,12 @@ export async function POST(req: Request) {
 
     if (!tn) {
       // Unknown number — just forward to the office so no call is lost.
-      return xmlResponse(fallbackTwiml());
+      return fallbackTwiml(destination);
     }
 
     // Per-number routing override (falls back to the account default).
     destination = tn.forwardDestination ?? accountDefault;
+    dest.current = destination;
 
     // 2) Resolve attribution.
     //    Static numbers map straight to their source; pooled numbers resolve to
@@ -96,7 +139,7 @@ export async function POST(req: Request) {
     // 3) Spam pre-check (hard rules only — keep it fast).
     if (fromE164 && (await isHardSpam(fromE164))) {
       await recordCall({ callSid, fromE164, tn, assignmentId, sourceKey, destination, status: "rejected_spam" });
-      return xmlResponse(rejectTwiml());
+      return rejectTwiml();
     }
 
     // 4) Persist the call + lead immediately (status callbacks fill in the rest).
@@ -125,18 +168,16 @@ export async function POST(req: Request) {
     // Opt in per number only — meaningful again if a number ever forwards to a human.
     const whisper = tn.whisperMessage || undefined;
     const greeting = tn.greetingEnabled ? (tn.greetingMessage || DEFAULT_RECORDING_NOTICE) : null;
-    return xmlResponse(
-      forwardTwiml({
-        destination,
-        whisper,
-        record: tn.recordCalls,
-        greeting,
-      }),
-    );
+    return forwardTwiml({
+      destination,
+      whisper,
+      record: tn.recordCalls,
+      greeting,
+    });
   } catch (err) {
     // Never leave the caller in dead air — forward to the office on any error.
     console.error("[twilio/voice] error", err);
-    return xmlResponse(fallbackTwiml());
+    return fallbackTwiml(dest.current);
   }
 }
 

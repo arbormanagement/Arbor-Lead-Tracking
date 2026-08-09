@@ -148,6 +148,20 @@
       "when": 1786277584807,
       "tag": "0020_purge_recruiting_data",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1786293793636,
+      "tag": "0021_audit_fixes",
+      "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1786293794636,
+      "tag": "0022_dni_pool_gate",
+      "breakpoints": true
     }
   ]
 }

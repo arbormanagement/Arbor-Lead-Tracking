@@ -11,13 +11,17 @@ import { releaseExpired } from "@/lib/dni/assign";
 import { backfillVoiceFallback } from "@/lib/twilio/numbers";
 
 export const runtime = "nodejs";
-export const maxDuration = 300;
 
 /**
- * Scheduled job entrypoint for Vercel Cron (see vercel.json). GET so the platform
- * scheduler can hit it; secured by CRON_SECRET, which Vercel sends as
+ * Scheduled job entrypoint for the `cron` Railway service (see scripts/cron.ts).
+ * GET so the scheduler can hit it; secured by CRON_SECRET, sent as
  * `Authorization: Bearer <CRON_SECRET>`. Dispatches to the same `lib/sync/*`
  * functions the admin "Run sync now" button uses — this is purely a scheduled door.
+ *
+ * Jobs are called WITHOUT window overrides on purpose. Each sync owns its own
+ * window policy (spend: 35d rolling + cold-start backfill; conversions: 90d to
+ * match Google's click lookback), and passing an explicit `sinceDays` here
+ * short-circuits that self-healing. Only pass one to deliberately narrow a run.
  */
 export async function GET(req: Request, { params }: { params: Promise<{ job: string }> }) {
   const auth = req.headers.get("authorization");
@@ -36,13 +40,13 @@ export async function GET(req: Request, { params }: { params: Promise<{ job: str
       case "hcp":
         return Response.json({ ok: true, job, result: await syncHcp() });
       case "spend":
-        return Response.json({ ok: true, job, result: await syncSpend({ sinceDays: 7 }) });
+        return Response.json({ ok: true, job, result: await syncSpend() });
       case "lsa":
         return Response.json({ ok: true, job, result: await syncLsaLeads({ sinceDays: 30 }) });
       case "attribution":
         return Response.json({ ok: true, job, result: await runAttribution({ windowDays: 90 }) });
       case "conversions":
-        return Response.json({ ok: true, job, result: await syncConversions({ sinceDays: 60 }) });
+        return Response.json({ ok: true, job, result: await syncConversions() });
       case "fbleads":
         return Response.json({ ok: true, job, result: await syncFacebookLeads() });
       case "twilio-fallback":
@@ -52,10 +56,10 @@ export async function GET(req: Request, { params }: { params: Promise<{ job: str
       // Convenience aggregates so a single daily cron can do the revenue→ROI chain.
       case "revenue": {
         const hcp = await syncHcp();
-        const spend = await syncSpend({ sinceDays: 7 });
+        const spend = await syncSpend();
         const lsa = await syncLsaLeads({ sinceDays: 30 });
         const attribution = await runAttribution({ windowDays: 90 });
-        const conversions = await syncConversions({ sinceDays: 60 });
+        const conversions = await syncConversions();
         return Response.json({ ok: true, job, result: { hcp, spend, lsa, attribution, conversions } });
       }
       default:

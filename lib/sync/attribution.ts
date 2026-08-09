@@ -298,7 +298,20 @@ interface RoiAcc {
 
 async function rebuildRoiDaily(windowDays: number): Promise<number> {
   const since = new Date(Date.now() - windowDays * 86_400_000);
-  const sinceDate = since.toISOString().slice(0, 10);
+  // The rebuild deletes and re-inserts whole BUSINESS days, so the boundary must be
+  // a business date too. Deriving it from toISOString() (UTC) desynchronizes the
+  // delete window from the `businessDate()` bucketing below: for runs between 00:00
+  // and 06:00 UTC (6pm–midnight CT — several hourly ticks every evening) a lead
+  // buckets to `sinceDate - 1`, lands OUTSIDE the deleted window, and either
+  // collides with the previous run's surviving row (unique violation, aborting the
+  // whole rebuild) or silently duplicates that day when source/campaign are NULL.
+  const sinceDate = businessDate(since);
+  // Re-count the boundary day in FULL. The delete clears entire business days, so
+  // selecting leads on the raw `since` timestamp would permanently drop the ones
+  // that occurred earlier on that same CT day, leaving a partial oldest row that
+  // skews its CPL/ROAS high. Scan wider than any UTC offset and filter by business
+  // date in the loop.
+  const leadScanFrom = new Date(since.getTime() - 2 * 86_400_000);
 
   // Non-customer-acquisition campaigns (recruiting) contribute neither spend nor
   // leads to ROI. Resolved once and applied to both sides of the rollup so a
@@ -338,17 +351,21 @@ async function rebuildRoiDaily(windowDays: number): Promise<number> {
     .where(
       and(
         eq(leads.isSpam, false),
-        gte(leads.occurredAt, since),
+        gte(leads.occurredAt, leadScanFrom),
         or(ne(leads.type, "call"), eq(leads.isLead, true)),
         campaignNotExcluded(leads.campaignId, excluded),
       ),
     );
 
   for (const l of leadRows) {
+    // Business-timezone day, matching the ad platforms' account-timezone spend
+    // dates — a late-evening CT lead must not land on tomorrow's (UTC) row.
+    const date = businessDate(l.occurredAt);
+    // Trim the over-wide scan back to the window the delete actually clears, so we
+    // never insert a row outside it.
+    if (date < sinceDate) continue;
     const row = bump({
-      // Business-timezone day, matching the ad platforms' account-timezone spend
-      // dates — a late-evening CT lead must not land on tomorrow's (UTC) row.
-      date: businessDate(l.occurredAt),
+      date,
       sourceId: l.sourceId ?? null,
       campaignId: l.campaignId ?? null,
       location: (l.location ?? "unknown") as RoiAcc["location"],

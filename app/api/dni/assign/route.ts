@@ -65,10 +65,18 @@ export function OPTIONS() {
 export async function POST(req: Request) {
   // Public-endpoint hygiene: browser posts must come from our own sites, and
   // each IP gets a budget — leases are a finite pool worth protecting.
-  if (!(await isAllowedOrigin(req))) {
+  //
+  // `requireOrigin` matters here specifically. The pool is 5 numbers and the
+  // per-visitor cap keys on the client-supplied `vid`, so five requests with five
+  // fabricated vids lease the whole pool; repeated, that keeps every real visitor
+  // on the static fallback and silently ends paid-click attribution. Browsers
+  // always send Origin on a POST, so requiring it costs real visitors nothing.
+  if (!(await isAllowedOrigin(req, { requireOrigin: true }))) {
     return Response.json({ error: "origin not allowed" }, { status: 403, headers: CORS });
   }
-  const rl = rateLimit(`dni:${clientIp(req)}`, 30, 60_000);
+  // Tighter than /api/track's budget: a page needs ONE lease per session, not 30
+  // per minute, and each request can consume a scarce pool number.
+  const rl = rateLimit(`dni:${clientIp(req)}`, 10, 60_000);
   if (!rl.ok) {
     return Response.json(
       { error: "rate limited" },
@@ -100,6 +108,7 @@ export async function POST(req: Request) {
       utmSource: utm.source,
       utmMedium: utm.medium,
       referrer,
+      currentUrl: url,
     });
     const medium = utm.medium?.toLowerCase() ?? cls.medium;
     const snapshot = {

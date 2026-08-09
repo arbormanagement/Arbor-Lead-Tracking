@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@/lib/db/client";
 import { formSubmissions, leads, sources, visitors, webSessions } from "@/lib/db/schema";
@@ -112,6 +112,7 @@ export async function POST(req: Request) {
     utmSource: utm.source,
     utmMedium: utm.medium,
     referrer,
+    currentUrl: form?.pageUrl ?? url,
   });
   const sourceId = await getOrCreateSource(cls.sourceKey);
   // classify lowercases its output; normalize raw UTM the same way so "CPC" and
@@ -163,11 +164,50 @@ export async function POST(req: Request) {
       location,
       derivedSourceId: sourceId,
     })
-    .onConflictDoUpdate({ target: webSessions.id, set: { lastActivityAt: now } });
+    .onConflictDoUpdate({
+      target: webSessions.id,
+      set: {
+        lastActivityAt: now,
+        // Backfill, never overwrite. /api/dni/assign seeds a session row to satisfy
+        // the lease's FKs but cannot populate these (it has no source resolution and
+        // no page context), and it frequently wins the race against this beacon — so
+        // without a backfill those sessions keep `derived_source_id` NULL forever and
+        // drop out of every surface that groups sessions by source. COALESCE keeps
+        // the session's original last-touch frozen where it already exists.
+        derivedSourceId: sql`coalesce(${webSessions.derivedSourceId}, excluded.derived_source_id)`,
+        location: sql`coalesce(${webSessions.location}, excluded.location)`,
+        content: sql`coalesce(${webSessions.content}, excluded.content)`,
+        msclkid: sql`coalesce(${webSessions.msclkid}, excluded.msclkid)`,
+      },
+    });
 
   // 3) Form submission → web_form lead.
   if (parsed.event === "form_submit" && form) {
     const c = mapFormFields(form.fields);
+
+    // Attribute from the SESSION, falling back to this event. The submit event
+    // carries only what is on the URL at submit time, so on any hard navigation
+    // (or a direct entry to an inner page) it has no click ids and an own-domain
+    // referrer — a Google Ads lead would be filed as direct/self-referral with a
+    // null gclid, breaking both ROI and the offline-conversion upload, while the
+    // real values sit on the session row one read away. The session holds the
+    // attribution frozen when the visit began, which is exactly last-touch.
+    const [sess] = await db
+      .select({
+        gclid: webSessions.gclid,
+        gbraid: webSessions.gbraid,
+        wbraid: webSessions.wbraid,
+        fbclid: webSessions.fbclid,
+        medium: webSessions.medium,
+        derivedSourceId: webSessions.derivedSourceId,
+        referrer: webSessions.referrer,
+        landingPage: webSessions.landingPage,
+      })
+      .from(webSessions)
+      .where(eq(webSessions.id, sid))
+      .limit(1);
+
+    const leadSourceId = sess?.derivedSourceId ?? sourceId;
     const [lead] = await db
       .insert(leads)
       .values({
@@ -178,14 +218,16 @@ export async function POST(req: Request) {
         phoneE164: normalizePhone(c.phone),
         emailLc: normalizeEmail(c.email),
         message: c.message,
-        sourceId,
-        medium,
-        gclid: click.gclid,
-        gbraid: click.gbraid,
-        wbraid: click.wbraid,
-        fbclid: click.fbclid,
+        sourceId: leadSourceId,
+        medium: sess?.medium ?? medium,
+        gclid: click.gclid ?? sess?.gclid,
+        gbraid: click.gbraid ?? sess?.gbraid,
+        wbraid: click.wbraid ?? sess?.wbraid,
+        fbclid: click.fbclid ?? sess?.fbclid,
+        // The page the form was on is the useful landing page for the lead itself;
+        // the session's own landing page is kept on the session row.
         landingPage: form.pageUrl ?? url,
-        referrer,
+        referrer: referrer ?? sess?.referrer,
         location,
         visitorId: vid,
         webSessionId: sid,

@@ -9,9 +9,16 @@ const BACKOFF_MS = [1_000, 4_000];
 const RETRY_AFTER_CAP_MS = 30_000;
 
 function retryDelayMs(res: Response, attempt: number): number {
-  const sec = Number(res.headers.get("retry-after"));
-  if (Number.isFinite(sec) && sec >= 0) return Math.min(sec * 1_000, RETRY_AFTER_CAP_MS);
-  return BACKOFF_MS[Math.min(attempt, BACKOFF_MS.length - 1)];
+  // `Number(null)` is 0, so parsing unconditionally would treat every response
+  // WITHOUT a Retry-After (most 5xx, many 429s) as "retry after 0ms" and skip the
+  // backoff entirely — hammering an already-failing upstream. Only trust the
+  // header when it is actually present and numeric.
+  const raw = res.headers.get("retry-after");
+  if (raw !== null) {
+    const sec = Number(raw);
+    if (Number.isFinite(sec) && sec >= 0) return Math.min(sec * 1_000, RETRY_AFTER_CAP_MS);
+  }
+  return BACKOFF_MS[Math.min(attempt, BACKOFF_MS.length - 1)]!;
 }
 
 export async function fetchWithRetry(

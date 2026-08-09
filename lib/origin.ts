@@ -39,9 +39,21 @@ async function allowedSet(): Promise<ReadonlySet<string>> {
   return set;
 }
 
-export async function isAllowedOrigin(req: Request): Promise<boolean> {
+/**
+ * `requireOrigin` closes the "just omit the header" hole for endpoints where a
+ * rejection is cheap. Absent-passes is the right default for /api/track — a
+ * rejected form post is a LOST LEAD, and some privacy tooling strips Origin — but
+ * it is the wrong default for /api/dni/assign, where absent-passes lets anyone
+ * with curl lease every number in the 5-number pool (browsers always send Origin
+ * on POST, so no real visitor is affected, and a rejected assign merely leaves the
+ * page on its static number).
+ */
+export async function isAllowedOrigin(
+  req: Request,
+  { requireOrigin = false }: { requireOrigin?: boolean } = {},
+): Promise<boolean> {
   const origin = req.headers.get("origin");
-  if (!origin) return true; // server-to-server — no Origin header to check
+  if (!origin) return !requireOrigin; // server-to-server — no Origin header to check
   const normalized = normalizeOrigin(origin);
   if (!normalized) return false;
   return (await allowedSet()).has(normalized);

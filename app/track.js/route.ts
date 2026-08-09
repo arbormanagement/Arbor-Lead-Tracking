@@ -178,6 +178,12 @@ const SNIPPET = String.raw`(function () {
       var links = document.querySelectorAll('a[href^="tel:"]');
       for (var j = 0; j < links.length; j++) {
         var a = links[j];
+        // Opt-out, same attribute the form capture honours. Without it EVERY tel:
+        // link on the page collapses to the one leased number — so a page listing
+        // both the Edwardsville and O'Fallon offices (or an emergency/partner
+        // line) would silently send callers to the wrong one. Mark the link, or
+        // any ancestor, with data-arbor-ignore to leave it alone.
+        if (a.closest && a.closest('[data-arbor-ignore]')) continue;
         if (a.getAttribute('href') !== tel) { a.setAttribute('href', tel); n++; }
         // Only rewrite link text that IS a phone number — the CTA buttons read
         // "Call Now" and must keep their label. textContent would also delete
