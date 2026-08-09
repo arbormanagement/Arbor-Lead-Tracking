@@ -71,4 +71,11 @@ things from it that constrain this codebase:
 - E.164 normalization is load-bearing for lead↔HCP matching/ROI.
 - Scheduled jobs are fire-and-log: a failed run is logged and retried on the next tick, so
   the syncs must stay idempotent + self-healing (rolling re-pulls) rather than assume a retry queue.
+- Not every campaign is customer acquisition. Recruiting/brand campaigns are flagged
+  `campaigns.excluded` (Settings → Campaigns) and are kept out of every ROI number —
+  `roi_daily`, the overview funnel, the sources page — while their spend stays on record.
+  The Facebook ingest also drops submissions from an excluded campaign, so applicants never
+  become leads. Predicate helpers live in `lib/campaigns.ts`; apply them to any NEW surface
+  that reads `leads` or `ad_spend` directly, or recruiting dollars land in an ROAS denominator
+  with no revenue behind them.
 - Spend sync is self-healing (`lib/sync/spend.ts`): rolling 35-day re-pull (platforms restate) + automatic cold-start backfill reaching to each platform's earliest lead (≤365d — spend with no leads to match is deliberately not fetched), keyed `(platform, external_campaign_id, date)`. No manual backfills.

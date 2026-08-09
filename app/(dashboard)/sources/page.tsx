@@ -1,6 +1,7 @@
 import { and, desc, eq, gte, isNotNull, ne, or, sql } from "drizzle-orm";
 import type { AnyPgColumn } from "drizzle-orm/pg-core";
 import Link from "next/link";
+import { campaignNotExcluded, excludedCampaignIds } from "@/lib/campaigns";
 import { db } from "@/lib/db/client";
 import { leads, roiDaily, sources } from "@/lib/db/schema";
 import { dollars } from "@/lib/format";
@@ -16,6 +17,10 @@ export default async function SourcesPage({ searchParams }: { searchParams: Prom
   const since = new Date(Date.now() - days * 86_400_000).toISOString().slice(0, 10);
   const sinceDate = new Date(Date.now() - days * 86_400_000);
   const leadOnly = or(ne(leads.type, "call"), eq(leads.isLead, true));
+  // Recruiting campaigns are not customer acquisition. roi_daily is built without
+  // them; the queries below read `leads` directly, so they filter here.
+  const excluded = await excludedCampaignIds();
+  const notRecruiting = campaignNotExcluded(leads.campaignId, excluded);
 
   // Performance by source (30d).
   const rows = await db
@@ -40,7 +45,9 @@ export default async function SourcesPage({ searchParams }: { searchParams: Prom
     .select({ key: sources.key, n: sql<number>`count(*)::int` })
     .from(leads)
     .leftJoin(sources, eq(leads.sourceId, sources.id))
-    .where(and(gte(leads.occurredAt, sinceDate), eq(leads.isSpam, false), leadOnly, eq(leads.status, "cancelled")))
+    .where(
+      and(gte(leads.occurredAt, sinceDate), eq(leads.isSpam, false), leadOnly, eq(leads.status, "cancelled"), notRecruiting),
+    )
     .groupBy(sources.key);
   const cancelledByKey = new Map<string | null, number>(cancelledRows.map((c) => [c.key ?? null, c.n]));
 
@@ -70,7 +77,7 @@ export default async function SourcesPage({ searchParams }: { searchParams: Prom
         revenue: sql<number>`coalesce(sum(${leads.salesValueCents}) filter (where ${leads.status} = 'won'), 0)::int`,
       })
       .from(leads)
-      .where(and(gte(leads.occurredAt, bdSince), eq(leads.isSpam, false), leadOnly, isNotNull(col), ne(col, "")))
+      .where(and(gte(leads.occurredAt, bdSince), eq(leads.isSpam, false), leadOnly, isNotNull(col), ne(col, ""), notRecruiting))
       .groupBy(col)
       .orderBy(desc(sql`count(*)`))
       .limit(8);

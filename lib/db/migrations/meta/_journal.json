@@ -127,6 +127,27 @@
       "when": 1786211014612,
       "tag": "0017_perpetual_patch",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1786277571193,
+      "tag": "0018_campaign_excluded",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1786277583778,
+      "tag": "0019_flag_recruiting_campaign",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1786277584807,
+      "tag": "0020_purge_recruiting_data",
+      "breakpoints": true
     }
   ]
 }

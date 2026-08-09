@@ -35,13 +35,16 @@ export async function syncFacebookLeads({ sinceDays }: { sinceDays?: number } = 
 
     let seen = 0;
     let created = 0;
+    let excluded = 0;
     let failed = 0;
     for (const form of active) {
       const leads = await facebook.listFormLeads(form.id, sinceUnix);
       for (const detail of leads) {
         seen++;
         try {
-          if (await ingestFacebookLead(detail)) created++;
+          const result = await ingestFacebookLead(detail);
+          if (result === "created") created++;
+          else if (result === "excluded") excluded++;
         } catch (err) {
           failed++;
           console.error("[fb leads] ingest failed", detail.leadgenId, err);
@@ -61,6 +64,8 @@ export async function syncFacebookLeads({ sinceDays }: { sinceDays?: number } = 
       totalForms: forms.length,
       seen,
       created,
+      // Submissions dropped because their campaign is flagged non-customer-acquisition.
+      excluded,
       windowDays: Number(windowDays.toFixed(3)),
     };
   });
