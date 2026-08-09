@@ -428,6 +428,33 @@ curl -H "Authorization: Bearer $CRON_SECRET" https://<domain>/api/cron/<job>
 # `revenue` chains hcp → spend → lsa → attribution → conversions in one shot
 ```
 
+## Is it actually working? — `/api/diagnostics`
+
+One read-only call answers it, without a database shell:
+
+```bash
+curl -H "Authorization: Bearer $ADMIN_API_TOKEN" https://<domain>/api/diagnostics | jq
+```
+
+`ok: true` and an empty `warnings` array means everything below is healthy. It
+reports, and warns on:
+
+| Area | What it catches |
+| --- | --- |
+| `config` | A trailing slash on `APP_BASE_URL` (invalidates **every** Twilio signature); `TWILIO_AUTH_TOKEN` unset (status + recording callbacks fail closed, so no recording ever persists — the 2026-08 incident) |
+| `pool` | Pool size, how many are leased, and `excludedFromRotation` — active non-static numbers sitting in a non-DNI pool that will never be handed to a visitor |
+| `jobs` | Last run and last **success** per sync job, with the error text; flags a job that hasn't succeeded in 48h, has never succeeded, or is stuck `running` past the 6h reaper window (its claim blocks every later tick) |
+| `volume` | Leads and calls in the last 24h/7d, plus how many calls in the last 7d actually have a recording |
+| `credentials` | Which fields are configured per platform — **names only, never values** |
+
+It is deliberately a fixed set of checks rather than a query interface: an
+endpoint that runs SQL you hand it would be an arbitrary-read (and one typo
+later, arbitrary-write) backdoor into a production database holding customer
+contact details, behind a single bearer token. Add a check here instead.
+
+Needs `ADMIN_API_TOKEN` set on the `web` service; an admin session cookie works
+too, so the same URL is useful from a logged-in browser.
+
 Notes:
 - A failed run is logged and the worker keeps going; the next tick retries.
 - `protect: true` skips a tick if the previous run of that same job is still in flight,

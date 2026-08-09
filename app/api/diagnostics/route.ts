@@ -1,0 +1,204 @@
+import { and, desc, eq, gte, isNull, sql } from "drizzle-orm";
+import { authorizeAdmin, unauthorized } from "@/lib/admin-auth";
+import { credentialStatus } from "@/lib/credentials";
+import { CREDENTIAL_SPECS } from "@/lib/credentials/spec";
+import { db } from "@/lib/db/client";
+import { calls, leads, numberAssignments, pools, syncRuns, trackingNumbers } from "@/lib/db/schema";
+import { env } from "@/lib/env";
+import { businessDate, BUSINESS_TZ } from "@/lib/tz";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+/**
+ * Read-only operational snapshot: "is this thing actually working right now?"
+ *
+ * Deliberately a FIXED set of checks, not a query interface. The obvious version
+ * of this — an endpoint that runs SQL you hand it — would be an arbitrary-read
+ * (and, one typo later, arbitrary-write) backdoor into a production database
+ * holding customer contact details, guarded by a single bearer token. This
+ * answers the operational questions instead, and can only ever return what is
+ * written below.
+ *
+ * Nothing here returns a secret. Credentials are reported as configured/not and
+ * where they came from — never the value, not even masked.
+ *
+ * Admin-gated the same way /api/numbers/pool is: session cookie, or
+ * `Authorization: Bearer $ADMIN_API_TOKEN`.
+ */
+export async function GET(req: Request) {
+  const auth = await authorizeAdmin(req);
+  if (!auth.ok) return unauthorized();
+
+  const now = new Date();
+  const dayAgo = new Date(now.getTime() - 86_400_000);
+  const weekAgo = new Date(now.getTime() - 7 * 86_400_000);
+
+  // ── Database ────────────────────────────────────────────────────────────────
+  let dbUp = true;
+  let dbLatencyMs: number | null = null;
+  try {
+    const t0 = Date.now();
+    await db.execute(sql`select 1`);
+    dbLatencyMs = Date.now() - t0;
+  } catch {
+    dbUp = false;
+  }
+  if (!dbUp) {
+    return Response.json({ ok: false, db: "down", checkedAt: now.toISOString() }, { status: 503 });
+  }
+
+  // ── Sync health: newest run per job ─────────────────────────────────────────
+  // The whole model is fire-and-log, so "when did each job last SUCCEED" is the
+  // question that actually matters — a job erroring for three days looks fine in
+  // the logs and shows up nowhere else.
+  const runs = await db
+    .select({
+      job: syncRuns.job,
+      status: syncRuns.status,
+      startedAt: syncRuns.startedAt,
+      finishedAt: syncRuns.finishedAt,
+      error: syncRuns.error,
+      stats: syncRuns.stats,
+    })
+    .from(syncRuns)
+    .where(gte(syncRuns.startedAt, new Date(now.getTime() - 30 * 86_400_000)))
+    .orderBy(desc(syncRuns.startedAt))
+    .limit(500);
+
+  const byJob = new Map<string, { last: (typeof runs)[number]; lastSuccess?: (typeof runs)[number] }>();
+  for (const r of runs) {
+    const e = byJob.get(r.job);
+    if (!e) byJob.set(r.job, { last: r, lastSuccess: r.status === "success" ? r : undefined });
+    else if (!e.lastSuccess && r.status === "success") e.lastSuccess = r;
+  }
+  const jobs = [...byJob.entries()]
+    .map(([job, e]) => ({
+      job,
+      lastStatus: e.last.status,
+      lastStartedAt: e.last.startedAt,
+      lastError: e.last.status === "error" ? e.last.error : null,
+      lastSuccessAt: e.lastSuccess?.startedAt ?? null,
+      hoursSinceSuccess: e.lastSuccess
+        ? Math.round(((now.getTime() - +e.lastSuccess.startedAt) / 3_600_000) * 10) / 10
+        : null,
+      lastSuccessStats: e.lastSuccess?.stats ?? null,
+      // A job stuck `running` past the reaper's 6h window means a process died
+      // mid-run and the claim is blocking every later tick.
+      stuckRunning: e.last.status === "running" && +e.last.startedAt < now.getTime() - 6 * 3_600_000,
+    }))
+    .sort((a, b) => a.job.localeCompare(b.job));
+
+  // ── DNI pool ────────────────────────────────────────────────────────────────
+  // Mirrors leaseNumber, including the pools.is_dni join.
+  const poolRows = await db
+    .select({
+      phoneNumber: trackingNumbers.phoneNumber,
+      pool: trackingNumbers.pool,
+      isDni: pools.isDni,
+      leaseId: numberAssignments.id,
+    })
+    .from(trackingNumbers)
+    .leftJoin(pools, eq(pools.key, trackingNumbers.pool))
+    .leftJoin(
+      numberAssignments,
+      and(
+        eq(numberAssignments.trackingNumberId, trackingNumbers.id),
+        isNull(numberAssignments.releasedAt),
+        gte(numberAssignments.expiresAt, now),
+      ),
+    )
+    .where(and(eq(trackingNumbers.isStatic, false), eq(trackingNumbers.status, "active")));
+
+  const rotating = poolRows.filter((r) => r.isDni === true);
+  const pool = {
+    size: rotating.length,
+    leased: rotating.filter((r) => r.leaseId).length,
+    free: rotating.length - rotating.filter((r) => r.leaseId).length,
+    numbers: rotating.map((r) => ({ phoneNumber: r.phoneNumber, pool: r.pool, leased: !!r.leaseId })),
+    // Non-empty = numbers you likely expect to rotate that never will.
+    excludedFromRotation: poolRows
+      .filter((r) => r.isDni !== true)
+      .map((r) => ({ phoneNumber: r.phoneNumber, pool: r.pool })),
+  };
+
+  // ── Ingest volume: has anything actually arrived? ───────────────────────────
+  const [vol] = await db
+    .select({
+      leads24h: sql<number>`count(*) filter (where ${leads.occurredAt} >= ${dayAgo})::int`,
+      leads7d: sql<number>`count(*) filter (where ${leads.occurredAt} >= ${weekAgo})::int`,
+    })
+    .from(leads);
+  const [callVol] = await db
+    .select({
+      calls24h: sql<number>`count(*) filter (where ${calls.createdAt} >= ${dayAgo})::int`,
+      calls7d: sql<number>`count(*) filter (where ${calls.createdAt} >= ${weekAgo})::int`,
+      // The 2026-08 incident in one number: calls connecting, recordings never
+      // arriving because the status callback was being rejected.
+      recordedCalls7d: sql<number>`count(*) filter (where ${calls.createdAt} >= ${weekAgo} and ${calls.recordingUrl} is not null)::int`,
+    })
+    .from(calls);
+
+  // ── Configuration sanity ────────────────────────────────────────────────────
+  const creds: Record<string, { configured: string[]; missing: string[] }> = {};
+  for (const spec of CREDENTIAL_SPECS) {
+    const platform = spec.platform;
+    const status = await credentialStatus(platform);
+    creds[platform] = {
+      configured: status.filter((f) => f.set).map((f) => f.key),
+      missing: status.filter((f) => !f.set).map((f) => f.key),
+    };
+  }
+
+  const config = {
+    appBaseUrl: env.APP_BASE_URL,
+    // A trailing slash here silently invalidates every Twilio signature.
+    appBaseUrlHasTrailingSlash: /\/$/.test(env.APP_BASE_URL ?? ""),
+    twilioWebhookBase: env.TWILIO_VOICE_WEBHOOK_BASE ?? null,
+    // Unset means /status and /recording fail closed and every callback is
+    // rejected — calls still connect, so nothing surfaces in the app.
+    twilioAuthTokenSet: creds.twilio?.configured.includes("auth_token") ?? false,
+    adminApiTokenSet: !!env.ADMIN_API_TOKEN,
+    cronSecretSet: !!env.CRON_SECRET,
+    credentialEncryptionKeySet: !!env.CREDENTIALS_ENCRYPTION_KEY,
+    dbDriver: env.DB_DRIVER,
+    businessTimezone: BUSINESS_TZ,
+    businessDateToday: businessDate(now),
+  };
+
+  // Anything here is worth a human looking at it now.
+  const warnings: string[] = [];
+  if (config.appBaseUrlHasTrailingSlash) {
+    warnings.push("APP_BASE_URL has a trailing slash — Twilio signature validation will reject every callback");
+  }
+  if (!config.twilioAuthTokenSet) {
+    warnings.push("Twilio auth token is not set — /api/twilio/status and /recording fail closed, so no recording will ever persist");
+  }
+  if (pool.excludedFromRotation.length) {
+    warnings.push(`${pool.excludedFromRotation.length} active non-static number(s) are not in a DNI pool and will never rotate`);
+  }
+  if (pool.size > 0 && pool.free === 0) {
+    warnings.push("DNI pool is exhausted — visitors are being shown the static fallback number");
+  }
+  if (pool.size === 0) warnings.push("DNI pool is empty — no number can be leased to a visitor");
+  for (const j of jobs) {
+    if (j.stuckRunning) warnings.push(`sync job '${j.job}' has been 'running' for over 6h — its claim is blocking later ticks`);
+    if (j.lastStatus === "error") warnings.push(`sync job '${j.job}' last run failed: ${j.lastError ?? "unknown error"}`);
+    if (j.hoursSinceSuccess !== null && j.hoursSinceSuccess > 48) {
+      warnings.push(`sync job '${j.job}' has not succeeded in ${j.hoursSinceSuccess}h`);
+    }
+    if (j.hoursSinceSuccess === null) warnings.push(`sync job '${j.job}' has never succeeded`);
+  }
+
+  return Response.json({
+    ok: warnings.length === 0,
+    checkedAt: now.toISOString(),
+    db: { up: true, latencyMs: dbLatencyMs },
+    warnings,
+    config,
+    pool,
+    jobs,
+    volume: { ...vol, ...callVol },
+    credentials: creds,
+  });
+}
