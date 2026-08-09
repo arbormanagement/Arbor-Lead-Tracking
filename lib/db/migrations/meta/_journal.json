@@ -134,6 +134,13 @@
       "when": 1786275990848,
       "tag": "0018_flag_recruiting_campaign",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1786276265058,
+      "tag": "0019_purge_recruiting_data",
+      "breakpoints": true
     }
   ]
 }

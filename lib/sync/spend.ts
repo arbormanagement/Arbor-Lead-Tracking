@@ -1,4 +1,5 @@
 import { and, eq, inArray, lt, sql } from "drizzle-orm";
+import { excludedCampaignIds } from "@/lib/campaigns";
 import { db } from "@/lib/db/client";
 import { adSpend, campaigns, leads, sources } from "@/lib/db/schema";
 import { activeSpendProviders, type SpendProvider, type SpendRow } from "@/lib/integrations";
@@ -92,11 +93,24 @@ async function upsertSpendRows(rows: SpendRow[]): Promise<number> {
   for (const r of rows) byKey.set(`${r.platform}|${r.externalCampaignId}|${r.date}`, r);
   const unique = [...byKey.values()];
 
+  // Campaigns are ensured for EVERY row, including excluded ones — the dimension row
+  // is what Settings reads to offer the campaign, and dropping it would hide the
+  // toggle that turns the campaign back on.
   const campaignIds = await ensureCampaigns(unique);
 
+  // Excluded (recruiting/brand) campaigns get no ad_spend rows at all. Filtering
+  // them downstream isn't enough on its own: the rolling 35-day re-pull would
+  // reinsert the rows on the next tick and quietly undo any cleanup.
+  const excluded = new Set(await excludedCampaignIds());
+  const writable = unique.filter((r) => {
+    const id = campaignIds.get(`${r.platform}|${r.externalCampaignId}`);
+    return !id || !excluded.has(id);
+  });
+  if (writable.length === 0) return 0;
+
   const CHUNK = 200;
-  for (let i = 0; i < unique.length; i += CHUNK) {
-    const chunk = unique.slice(i, i + CHUNK);
+  for (let i = 0; i < writable.length; i += CHUNK) {
+    const chunk = writable.slice(i, i + CHUNK);
     await db
       .insert(adSpend)
       .values(
@@ -126,7 +140,7 @@ async function upsertSpendRows(rows: SpendRow[]): Promise<number> {
         },
       });
   }
-  return unique.length;
+  return writable.length;
 }
 
 /** Ensure the campaign dimension exists for every distinct campaign in the pull,
