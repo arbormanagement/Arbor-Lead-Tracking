@@ -7,6 +7,10 @@ import { facebook, type CapiEvent } from "@/lib/integrations/facebook";
 import { hashEmail, hashPhone } from "@/lib/conversions/hash";
 import { withSyncRun } from "./run";
 
+/** Stop retrying an export after this many failed attempts. Matches the
+ *  poison-pill guard the transcription backlog already uses. */
+const MAX_EXPORT_ATTEMPTS = 5;
+
 /**
  * conversions.export — closed-loop feedback. Finds qualified/won leads that came
  * from a paid click (gclid → Google Ads, fbclid → Meta) OR a Meta lead-gen form
@@ -217,11 +221,22 @@ export async function syncConversions({ sinceDays = 90, limit = 500 }: { sinceDa
     // ── Skip anything already 'sent'; reserve a pending row for the rest ──────
     const leadIds = [...new Set(tasks.map((t) => t.leadId))];
     const existing = await db
-      .select({ leadId: conversionExports.leadId, platform: conversionExports.platform, event: conversionExports.event, status: conversionExports.status })
+      .select({ leadId: conversionExports.leadId, platform: conversionExports.platform, event: conversionExports.event, status: conversionExports.status, attempts: conversionExports.attempts })
       .from(conversionExports)
       .where(inArray(conversionExports.leadId, leadIds));
     const sentKeys = new Set(existing.filter((e) => e.status === "sent").map((e) => key(e.leadId, e.platform, e.event)));
-    const todo = tasks.filter((t) => !sentKeys.has(key(t.leadId, t.platform, t.event)));
+    // Give up on a row that has failed MAX_EXPORT_ATTEMPTS times. Retrying only
+    // 'error' rows forever is not self-healing: a permanently-rejected click id
+    // (expired click, malformed gclid) re-uploads on every run for the full 90-day
+    // window — ~144 pointless API calls a day — and keeps `failed > 0` in every
+    // sync_runs row, which buries genuinely new failures in constant noise.
+    const exhausted = new Set(
+      existing.filter((e) => e.attempts >= MAX_EXPORT_ATTEMPTS).map((e) => key(e.leadId, e.platform, e.event)),
+    );
+    const todo = tasks.filter(
+      (t) => !sentKeys.has(key(t.leadId, t.platform, t.event)) && !exhausted.has(key(t.leadId, t.platform, t.event)),
+    );
+    if (exhausted.size) console.warn(`[conversions] ${exhausted.size} export(s) past ${MAX_EXPORT_ATTEMPTS} attempts — not retried`);
     if (!todo.length) return { candidates: rows.length, sent: 0, failed: 0, note: "all already exported" };
 
     for (let i = 0; i < todo.length; i += 100) {

@@ -4,6 +4,7 @@ import { getFacebookLead } from "@/lib/integrations/facebook";
 import { ingestFacebookLead } from "@/lib/facebook/ingest";
 import { getPlatformCreds } from "@/lib/credentials";
 import { env } from "@/lib/env";
+import { secretEquals } from "@/lib/secret-compare";
 import { getSetting } from "@/lib/settings";
 import { FB_INCLUDED_FORMS_KEY } from "@/lib/sync/facebook-leads";
 
@@ -23,7 +24,8 @@ export async function GET(req: Request) {
   const token = url.searchParams.get("hub.verify_token");
   const challenge = url.searchParams.get("hub.challenge");
   const verifyToken = (await getPlatformCreds("facebook")).verify_token;
-  if (mode === "subscribe" && token && verifyToken && token === verifyToken) {
+  // Constant-time, matching how the POST path compares its signature.
+  if (mode === "subscribe" && token && verifyToken && secretEquals(token, verifyToken)) {
     return new Response(challenge ?? "", { status: 200 });
   }
   return new Response("forbidden", { status: 403 });

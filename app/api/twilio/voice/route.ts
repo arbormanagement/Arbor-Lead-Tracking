@@ -2,6 +2,7 @@ import { and, desc, eq, gt, isNull, or } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import {
   calls,
+  campaigns,
   leads,
   numberAssignments,
   sources,
@@ -109,6 +110,10 @@ async function buildCallTwiml(
     //    the most-recent (active or recently-released) session lease.
     let sourceKey: string | null = null;
     let assignmentId: string | null = null;
+    // The full lease, not just its source. Everything else frozen onto it at
+    // assign time (campaign, keyword, click ids, landing page, session/visitor)
+    // belongs on the lead too — see recordCall.
+    let lease: typeof numberAssignments.$inferSelect | null = null;
 
     if (tn.isStatic && tn.staticSourceId) {
       const [src] = await db
@@ -133,17 +138,18 @@ async function buildCallTwiml(
       if (assignment) {
         assignmentId = assignment.id;
         sourceKey = assignment.source ?? null;
+        lease = assignment;
       }
     }
 
     // 3) Spam pre-check (hard rules only — keep it fast).
     if (fromE164 && (await isHardSpam(fromE164))) {
-      await recordCall({ callSid, fromE164, tn, assignmentId, sourceKey, destination, status: "rejected_spam" });
+      await recordCall({ callSid, fromE164, tn, assignmentId, lease, sourceKey, destination, status: "rejected_spam" });
       return rejectTwiml();
     }
 
     // 4) Persist the call + lead immediately (status callbacks fill in the rest).
-    await recordCall({ callSid, fromE164, tn, assignmentId, sourceKey, destination, status: "ringing" });
+    await recordCall({ callSid, fromE164, tn, assignmentId, lease, sourceKey, destination, status: "ringing" });
 
     // 5) Forward with an optional pre-call message + whisper + (optional) recording.
     //    All three are per-number overrides.
@@ -202,11 +208,12 @@ async function recordCall(args: {
   fromE164: string | null;
   tn: typeof trackingNumbers.$inferSelect;
   assignmentId: string | null;
+  lease: typeof numberAssignments.$inferSelect | null;
   sourceKey: string | null;
   destination: string;
   status: string;
 }) {
-  const { callSid, fromE164, tn, assignmentId, sourceKey, destination, status } = args;
+  const { callSid, fromE164, tn, assignmentId, lease, sourceKey, destination, status } = args;
 
   // Resolve source id (best-effort) for the denormalized lead row. Create the
   // row when missing — a DNI lease can freeze a key (e.g. facebook/organic)
@@ -222,6 +229,22 @@ async function recordCall(args: {
       [src] = await db.select({ id: sources.id }).from(sources).where(eq(sources.key, sourceKey)).limit(1);
     }
     sourceId = src?.id ?? null;
+  }
+
+  // Link to an EXISTING campaign by name only. The lease carries `utm_campaign`
+  // text, while campaigns are keyed (platform, external_campaign_id) by the spend
+  // sync — so we match if the ad platform's campaign name happens to be what the
+  // URL carried, and otherwise leave it null. Deliberately never creates a row:
+  // minting campaigns from arbitrary query-string text would pollute the dimension
+  // that drives ROI grouping and the recruiting-exclusion UI.
+  let campaignId: string | null = null;
+  if (lease?.campaign) {
+    const [c] = await db
+      .select({ id: campaigns.id })
+      .from(campaigns)
+      .where(eq(campaigns.name, lease.campaign))
+      .limit(1);
+    campaignId = c?.id ?? null;
   }
 
   // Repeat-caller detection (one quick indexed lookup — keep the webhook fast).
@@ -253,6 +276,13 @@ async function recordCall(args: {
   // Another delivery won the race — its call row (and lead) already exist.
   if (!inserted) return;
 
+  // Carry the DNI lease's frozen attribution onto the lead. Copying only the
+  // source discarded the campaign, keyword, click ids, landing page and the
+  // session/visitor link — all captured at assign time and all sitting on the
+  // lease. Nothing backfilled them, so every DNI call lead reached `attributions`
+  // and campaign-level roi_daily with a NULL campaign and NULL gclid: paid calls
+  // could be attributed to a source but never to the campaign or click that
+  // actually produced them, and the offline-conversion upload had no gclid to send.
   const [lead] = await db
     .insert(leads)
     .values({
@@ -263,6 +293,16 @@ async function recordCall(args: {
       location: tn.location ?? "unknown",
       isSpam: status === "rejected_spam",
       isFirstTime,
+      campaignId,
+      medium: lease?.medium ?? null,
+      keyword: lease?.keyword ?? null,
+      gclid: lease?.gclid ?? null,
+      gbraid: lease?.gbraid ?? null,
+      wbraid: lease?.wbraid ?? null,
+      fbclid: lease?.fbclid ?? null,
+      landingPage: lease?.landingPage ?? null,
+      visitorId: lease?.visitorId ?? null,
+      webSessionId: lease?.webSessionId ?? null,
     })
     .returning({ id: leads.id });
 

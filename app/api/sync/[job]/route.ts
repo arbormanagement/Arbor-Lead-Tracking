@@ -48,7 +48,7 @@ export async function POST(_req: Request, { params }: { params: Promise<{ job: s
       case "lsa":
         return Response.json({ ok: true, result: await syncLsaLeads({ sinceDays: 30 }) });
       case "conversions":
-        return Response.json({ ok: true, result: await syncConversions({ sinceDays: 60 }) });
+        return Response.json({ ok: true, result: await syncConversions() });
       case "fbleads":
         return Response.json({ ok: true, result: await syncFacebookLeads(days ? { sinceDays: days } : {}) });
       case "all": {
@@ -61,7 +61,7 @@ export async function POST(_req: Request, { params }: { params: Promise<{ job: s
         const hcp = await syncHcp(days ? { sinceDays: days } : {});
         const spend = await syncSpend(days ? { sinceDays: days } : {});
         const attribution = await runAttribution({ windowDays: 90 });
-        const conversions = await syncConversions({ sinceDays: 60 });
+        const conversions = await syncConversions();
         return Response.json({ ok: true, result: { transcribe, lsa, fbleads, hcp, spend, attribution, conversions } });
       }
       default:

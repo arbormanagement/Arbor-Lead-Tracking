@@ -39,14 +39,22 @@ export async function POST(req: Request) {
 
   if (callSid && dialStatus) {
     const durationSec = params.DialCallDuration ? Number(params.DialCallDuration) : undefined;
-    await db
-      .update(calls)
-      .set({
-        status: dialStatus,
-        answered: dialStatus === "completed" || dialStatus === "answered",
-        durationSec: Number.isFinite(durationSec) ? durationSec : undefined,
-      })
-      .where(eq(calls.twilioCallSid, callSid));
+    try {
+      await db
+        .update(calls)
+        .set({
+          status: dialStatus,
+          answered: dialStatus === "completed" || dialStatus === "answered",
+          durationSec: Number.isFinite(durationSec) ? durationSec : undefined,
+        })
+        .where(eq(calls.twilioCallSid, callSid));
+    } catch (err) {
+      // This is the <Dial action> callback, so the response is TwiML for a caller
+      // who may still be on the line in the no-answer path. Letting a DB error 500
+      // makes Twilio read an "application error" message to them; losing the
+      // duration on this row is by far the smaller harm.
+      console.error("[twilio/status] failed to persist dial outcome", callSid, err);
+    }
   }
 
   // Empty TwiML — with no verbs after the <Dial>, the call simply ends here (the

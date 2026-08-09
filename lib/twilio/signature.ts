@@ -52,13 +52,23 @@ export async function parseTwilioForm(req: Request): Promise<{
 }
 
 function publicWebhookUrl(req: Request): string {
-  const base = env.TWILIO_VOICE_WEBHOOK_BASE ?? (env.APP_BASE_URL ? `${env.APP_BASE_URL}/api/twilio` : null);
-  if (!base) return req.url;
+  // Strip a trailing slash before composing. `z.string().url()` happily accepts
+  // "https://app.example.com/", which would make the base path "//api/twilio":
+  // the startsWith check below then fails, the rebuilt URL becomes
+  // origin + "//api/twilio" + "/api/twilio/voice", and EVERY signature turns
+  // "invalid" — 403ing all status/recording writes and dropping voice to the
+  // twimlet fallback, silently. That is the same shape as the August 2026
+  // auth-token incident, so it is worth defending against a stray slash.
+  const rawBase =
+    env.TWILIO_VOICE_WEBHOOK_BASE ?? (env.APP_BASE_URL ? `${env.APP_BASE_URL.replace(/\/+$/, "")}/api/twilio` : null);
+  if (!rawBase) return req.url;
+  const base = rawBase.replace(/\/+$/, "");
   const requested = new URL(req.url);
   const configured = new URL(base);
+  const configuredPath = configured.pathname.replace(/\/+$/, "");
   // Keep the route suffix beyond the shared base path (e.g. /status, /whisper).
-  const suffix = requested.pathname.startsWith(configured.pathname)
-    ? requested.pathname.slice(configured.pathname.length)
+  const suffix = requested.pathname.startsWith(configuredPath)
+    ? requested.pathname.slice(configuredPath.length)
     : requested.pathname;
-  return `${configured.origin}${configured.pathname}${suffix}${requested.search}`;
+  return `${configured.origin}${configuredPath}${suffix}${requested.search}`;
 }

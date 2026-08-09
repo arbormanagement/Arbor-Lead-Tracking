@@ -1,7 +1,8 @@
-import { and, desc, eq, isNotNull, isNull, lt, sql } from "drizzle-orm";
+import { and, desc, eq, gte, isNotNull, isNull, lt, sql } from "drizzle-orm";
 import { db } from "@/lib/db/client";
-import { calls, leads } from "@/lib/db/schema";
+import { calls, leads, trackingNumbers } from "@/lib/db/schema";
 import { transcribeRecording } from "@/lib/transcription/deepgram";
+import { getTwilioClient } from "@/lib/twilio/client";
 import { classifyCallLead } from "@/lib/transcription/classify-lead";
 import { withSyncRun } from "./run";
 
@@ -93,6 +94,10 @@ export async function transcribeCall(callId: string): Promise<"transcribed" | "s
  */
 export async function syncTranscriptions({ limit = 25 }: { limit?: number } = {}) {
   return withSyncRun("transcription.process", async () => {
+    // Recover recordings whose status callback never landed, BEFORE selecting the
+    // batch, so anything repaired is transcribed on this same tick.
+    const recovered = await recoverMissingRecordings(limit);
+
     // Newest first, and skip calls past the retry cap — without both, 25
     // permanently-failing rows in planner order would starve the whole queue.
     const pending = await db
@@ -129,6 +134,68 @@ export async function syncTranscriptions({ limit = 25 }: { limit?: number } = {}
       }
     }
 
-    return { transcribed: done, flaggedSpam: spam, failed, pending: pending.length };
+    return { transcribed: done, flaggedSpam: spam, failed, pending: pending.length, recoveredRecordings: recovered };
   });
+}
+
+/** Only look at calls old enough that the recording callback has certainly had its
+ *  chance — a recording is not available the instant a call ends. */
+const RECORDING_GRACE_MIN = 15;
+
+/**
+ * Repair calls that should have a recording but don't.
+ *
+ * `recordingStatusCallback` is the ONLY writer of calls.recording_url, and Twilio
+ * does not retry it. One failed delivery (a deploy, a DB blip, the auth token
+ * briefly unset — which happened for weeks in 2026) therefore loses the recording
+ * permanently as far as this app is concerned: the audio still exists at Twilio,
+ * but nothing ever looks for it again, so no transcript, no spam score, and no
+ * is_lead classification is ever produced for that call. The transcription
+ * backstop can't help, because it only scans calls that ALREADY have a URL.
+ *
+ * So ask Twilio directly, keyed on the CallSid we already hold.
+ */
+async function recoverMissingRecordings(limit: number): Promise<number> {
+  const cutoff = new Date(Date.now() - RECORDING_GRACE_MIN * 60_000);
+  const orphans = await db
+    .select({ id: calls.id, sid: calls.twilioCallSid })
+    .from(calls)
+    .innerJoin(trackingNumbers, eq(calls.trackingNumberId, trackingNumbers.id))
+    .where(
+      and(
+        isNull(calls.recordingUrl),
+        eq(calls.answered, true),
+        eq(trackingNumbers.recordCalls, true),
+        lt(calls.createdAt, cutoff),
+        // Bound the search window: an old call whose recording was never fetched
+        // has likely aged past Twilio's retention, and re-asking forever would turn
+        // this into an unbounded scan on every tick.
+        gte(calls.createdAt, new Date(Date.now() - 7 * 86_400_000)),
+      ),
+    )
+    .orderBy(desc(calls.createdAt))
+    .limit(limit);
+  if (!orphans.length) return 0;
+
+  let fixed = 0;
+  for (const o of orphans) {
+    try {
+      const client = await getTwilioClient();
+      const recordings = await client.recordings.list({ callSid: o.sid, limit: 1 });
+      const rec = recordings[0];
+      if (!rec) continue;
+      // Match the shape the webhook stores (no extension — the fetchers add auth
+      // and Twilio content-negotiates).
+      const url = `https://api.twilio.com${rec.uri.replace(/\.json$/, "")}`;
+      await db
+        .update(calls)
+        .set({ recordingUrl: url, recordingSid: rec.sid, recordingDurationSec: Number(rec.duration) || null })
+        .where(eq(calls.id, o.id));
+      fixed++;
+      console.warn(`[transcribe] recovered missing recording for call ${o.sid} — its status callback never landed`);
+    } catch (err) {
+      console.error("[transcribe] recording recovery failed for", o.sid, err);
+    }
+  }
+  return fixed;
 }

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@/lib/db/client";
@@ -208,9 +209,30 @@ export async function POST(req: Request) {
       .limit(1);
 
     const leadSourceId = sess?.derivedSourceId ?? sourceId;
+
+    // Idempotency key for the submission. The browser posts once and does not
+    // retry, but a double-clicked submit button fires two `submit` events, and a
+    // keepalive beacon can be re-sent by the browser after a connection reset —
+    // each of which minted a second identical lead. Keying on the session + form +
+    // exact field values (sorted, so key order can't vary the hash) collapses
+    // those; an identical submission from the same session is the same inquiry
+    // either way. Enforced by leads_type_external_id_uq, so concurrent duplicates
+    // lose the insert rather than racing the check.
+    const dedupeKey = createHash("sha256")
+      .update(
+        JSON.stringify([
+          sid,
+          form.formId ?? "",
+          Object.entries(form.fields).sort(([a], [b]) => a.localeCompare(b)),
+        ]),
+      )
+      .digest("hex")
+      .slice(0, 32);
+
     const [lead] = await db
       .insert(leads)
       .values({
+        externalId: dedupeKey,
         type: "web_form",
         status: "new",
         isLead: true, // a submitted web form is inherently a lead
@@ -233,16 +255,22 @@ export async function POST(req: Request) {
         webSessionId: sid,
         occurredAt: now,
       })
+      .onConflictDoNothing()
       .returning({ id: leads.id });
 
-    await db.insert(formSubmissions).values({
-      leadId: lead.id,
-      webSessionId: sid,
-      formId: form.formId,
-      pageUrl: form.pageUrl ?? url,
-      fields: form.fields,
-      submittedAt: now,
-    });
+    // Lost the dedupe race (or a genuine re-post): the lead and its submission row
+    // already exist, so adding another form_submissions row would leave the
+    // original lead with two.
+    if (lead) {
+      await db.insert(formSubmissions).values({
+        leadId: lead.id,
+        webSessionId: sid,
+        formId: form.formId,
+        pageUrl: form.pageUrl ?? url,
+        fields: form.fields,
+        submittedAt: now,
+      });
+    }
   }
 
   return Response.json({ ok: true }, { headers: CORS });
@@ -273,22 +301,62 @@ function inferLocation(url?: string): "edwardsville" | "ofallon" | "unknown" {
 
 function mapFormFields(fields: Record<string, string>) {
   const entries = Object.entries(fields);
-  const find = (needles: string[]) => {
-    for (const [k, v] of entries) {
-      const lk = k.toLowerCase();
-      if (v && needles.some((n) => lk.includes(n))) return String(v).slice(0, 1000);
+  /**
+   * First field whose name matches a needle. Matching is exact-or-boundary rather
+   * than bare substring, and it is first-match-wins over an arbitrary key order:
+   * a plain `includes("number")` lets `number_of_trees` win the phone slot ahead of
+   * `phone`, and `normalizePhone("5")` then returns null, so the lead loses the
+   * phone that lead↔HCP matching (and therefore all revenue attribution) depends
+   * on. `last` behaved the same way against `last_service_date`.
+   */
+  /** Exact (or separator-stripped exact) only — for needles too generic to be
+   *  matched loosely. `number` is the motivating case: as a whole field name it
+   *  means a phone number, but as a fragment it matches `number_of_trees`. */
+  const findExact = (needles: string[]) => {
+    for (const n of needles) {
+      for (const [k, v] of entries) {
+        const lk = k.toLowerCase();
+        if (v && (lk === n || lk.replace(/[^a-z0-9]/g, "") === n)) return String(v).slice(0, 1000);
+      }
     }
     return null;
   };
-  // Prefer an explicit name; otherwise stitch first + last.
-  const first = find(["first", "fname"]);
-  const last = find(["last", "lname"]);
+  const find = (needles: string[]) => {
+    const matches = (key: string, n: string) => {
+      if (key === n) return true;
+      // An exact match once separators are stripped, so `last_name` / `last-name`
+      // / `lastName` all satisfy the needle `lastname` while `last_service_date`
+      // does not.
+      const flat = key.replace(/[^a-z0-9]/g, "");
+      if (flat === n || flat === `${n}s`) return true;
+      // Otherwise the needle must sit at a word edge, never mid-token. A trailing
+      // plural is allowed so `comments`/`details`/`notes` match too.
+      return new RegExp(`(^|[^a-z0-9])${n}s?([^a-z0-9]|$)`).test(key);
+    };
+    // Needle-major: a needle earlier in the list beats an arbitrary field order,
+    // so the specific names are consumed before the loose ones.
+    for (const n of needles) {
+      for (const [k, v] of entries) {
+        if (v && matches(k.toLowerCase(), n)) return String(v).slice(0, 1000);
+      }
+    }
+    return null;
+  };
+  // Split first/last wins when BOTH halves are present — otherwise the generic
+  // "name" needle matches `last_name` itself and the lead is filed under a surname
+  // with the given name dropped. Fall back to an explicit full-name field.
+  const first = find(["firstname", "first", "fname"]);
+  const last = find(["lastname", "last", "lname"]);
   const stitched = [first, last].filter(Boolean).join(" ") || null;
-  const name = find(["fullname", "your-name", "name"]) ?? stitched;
+  const name = (first && last ? stitched : null) ?? find(["fullname", "your-name", "name"]) ?? stitched;
   return {
     name,
     email: find(["email", "e-mail"]),
-    phone: find(["phone", "tel", "mobile", "number"]),
-    message: find(["message", "comment", "detail", "description", "note", "project"]),
+    // "number" only as a whole field name, and only after the unambiguous ones:
+    // loose-matching it steals the phone slot from fields like `number_of_trees`,
+    // and the resulting non-phone fails normalizePhone — leaving the lead with no
+    // phone at all, which is what lead↔HCP revenue matching keys on.
+    phone: find(["phone", "tel", "telephone", "mobile", "cell"]) ?? findExact(["number", "contactnumber"]),
+    message: find(["message", "comment", "details", "detail", "description", "note", "project"]),
   };
 }
