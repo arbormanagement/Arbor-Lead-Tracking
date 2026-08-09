@@ -22,7 +22,12 @@ export const env = createEnv({
     DB_DRIVER: z.enum(["pg", "neon-http"]).default("pg"),
     DATABASE_POOL_MAX: z.coerce.number().int().positive().default(5),
 
-    NEXTAUTH_SECRET: z.string().min(1),
+    // Vestigial: auth is HMAC session cookie + scrypt (lib/auth.ts), which uses
+    // COOKIE_SIGNING_SECRET. Nothing reads these. Kept (optional) rather than
+    // deleted so an existing deployment that still sets them doesn't fail
+    // validation — but no longer REQUIRED, which made an unused variable able to
+    // block boot.
+    NEXTAUTH_SECRET: z.string().optional(),
     NEXTAUTH_URL: z.string().url().optional(),
     ADMIN_EMAIL: z.string().email(),
     ADMIN_PASSWORD_HASH: z.string().optional(),
@@ -81,6 +86,8 @@ export const env = createEnv({
 
     FB_AD_ACCOUNT_ID: z.string().optional(),
     GOOGLE_ADS_CUSTOMER_ID: z.string().optional(),
+    // Declared but unread — there is no GA4 integration. Left in place (optional,
+    // so it costs nothing) as the placeholder it is; delete it if GA4 never lands.
     GA4_PROPERTY_ID: z.string().optional(),
     FACEBOOK_VERIFY_TOKEN: z.string().optional(),
 

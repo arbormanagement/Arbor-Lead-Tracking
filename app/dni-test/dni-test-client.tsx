@@ -26,10 +26,18 @@ export function DniTestClient() {
 
   useEffect(() => {
     const start = performance.now();
-    const el = document.querySelector<HTMLElement>("[data-arbor-phone]");
 
     const tick = () => {
-      const swapped = el?.getAttribute("data-arbor-swapped") ? (el.textContent || "").trim() : null;
+      // Read the swap from `window.__arborDNI`, the support hook track.js actually
+      // publishes. The previous check looked for a `data-arbor-swapped` attribute
+      // that the snippet never sets — swapNumbers deliberately compares values
+      // instead of marking elements (a marker would block self-healing after a
+      // re-render), so this check could never pass and the page reported failure
+      // even when the number had visibly swapped.
+      // Strictly the hook: falling back to the element's text would report the
+      // page's hard-coded number as a successful swap.
+      const dni = (window as unknown as { __arborDNI?: { display?: string; number?: string } }).__arborDNI;
+      const swapped = dni?.display || dni?.number || null;
       setS({
         vid: getCookie("arbor_vid"),
         sid: getCookie("arbor_sid"),

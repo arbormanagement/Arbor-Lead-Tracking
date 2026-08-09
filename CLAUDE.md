@@ -124,6 +124,19 @@ things from it that constrain this codebase:
 - E.164 normalization is load-bearing for lead↔HCP matching/ROI.
 - Scheduled jobs are fire-and-log: a failed run is logged and retried on the next tick, so
   the syncs must stay idempotent + self-healing (rolling re-pulls) rather than assume a retry queue.
+  **Each job owns its own window policy — `/api/cron/[job]` deliberately passes no `sinceDays`.**
+  Passing one short-circuits that policy (a hardcoded 7-day spend window silently disabled both
+  the 35-day re-pull and the cold-start backfill until 2026-08-09).
+- **One run per job at a time**, enforced by the partial unique index `sync_runs_one_running_uq`:
+  `withSyncRun` claims it and returns `{skipped:true}` instead of interleaving. The cron worker's
+  `protect` flag is not sufficient — it only serializes the worker's own fetch, so a tick that
+  times out client-side leaves the handler running while the next one fires.
+- **Anything aggregated by day must bucket with `businessDate()` (America/Chicago), including
+  the window boundaries it is compared against.** Ad platforms report spend per account-timezone
+  day; deriving a window edge from `toISOString()` while bucketing rows in CT desynchronizes the
+  two and, in `roi_daily`, either aborts the rebuild on a unique violation or silently duplicates
+  a day. `roi_daily_key_uq` is NULLS NOT DISTINCT because its source/campaign columns are
+  nullable and unattributed rows are the common case.
 - A text is NOT presumed to be a lead. `/api/twilio/sms` leaves `is_lead` null and the
   `classify-messages` cron decides from the body — same shape as calls, where the
   transcription sync decides. Anything that creates a call/text lead must leave that gate closed.
@@ -135,12 +148,23 @@ things from it that constrain this codebase:
   ten CallRail-transferred numbers got it. Same Monitor Alerts diagnostic as below applies.
 - Not every campaign is customer acquisition. Recruiting/brand campaigns are flagged
   `campaigns.excluded` (Settings → Campaigns) and are kept out of every ROI number —
-  `roi_daily`, the overview funnel, the sources page — while their spend stays on record.
+  `roi_daily`, the overview funnel, the sources page, the `/leads` list — while their spend stays
+  on record. **Exclusion is applied when READING, never by refusing to record**: dropping the
+  `ad_spend` rows makes the loss permanent, since the re-pull only reaches back 35 days.
   The Facebook ingest also drops submissions from an excluded campaign, so applicants never
-  become leads. Predicate helpers live in `lib/campaigns.ts`; apply them to any NEW surface
-  that reads `leads` or `ad_spend` directly, or recruiting dollars land in an ROAS denominator
-  with no revenue behind them.
+  become leads — and *defers* (rather than admitting) a submission whose campaign lookup
+  failed, because `fb_leadgen_id` dedupe makes a wrong call irreversible. Predicate helpers
+  live in `lib/campaigns.ts`; apply them to any NEW surface that reads `leads` or `ad_spend`
+  directly, or recruiting dollars land in an ROAS denominator with no revenue behind them.
   **The inbox is such a surface, deliberately un-excluded:** a recruiting enquiry is still
   someone contacting the business, so it threads and shows in `/inbox` — it just never
   becomes a lead, so it stays out of ROI either way.
 - Spend sync is self-healing (`lib/sync/spend.ts`): rolling 35-day re-pull (platforms restate) + automatic cold-start backfill reaching to each platform's earliest lead (≤365d — spend with no leads to match is deliberately not fetched), keyed `(platform, external_campaign_id, date)`. No manual backfills.
+- DNI leasing draws only from pools flagged `pools.is_dni`, so a number provisioned for a mailer
+  (default pool `reserved`) can't be handed to website visitors before it's marked static.
+  `number_assignments_active_idx` is UNIQUE — one active lease per number — and `leaseNumber`
+  retries on the conflict rather than double-leasing.
+- `/api/dni/assign` requires an `Origin` header; `/api/track` does not. The asymmetry is
+  deliberate: a rejected assign just leaves the page on its static number, while a rejected form
+  post is a lost lead. Rate limiting keys on the LAST `x-forwarded-for` hop — the first is
+  client-supplied and gives a free bucket per request.

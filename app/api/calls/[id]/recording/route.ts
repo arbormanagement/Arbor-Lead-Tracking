@@ -3,6 +3,7 @@ import { getSession } from "@/lib/auth";
 import { db } from "@/lib/db/client";
 import { calls } from "@/lib/db/schema";
 import { getPlatformCreds } from "@/lib/credentials";
+import { assertTwilioMediaUrl } from "@/lib/twilio/client";
 
 export const runtime = "nodejs";
 
@@ -28,7 +29,15 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
   if (!user || !pass) return new Response("Twilio credentials not configured", { status: 500 });
   const basic = Buffer.from(`${user}:${pass}`).toString("base64");
 
-  const res = await fetch(call.url, {
+  // Never attach Twilio credentials to a non-Twilio host, whatever is stored on the row.
+  let mediaUrl: URL;
+  try {
+    mediaUrl = assertTwilioMediaUrl(call.url);
+  } catch {
+    return new Response("recording URL is not a Twilio-hosted media URL", { status: 502 });
+  }
+
+  const res = await fetch(mediaUrl, {
     headers: { Authorization: `Basic ${basic}` },
     signal: AbortSignal.timeout(30_000),
   });

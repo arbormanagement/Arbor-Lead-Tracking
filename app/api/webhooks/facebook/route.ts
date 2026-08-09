@@ -4,6 +4,9 @@ import { getFacebookLead } from "@/lib/integrations/facebook";
 import { ingestFacebookLead } from "@/lib/facebook/ingest";
 import { getPlatformCreds } from "@/lib/credentials";
 import { env } from "@/lib/env";
+import { secretEquals } from "@/lib/secret-compare";
+import { getSetting } from "@/lib/settings";
+import { FB_INCLUDED_FORMS_KEY } from "@/lib/sync/facebook-leads";
 
 export const runtime = "nodejs";
 
@@ -21,7 +24,8 @@ export async function GET(req: Request) {
   const token = url.searchParams.get("hub.verify_token");
   const challenge = url.searchParams.get("hub.challenge");
   const verifyToken = (await getPlatformCreds("facebook")).verify_token;
-  if (mode === "subscribe" && token && verifyToken && token === verifyToken) {
+  // Constant-time, matching how the POST path compares its signature.
+  if (mode === "subscribe" && token && verifyToken && secretEquals(token, verifyToken)) {
     return new Response(challenge ?? "", { status: 200 });
   }
   return new Response("forbidden", { status: 403 });
@@ -61,8 +65,17 @@ export async function POST(req: Request) {
   // subscription, so the per-lead Graph fetch + ingest runs via `after()` once
   // the response has flushed. The 15-min poller backstops any failure here.
   after(async () => {
+    // Honour the same form allowlist the poller applies (Settings → Capture
+    // channels). Without it the two ingest paths disagree: a lead from an
+    // unselected recruiting form is refused by the poller but walks straight in
+    // through the webhook, and is then skipped as a duplicate forever after.
+    // Empty list = nothing configured = accept all, matching the poller's default.
+    const includedIds = await getSetting<string[]>(FB_INCLUDED_FORMS_KEY, []);
     for (const e of events) {
       try {
+        if (includedIds.length && e.formId && !includedIds.includes(e.formId)) {
+          continue;
+        }
         await ingestFacebookLead(await getFacebookLead(e.leadgenId));
       } catch (err) {
         console.error("[fb webhook] ingest failed", e.leadgenId, err);

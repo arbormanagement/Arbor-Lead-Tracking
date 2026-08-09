@@ -42,9 +42,21 @@ export function rateLimit(key: string, limit: number, windowMs: number): { ok: b
   };
 }
 
-/** Client IP as seen through Railway's proxy (first hop of x-forwarded-for). */
+/**
+ * Client IP as seen through Railway's proxy.
+ *
+ * Takes the LAST hop of `x-forwarded-for`, not the first. Each proxy appends the
+ * address that connected to it, so the rightmost entry is the one Railway's edge
+ * wrote and is the only value a client cannot forge: a request carrying a spoofed
+ * `X-Forwarded-For: 1.2.3.4` arrives as `1.2.3.4, <real client>`. Reading the
+ * leftmost entry (the obvious-looking choice) hands every caller a fresh rate-limit
+ * bucket per request and silently disables login brute-force protection.
+ */
 export function clientIp(req: Request): string {
   const fwd = req.headers.get("x-forwarded-for");
-  if (fwd) return fwd.split(",")[0]!.trim();
+  if (fwd) {
+    const hops = fwd.split(",").map((h) => h.trim()).filter(Boolean);
+    if (hops.length > 0) return hops[hops.length - 1]!;
+  }
   return req.headers.get("x-real-ip") ?? "unknown";
 }

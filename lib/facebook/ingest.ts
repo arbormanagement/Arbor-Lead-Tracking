@@ -6,8 +6,10 @@ import { normalizeEmail, normalizePhone } from "@/lib/phone";
 import type { FbLeadDetail } from "@/lib/integrations/facebook";
 
 /** Outcome of an ingest attempt — `excluded` means the ad's campaign is flagged as
- *  non-customer-acquisition (recruiting), so the submission is deliberately dropped. */
-export type IngestResult = "created" | "duplicate" | "excluded";
+ *  non-customer-acquisition (recruiting), so the submission is deliberately dropped.
+ *  `deferred` means we could not determine the campaign and refuse to guess; the
+ *  submission is left un-ingested for a later run to retry. */
+export type IngestResult = "created" | "duplicate" | "excluded" | "deferred";
 
 /**
  * Insert a Facebook lead-gen submission as a lead + facebook_leads detail row.
@@ -17,6 +19,15 @@ export type IngestResult = "created" | "duplicate" | "excluded";
 export async function ingestFacebookLead(detail: FbLeadDetail): Promise<IngestResult> {
   const c = mapFbFields(detail.fieldData);
   const sourceId = await getOrCreateSource("facebook/paid");
+  // An unresolved campaign is NOT the same as no campaign. Ingest is idempotent on
+  // fb_leadgen_id, so admitting a lead whose campaign we merely failed to look up
+  // is irreversible in practice — the next poll sees a duplicate and never
+  // re-evaluates it. Defer instead and let a later run (the poller re-fetches on a
+  // rolling window) decide once Graph answers.
+  if (detail.campaignLookupFailed) {
+    console.warn(`[fb ingest] deferring ${detail.leadgenId} — campaign for ad ${detail.adId} unresolved`);
+    return "deferred";
+  }
   const campaign = detail.campaignId ? await resolveCampaign(detail.campaignId, sourceId) : null;
   // Recruiting campaigns don't produce customers. Drop the submission before it
   // becomes a lead rather than filtering it downstream — an applicant in the inbox

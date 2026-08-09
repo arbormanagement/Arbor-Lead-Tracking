@@ -1,6 +1,6 @@
 import { eq } from "drizzle-orm";
 import { db } from "@/lib/db/client";
-import { calls, leads, trackingNumbers } from "@/lib/db/schema";
+import { calls, campaigns, leads, numberAssignments, trackingNumbers } from "@/lib/db/schema";
 import { validateTwilioSignature, parseTwilioForm } from "@/lib/twilio/signature";
 import { ensureSourceId, isHardSpamNumber, resolveInboundAttribution } from "@/lib/twilio/inbound";
 import { recordThreadActivity, upsertThread } from "@/lib/messaging/thread";
@@ -13,10 +13,23 @@ import {
   xmlResponse,
 } from "@/lib/twilio/twiml";
 import { normalizePhone } from "@/lib/phone";
+import { env } from "@/lib/env";
 
 export const runtime = "nodejs";
-// This webhook must answer in well under 3s or the caller hears dead air.
-export const maxDuration = 10;
+
+/**
+ * Hard ceiling on attribution work before we forward anyway. Twilio gives the
+ * webhook ~15s, but the caller hears silence the whole time, so the real budget is
+ * well under 3s.
+ *
+ * A try/catch alone does NOT enforce this: it fires on a thrown error, never on
+ * slowness. A saturated-but-alive pool (max 5 connections, shared with the
+ * dashboard) or a DB accepting connections but responding slowly would block this
+ * route through its sequential round-trips with no bail-out — the caller hears
+ * dead air until Twilio times out and falls back. This deadline is what makes the
+ * "never leave a caller in dead air" promise actually hold.
+ */
+const VOICE_DEADLINE_MS = 2_000;
 
 export async function POST(req: Request) {
   const { params, url } = await parseTwilioForm(req);
@@ -28,17 +41,44 @@ export async function POST(req: Request) {
     return new Response("invalid signature", { status: 403 });
   }
 
+  // Best destination known so far, read by the deadline timer below — so it must
+  // stay a plain synchronous read. Upgraded as we learn more (env default →
+  // account default → per-number override) so a bail-out rings the most correct
+  // number available rather than always the env one.
+  const dest = { current: env.TWILIO_DEFAULT_DESTINATION };
+
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<string>((resolve) => {
+    timer = setTimeout(() => {
+      console.error(`[twilio/voice] exceeded ${VOICE_DEADLINE_MS}ms — forwarding without attribution`);
+      resolve(fallbackTwiml(dest.current));
+    }, VOICE_DEADLINE_MS);
+  });
+
+  try {
+    // The losing side keeps running: `recordCall` is idempotent on
+    // twilio_call_sid, so a lookup that lands after the deadline still records
+    // the call and threads it. We trade attribution-in-the-TwiML for never
+    // stalling the caller.
+    return xmlResponse(await Promise.race([buildCallTwiml(params, dest), deadline]));
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function buildCallTwiml(params: Record<string, string>, dest: { current: string }): Promise<string> {
   const callSid = params.CallSid;
   const fromRaw = params.From;
   const calledNumber = params.To; // the tracking number that was dialed
   const fromE164 = normalizePhone(fromRaw);
 
-  // Account-level forwarding default (Settings → Routing, over env). A matched tracking number may
-  // override this with its own destination below.
-  const accountDefault = await getDefaultForwardNumber();
-  let destination = accountDefault;
-
   try {
+    // Account-level forwarding default (Settings → Routing, over env). A matched tracking number may
+    // override this with its own destination below.
+    const accountDefault = await getDefaultForwardNumber();
+    dest.current = accountDefault;
+    let destination = accountDefault;
+
     // 1) Resolve which tracking number was called.
     const [tn] = await db
       .select()
@@ -48,25 +88,26 @@ export async function POST(req: Request) {
 
     if (!tn) {
       // Unknown number — just forward to the office so no call is lost.
-      return xmlResponse(fallbackTwiml());
+      return fallbackTwiml(destination);
     }
 
     // Per-number routing override (falls back to the account default).
     destination = tn.forwardDestination ?? accountDefault;
+    dest.current = destination;
 
     // 2) Resolve attribution.
     //    Static numbers map straight to their source; pooled numbers resolve to
     //    the most-recent (active or recently-released) session lease.
-    const { sourceKey, assignmentId } = await resolveInboundAttribution(tn);
+    const { sourceKey, assignmentId, lease } = await resolveInboundAttribution(tn);
 
     // 3) Spam pre-check (hard rules only — keep it fast).
     if (fromE164 && (await isHardSpamNumber(fromE164))) {
-      await recordCall({ callSid, fromE164, tn, assignmentId, sourceKey, destination, status: "rejected_spam" });
-      return xmlResponse(rejectTwiml());
+      await recordCall({ callSid, fromE164, tn, assignmentId, lease, sourceKey, destination, status: "rejected_spam" });
+      return rejectTwiml();
     }
 
     // 4) Persist the call + lead immediately (status callbacks fill in the rest).
-    await recordCall({ callSid, fromE164, tn, assignmentId, sourceKey, destination, status: "ringing" });
+    await recordCall({ callSid, fromE164, tn, assignmentId, lease, sourceKey, destination, status: "ringing" });
 
     // 5) Forward with an optional pre-call message + whisper + (optional) recording.
     //    All three are per-number overrides.
@@ -81,6 +122,8 @@ export async function POST(req: Request) {
     //    because +16182059924 is Chloe, who opens with "on a recorded line" — and note
     //    that is model-generated (Retell `begin_message` is null), not a fixed script.
     //    Re-enable the greeting for any number pointed at a human or a bare voicemail.
+    //    A CUSTOM greeting no longer suppresses the notice — forwardTwiml appends it
+    //    unless the configured text already mentions recording.
     // NO default whisper. A whisper is TwiML on <Number url=…>, which plays into the
     // ANSWERING party's ear before the caller is bridged — and the forward destination
     // is Retell's voice agent (Chloe), not a human rep. Retell's ASR transcribes the
@@ -91,18 +134,16 @@ export async function POST(req: Request) {
     // Opt in per number only — meaningful again if a number ever forwards to a human.
     const whisper = tn.whisperMessage || undefined;
     const greeting = tn.greetingEnabled ? (tn.greetingMessage || DEFAULT_RECORDING_NOTICE) : null;
-    return xmlResponse(
-      forwardTwiml({
-        destination,
-        whisper,
-        record: tn.recordCalls,
-        greeting,
-      }),
-    );
+    return forwardTwiml({
+      destination,
+      whisper,
+      record: tn.recordCalls,
+      greeting,
+    });
   } catch (err) {
     // Never leave the caller in dead air — forward to the office on any error.
     console.error("[twilio/voice] error", err);
-    return xmlResponse(fallbackTwiml());
+    return fallbackTwiml(dest.current);
   }
 }
 
@@ -111,14 +152,31 @@ async function recordCall(args: {
   fromE164: string | null;
   tn: typeof trackingNumbers.$inferSelect;
   assignmentId: string | null;
+  lease: typeof numberAssignments.$inferSelect | null;
   sourceKey: string | null;
   destination: string;
   status: string;
 }) {
-  const { callSid, fromE164, tn, assignmentId, sourceKey, destination, status } = args;
+  const { callSid, fromE164, tn, assignmentId, lease, sourceKey, destination, status } = args;
 
   // Resolve source id (best-effort) for the denormalized lead row.
   const sourceId = await ensureSourceId(sourceKey);
+
+  // Link to an EXISTING campaign by name only. The lease carries `utm_campaign`
+  // text, while campaigns are keyed (platform, external_campaign_id) by the spend
+  // sync — so we match when the ad platform's campaign name is what the URL
+  // carried, and otherwise leave it null. Deliberately never creates a row:
+  // minting campaigns from arbitrary query-string text would pollute the dimension
+  // that drives ROI grouping and the recruiting-exclusion UI.
+  let campaignId: string | null = null;
+  if (lease?.campaign) {
+    const [c] = await db
+      .select({ id: campaigns.id })
+      .from(campaigns)
+      .where(eq(campaigns.name, lease.campaign))
+      .limit(1);
+    campaignId = c?.id ?? null;
+  }
 
   // Repeat-caller detection (one quick indexed lookup — keep the webhook fast).
   // Runs BEFORE the call insert so it doesn't count this very call.
@@ -168,6 +226,13 @@ async function recordCall(args: {
     console.error("[twilio/voice] threading failed (call still recorded)", err);
   }
 
+  // Carry the DNI lease's frozen attribution onto the lead. Copying only the
+  // source discarded the campaign, keyword, click ids, landing page and the
+  // session/visitor link — all captured at assign time and all sitting on the
+  // lease. Nothing backfilled them, so every DNI call lead reached `attributions`
+  // and campaign-level roi_daily with a NULL campaign and NULL gclid: paid calls
+  // could be credited to a source but never to the campaign or click that actually
+  // produced them, and the offline-conversion upload had no gclid to send.
   const [lead] = await db
     .insert(leads)
     .values({
@@ -180,6 +245,16 @@ async function recordCall(args: {
       location: tn.location ?? "unknown",
       isSpam: status === "rejected_spam",
       isFirstTime,
+      campaignId,
+      medium: lease?.medium ?? null,
+      keyword: lease?.keyword ?? null,
+      gclid: lease?.gclid ?? null,
+      gbraid: lease?.gbraid ?? null,
+      wbraid: lease?.wbraid ?? null,
+      fbclid: lease?.fbclid ?? null,
+      landingPage: lease?.landingPage ?? null,
+      visitorId: lease?.visitorId ?? null,
+      webSessionId: lease?.webSessionId ?? null,
     })
     .returning({ id: leads.id });
 

@@ -1,4 +1,5 @@
 import { getCredential, getPlatformCreds } from "@/lib/credentials";
+import { assertTwilioMediaUrl } from "@/lib/twilio/client";
 
 export interface Transcription {
   transcript: string;
@@ -24,7 +25,7 @@ export async function transcribeRecording(recordingUrl: string): Promise<Transcr
   const pass = tw.api_key_secret || tw.auth_token;
   if (!user || !pass) throw new Error("Twilio credentials required to fetch the recording");
   const basic = Buffer.from(`${user}:${pass}`).toString("base64");
-  const audioRes = await fetch(recordingUrl, {
+  const audioRes = await fetch(assertTwilioMediaUrl(recordingUrl), {
     headers: { Authorization: `Basic ${basic}` },
     signal: AbortSignal.timeout(60_000),
   });

@@ -38,6 +38,14 @@ const base = () => env.TWILIO_VOICE_WEBHOOK_BASE ?? `${env.APP_BASE_URL}/api/twi
  *  configured. Exported so the voice route shares the same copy. */
 export const DEFAULT_RECORDING_NOTICE = "This call may be recorded.";
 
+/** Does a configured greeting already carry a recording disclosure? Deliberately
+ *  loose — it matches "recorded", "recording", "record" — because the cost of a
+ *  false positive is a slightly redundant greeting, while a false negative is an
+ *  undisclosed recording in an all-party-consent state. */
+function mentionsRecording(greeting: string): boolean {
+  return /record/i.test(greeting);
+}
+
 /**
  * Build the inbound-call TwiML: recording notice/greeting → dial the destination
  * with dual-channel recording and a whisper. The `action` callback (/status)
@@ -59,6 +67,14 @@ export function forwardTwiml(opts: ForwardOptions): string {
       : (opts.greeting ?? (record ? DEFAULT_RECORDING_NOTICE : undefined));
   if (greeting) {
     vr.say({ voice: "Polly.Joanna" }, greeting);
+    // A CUSTOM greeting replaces the default notice rather than joining it, so a
+    // number configured with e.g. "Thanks for calling Arbor!" plus recording on
+    // would record the caller with no disclosure at all. Only `null` (the explicit
+    // opt-out above, where the destination discloses) may skip it — a configured
+    // greeting that doesn't mention recording gets the notice appended.
+    if (record && !mentionsRecording(greeting)) {
+      vr.say({ voice: "Polly.Joanna" }, DEFAULT_RECORDING_NOTICE);
+    }
   }
 
   const dial = vr.dial({

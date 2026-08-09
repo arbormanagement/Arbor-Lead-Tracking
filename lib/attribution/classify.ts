@@ -6,6 +6,9 @@ export interface TouchParams {
   utmSource?: string | null;
   utmMedium?: string | null;
   referrer?: string | null;
+  /** The page this touch happened on. Used only to recognize a same-site referrer
+   *  (an internal navigation) so it isn't classified as a referral from ourselves. */
+  currentUrl?: string | null;
 }
 
 export interface Classification {
@@ -36,7 +39,10 @@ export function classifySource(p: TouchParams): Classification {
   if (src || med) {
     if (med === "cpc" || med === "ppc" || med === "paid") {
       if (src?.includes("google")) return { sourceKey: "google/cpc", medium: "cpc" };
-      if (src?.includes("facebook") || src?.includes("meta"))
+      // Instagram inventory is bought and reported in the same Meta campaigns, so
+      // `utm_source=instagram` must group with facebook/paid or Meta ROI splits in
+      // two and neither half reconciles with the platform's spend.
+      if (src?.includes("facebook") || src?.includes("meta") || src?.includes("instagram"))
         return { sourceKey: "facebook/paid", medium: "paid" };
     }
     if (src?.includes("gbp") || src?.includes("google_business") || med === "gbp") {
@@ -47,6 +53,13 @@ export function classifySource(p: TouchParams): Classification {
 
   if (p.referrer) {
     const host = hostOf(p.referrer);
+    // An internal navigation is not a referral. Without this, a visitor who lands
+    // from a Google ad and then clicks through to /contact classifies as
+    // `arbor-mgmt.com/referral` — inventing a self-referral source and burying the
+    // real one. Callers should ALSO prefer the session's frozen attribution; this
+    // only stops the bogus source key from being minted.
+    const self = p.currentUrl ? hostOf(p.currentUrl) : null;
+    if (host && self && host === self) return { sourceKey: "direct", medium: "none" };
     if (host && isFacebookHost(p.referrer)) return { sourceKey: "facebook/organic", medium: "social" };
     if (host && isSearchHost(host)) return { sourceKey: "organic/seo", medium: "organic" };
     if (host) return { sourceKey: `${host}/referral`, medium: "referral" };

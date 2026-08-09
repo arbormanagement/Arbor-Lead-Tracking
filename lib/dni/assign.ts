@@ -99,11 +99,47 @@ export async function getNewestAssignmentAtVisitorCap(vid: string): Promise<Leas
  * friendly). Returns null when the pool is exhausted.
  */
 export async function leaseNumber(snap: AttributionSnapshot, sid: string, vid: string): Promise<LeaseResult | null> {
+  // `number_assignments_active_idx` is UNIQUE, so the residual double-lease race
+  // (two visitors passing the NOT EXISTS check against their own snapshots) now
+  // surfaces as a unique violation instead of silently handing both the same
+  // number. Losing that race just means someone else took this number first —
+  // retry and the CTE picks the next free one. Bounded so an exhausted pool or a
+  // genuine defect can't spin.
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await leaseOnce(snap, sid, vid);
+    } catch (err) {
+      if (attempt >= LEASE_RACE_RETRIES || !isActiveLeaseConflict(err)) throw err;
+    }
+  }
+}
+
+const LEASE_RACE_RETRIES = 3;
+
+/** Postgres unique_violation on the one-active-lease-per-number index. */
+function isActiveLeaseConflict(err: unknown): boolean {
+  if (typeof err !== "object" || err === null) return false;
+  const e = err as { code?: string; message?: string; cause?: unknown };
+  if (e.code === "23505") return true;
+  // Some drivers (neon-http) wrap the driver error; fall back to the constraint name.
+  if (typeof e.message === "string" && e.message.includes("number_assignments_active_idx")) return true;
+  return e.cause ? isActiveLeaseConflict(e.cause) : false;
+}
+
+async function leaseOnce(snap: AttributionSnapshot, sid: string, vid: string): Promise<LeaseResult | null> {
+  // Fresh id per attempt — reusing one would turn a retry into a PK collision.
   const id = ulid();
   const q = sql`
     WITH picked AS (
       SELECT tn.id AS tn_id
       FROM tracking_numbers tn
+      -- Only pools explicitly flagged for website DNI rotate. Without this join
+      -- every active non-static number is in rotation the moment it is bought,
+      -- including one provisioned for a mailer or billboard that the admin has
+      -- not yet marked static — its callers would then resolve to a random web
+      -- session's attribution. New numbers default to pool 'reserved' (is_dni
+      -- false), so they now stay out until deliberately placed in a DNI pool.
+      JOIN pools p ON p.key = tn.pool AND p.is_dni = true
       WHERE tn.status = 'active'
         AND tn.is_static = false
         AND NOT EXISTS (

@@ -155,6 +155,20 @@
       "when": 1786291317508,
       "tag": "0021_lovely_dracula",
       "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1786296954117,
+      "tag": "0022_audit_fixes",
+      "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1786296955117,
+      "tag": "0023_dni_pool_gate",
+      "breakpoints": true
     }
   ]
 }

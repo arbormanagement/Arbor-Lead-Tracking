@@ -44,8 +44,17 @@ export async function getPlatformCreds(platform: string, tenantId = DEFAULT_TENA
       for (const r of rows) {
         try {
           data[r.key] = decryptSecret(r.value);
-        } catch {
-          /* leave env fallback if a row fails to decrypt (e.g. root key rotated) */
+        } catch (err) {
+          // Leave the env fallback in place, but never do it silently. A rotated
+          // CREDENTIALS_ENCRYPTION_KEY makes EVERY stored secret fail here, and the
+          // app then quietly runs on whatever stale value is still in env — an old
+          // revoked token, or the wrong account entirely — while Settings keeps
+          // showing the credential as set and sourced from the database.
+          console.error(
+            `[credentials] decrypt failed for ${platform}.${r.key} — falling back to env. ` +
+              `If CREDENTIALS_ENCRYPTION_KEY was rotated, re-enter this credential in Settings.`,
+            err,
+          );
         }
       }
     } catch (err) {
@@ -64,10 +73,24 @@ export async function getCredential(platform: string, key: string, tenantId = DE
   return (await getPlatformCreds(platform, tenantId))[key] ?? null;
 }
 
-/** Upsert (or, with an empty value, clear) a credential and bust the cache. */
-export async function setCredential(platform: string, key: string, value: string, tenantId = DEFAULT_TENANT): Promise<void> {
+/**
+ * Upsert (or, with an empty value, clear) a credential and bust the cache.
+ *
+ * `tx` lets a caller saving several fields at once run them as one unit. Saving a
+ * credential set field-by-field outside a transaction can half-apply: a failure
+ * midway leaves, say, a new client_id stored against the old refresh_token, which
+ * authenticates as nothing and is hard to spot because the UI reports every field
+ * as "set".
+ */
+export async function setCredential(
+  platform: string,
+  key: string,
+  value: string,
+  tenantId = DEFAULT_TENANT,
+  tx: Pick<typeof db, "insert" | "delete"> = db,
+): Promise<void> {
   if (!value) {
-    await db
+    await tx
       .delete(integrationCredentials)
       .where(
         and(
@@ -78,7 +101,7 @@ export async function setCredential(platform: string, key: string, value: string
       );
   } else {
     const valueEncrypted = encryptSecret(value);
-    await db
+    await tx
       .insert(integrationCredentials)
       .values({ tenantId, platform, key, valueEncrypted })
       .onConflictDoUpdate({

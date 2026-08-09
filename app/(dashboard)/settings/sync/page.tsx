@@ -1,4 +1,5 @@
-import { desc, eq, gte, sql } from "drizzle-orm";
+import { and, desc, eq, gte, sql } from "drizzle-orm";
+import { campaignNotExcluded, excludedCampaignIds } from "@/lib/campaigns";
 import { db } from "@/lib/db/client";
 import { adSpend, manualSpend, roiDaily, sources, syncRuns } from "@/lib/db/schema";
 import { dateTime, dollars, wholeDollars } from "@/lib/format";
@@ -45,13 +46,19 @@ export default async function SpendPage() {
     .limit(24);
 
   // 30-day spend by platform (from ad_spend) + total revenue (from roi_daily).
+  // Recruiting/brand campaigns are excluded here for the same reason they are
+  // excluded from roi_daily: the ROAS below is computed from roi_daily (which
+  // filters them), so counting them in this table would put two spend figures
+  // that disagree on one page. Their rows stay in ad_spend as history — the
+  // exclusion is applied when reading, never by refusing to record.
+  const excludedIds = await excludedCampaignIds();
   const byPlatform = await db
     .select({
       platform: adSpend.platform,
       spend: sql<number>`coalesce(sum(${adSpend.spendCents}),0)::int`,
     })
     .from(adSpend)
-    .where(gte(adSpend.date, since))
+    .where(and(gte(adSpend.date, since), campaignNotExcluded(adSpend.campaignId, excludedIds)))
     .groupBy(adSpend.platform)
     .orderBy(desc(sql`coalesce(sum(${adSpend.spendCents}),0)`));
 

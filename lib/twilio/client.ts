@@ -27,6 +27,33 @@ export async function getTwilioClient() {
   return client;
 }
 
+/**
+ * Assert a URL is Twilio-hosted before attaching Twilio credentials to a request
+ * for it.
+ *
+ * `calls.recording_url` is written from the `RecordingUrl` field of an inbound
+ * webhook. That callback is signature-verified and fails closed in production, so
+ * this is defence in depth rather than a live hole — but the value is
+ * attacker-shaped data that two code paths (transcription and admin playback)
+ * hand a Basic auth header containing the Twilio API secret. Anything that ever
+ * lets a forged callback through would exfiltrate those credentials on the next
+ * fetch; this makes that impossible instead of merely unlikely.
+ */
+export function assertTwilioMediaUrl(rawUrl: string): URL {
+  let u: URL;
+  try {
+    u = new URL(rawUrl);
+  } catch {
+    throw new Error("recording URL is not a valid URL");
+  }
+  const host = u.hostname.toLowerCase();
+  const allowed =
+    u.protocol === "https:" &&
+    (host === "twilio.com" || host.endsWith(".twilio.com") || host.endsWith(".twiliocdn.com"));
+  if (!allowed) throw new Error(`refusing to send Twilio credentials to non-Twilio host: ${host}`);
+  return u;
+}
+
 /** Resolve the auth token + webhook base for signature checks / provisioning. The
  *  default forward number now lives in Settings → Routing (see lib/routing.ts). */
 export async function getTwilioConfig() {

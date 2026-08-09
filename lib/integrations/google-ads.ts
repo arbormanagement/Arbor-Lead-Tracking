@@ -51,8 +51,7 @@ class GoogleAdsProvider implements SpendProvider {
         refresh_token: cfg.refreshToken,
         grant_type: "refresh_token",
       }),
-      signal: AbortSignal.timeout(30_000),
-    });
+    }, { timeoutMs: 30_000 });
     if (!res.ok) throw new Error(`Google OAuth ${res.status}: ${await res.text()}`);
     const json = (await res.json()) as { access_token?: string };
     if (!json.access_token) throw new Error("Google OAuth returned no access_token");
@@ -70,7 +69,8 @@ class GoogleAdsProvider implements SpendProvider {
 
     const res = await fetchWithRetry(
       `https://googleads.googleapis.com/${GOOGLE_ADS_API_VERSION}/customers/${cfg.customerId}/googleAds:searchStream`,
-      { method: "POST", headers, body: JSON.stringify({ query: gaql }), signal: AbortSignal.timeout(90_000) },
+      { method: "POST", headers, body: JSON.stringify({ query: gaql }) },
+      { timeoutMs: 90_000 },
     );
     if (!res.ok) throw new Error(`Google Ads ${res.status}: ${await res.text()}`);
     const batches = (await res.json()) as Array<{ results?: Array<Record<string, any>> }>;
@@ -231,9 +231,15 @@ class GoogleAdsProvider implements SpendProvider {
           ],
           partialFailure: true,
         };
+        // retries: 0 — this is a non-idempotent WRITE. A 5xx returned after Google
+        // already recorded the conversion would, on retry, come back as a
+        // CONVERSION_ALREADY_EXISTS partial failure, which we then store as an
+        // error; combined with the attempt cap that burns the row's retries on a
+        // conversion that actually landed. The 10-minute job is the retry.
         const res = await fetchWithRetry(
           `https://googleads.googleapis.com/${GOOGLE_ADS_API_VERSION}/customers/${cfg.customerId}:uploadClickConversions`,
-          { method: "POST", headers, body: JSON.stringify(body), signal: AbortSignal.timeout(30_000) },
+          { method: "POST", headers, body: JSON.stringify(body) },
+          { retries: 0, timeoutMs: 30_000 },
         );
         const json = (await res.json()) as { partialFailureError?: { message?: string } };
         if (!res.ok) {

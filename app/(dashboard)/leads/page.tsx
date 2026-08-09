@@ -1,12 +1,14 @@
 import { and, desc, eq, gte, sql } from "drizzle-orm";
 import Link from "next/link";
 import type { ReactNode } from "react";
+import { campaignNotExcluded, excludedCampaignIds } from "@/lib/campaigns";
 import { db } from "@/lib/db/client";
 import { campaigns, leads, sources } from "@/lib/db/schema";
 import { dateTime, dollars } from "@/lib/format";
 import { isQualifiedLead } from "@/lib/leads/qualified";
 import { formatPhoneDisplay } from "@/lib/phone";
 import { pickDays, timeframeLabel } from "@/lib/timeframes";
+import { businessDate } from "@/lib/tz";
 import { ViewControls } from "./view-controls";
 import { DIMS, parseGroups, type Dim } from "./view";
 import { stageClass, TYPE_META } from "./stage";
@@ -57,11 +59,15 @@ function aggregate(rows: Row[]): Agg {
   return a;
 }
 
-/** Monday (UTC) of the lead's week — stable key that also sorts chronologically. */
+/** Monday of the lead's week in BUSINESS time — stable key that also sorts
+ *  chronologically. Derived from the business date so it can't disagree with the
+ *  day grouping (or with roi_daily) at the CT/UTC boundary. */
 function weekKey(d: Date): string {
-  const monday = new Date(d);
-  monday.setUTCDate(d.getUTCDate() - ((d.getUTCDay() + 6) % 7));
-  return monday.toISOString().slice(0, 10);
+  // Anchor to noon UTC on the business date: far enough from either midnight that
+  // the weekday arithmetic can't be dragged across a day by the offset.
+  const anchor = new Date(`${businessDate(d)}T12:00:00Z`);
+  anchor.setUTCDate(anchor.getUTCDate() - ((anchor.getUTCDay() + 6) % 7));
+  return anchor.toISOString().slice(0, 10);
 }
 
 function dimKey(r: Row, dim: Dim): string {
@@ -71,9 +77,13 @@ function dimKey(r: Row, dim: Dim): string {
     case "stage": return r.status;
     case "type": return r.type;
     case "location": return r.location ?? "unknown";
-    case "day": return r.occurredAt.toISOString().slice(0, 10);
+    // Business-timezone buckets. toISOString() would put a 10pm CT lead in
+    // tomorrow's group while the row's own timestamp renders as today (dateTime
+    // formats in CT), and would disagree with roi_daily/overview for every evening
+    // lead.
+    case "day": return businessDate(r.occurredAt);
     case "week": return weekKey(r.occurredAt);
-    case "month": return r.occurredAt.toISOString().slice(0, 7);
+    case "month": return businessDate(r.occurredAt).slice(0, 7);
   }
 }
 
@@ -150,6 +160,11 @@ export default async function InboxPage({
   const days = pickDays(daysParam, 90);
   const since = new Date(Date.now() - days * 86_400_000);
 
+  // Recruiting/brand campaigns are not customer acquisition — they must not appear
+  // in this list or its dollar totals, or grouped-by-source figures here will not
+  // reconcile with the Sources page (which reads roi_daily, where they are excluded).
+  const excludedIds = await excludedCampaignIds();
+
   const fetched = await db
     .select({
       id: leads.id,
@@ -171,13 +186,17 @@ export default async function InboxPage({
     .from(leads)
     .leftJoin(sources, eq(leads.sourceId, sources.id))
     .leftJoin(campaigns, eq(leads.campaignId, campaigns.id))
-    .where(and(gte(leads.occurredAt, since), isQualifiedLead))
+    .where(and(gte(leads.occurredAt, since), isQualifiedLead, campaignNotExcluded(leads.campaignId, excludedIds)))
     .orderBy(desc(leads.occurredAt))
     // Grouped views aggregate, so they get the full window; the flat list stays short.
     .limit(groups.length ? 1000 : 200);
 
   const rows: Row[] = fetched;
 
+  // Counted over EXACTLY the population the table renders — same predicate, same
+  // campaign exclusion — so the subtitle can never disagree with the sum of the
+  // visible group counts. (Spam needs no special handling here: isQualifiedLead
+  // already excludes it from both, so a spam-only filter would always be zero.)
   const [agg] = await db
     .select({
       total: sql<number>`count(*)::int`,
@@ -185,7 +204,7 @@ export default async function InboxPage({
       won: sql<number>`count(*) filter (where ${leads.status} = 'won')::int`,
     })
     .from(leads)
-    .where(and(gte(leads.occurredAt, since), isQualifiedLead));
+    .where(and(gte(leads.occurredAt, since), isQualifiedLead, campaignNotExcluded(leads.campaignId, excludedIds)));
 
   const leadRow = (r: Row) => {
     const t = TYPE_META[r.type] ?? { ic: "•", label: r.type };

@@ -46,7 +46,7 @@ export async function runAttribution({
 }: { windowDays?: number; roiWindowDays?: number } = {}) {
   return withSyncRun("attribution.run", async () => {
     const matched = await matchLeadsToEstimates(windowDays);
-    const touches = await rebuildAttributions();
+    const touches = await rebuildAttributions(roiWindowDays);
     const roiRows = await rebuildRoiDaily(roiWindowDays);
     return { qualifiedLeads: matched.qualified, wonLeads: matched.won, attributionTouches: touches, roiRows };
   });
@@ -227,7 +227,17 @@ async function matchLeadsToEstimates(windowDays: number): Promise<{ qualified: n
 }
 
 // ── 2. Attribution trail (last-touch for now) ────────────────────────────────
-async function rebuildAttributions(): Promise<number> {
+/**
+ * `windowDays` bounds the rebuild to recent leads instead of every lead ever.
+ * Unbounded, this re-selected and delete-reinserted the ENTIRE table every hour,
+ * so the work per tick grew forever with no ceiling. A lead's attribution inputs
+ * (source, campaign, click ids, keyword, landing page) are set when it is created
+ * and don't change afterwards, so rebuilding older rows only ever reproduced them
+ * — and the window used here is the same 365 days the ROI rollup covers, which is
+ * wider than any dashboard timeframe.
+ */
+async function rebuildAttributions(windowDays: number): Promise<number> {
+  const since = new Date(Date.now() - windowDays * 86_400_000);
   // Delete-then-insert in one transaction, serialized on an advisory lock so
   // concurrent rebuilds (hourly cron vs dashboard "Run sync now") queue instead
   // of interleaving — two interleaved rebuilds would drop or double touches.
@@ -246,10 +256,22 @@ async function rebuildAttributions(): Promise<number> {
         occurredAt: leads.occurredAt,
       })
       .from(leads)
-      .where(eq(leads.isSpam, false));
+      .where(and(eq(leads.isSpam, false), gte(leads.occurredAt, since)));
 
-    // Full rebuild — clear then insert one 'last' touch per lead.
-    await tx.delete(attributions).where(eq(attributions.touchType, "last"));
+    // Clear then insert one 'last' touch per lead — scoped to the same window, so
+    // touches for older leads are left as frozen history rather than deleted with
+    // nothing to re-insert them.
+    await tx
+      .delete(attributions)
+      .where(
+        and(
+          eq(attributions.touchType, "last"),
+          inArray(
+            attributions.leadId,
+            tx.select({ id: leads.id }).from(leads).where(gte(leads.occurredAt, since)),
+          ),
+        ),
+      );
     if (rows.length === 0) return 0;
 
     for (let i = 0; i < rows.length; i += INSERT_CHUNK) {
@@ -298,7 +320,20 @@ interface RoiAcc {
 
 async function rebuildRoiDaily(windowDays: number): Promise<number> {
   const since = new Date(Date.now() - windowDays * 86_400_000);
-  const sinceDate = since.toISOString().slice(0, 10);
+  // The rebuild deletes and re-inserts whole BUSINESS days, so the boundary must be
+  // a business date too. Deriving it from toISOString() (UTC) desynchronizes the
+  // delete window from the `businessDate()` bucketing below: for runs between 00:00
+  // and 06:00 UTC (6pm–midnight CT — several hourly ticks every evening) a lead
+  // buckets to `sinceDate - 1`, lands OUTSIDE the deleted window, and either
+  // collides with the previous run's surviving row (unique violation, aborting the
+  // whole rebuild) or silently duplicates that day when source/campaign are NULL.
+  const sinceDate = businessDate(since);
+  // Re-count the boundary day in FULL. The delete clears entire business days, so
+  // selecting leads on the raw `since` timestamp would permanently drop the ones
+  // that occurred earlier on that same CT day, leaving a partial oldest row that
+  // skews its CPL/ROAS high. Scan wider than any UTC offset and filter by business
+  // date in the loop.
+  const leadScanFrom = new Date(since.getTime() - 2 * 86_400_000);
 
   // Non-customer-acquisition campaigns (recruiting) contribute neither spend nor
   // leads to ROI. Resolved once and applied to both sides of the rollup so a
@@ -338,17 +373,21 @@ async function rebuildRoiDaily(windowDays: number): Promise<number> {
     .where(
       and(
         eq(leads.isSpam, false),
-        gte(leads.occurredAt, since),
+        gte(leads.occurredAt, leadScanFrom),
         or(ne(leads.type, "call"), eq(leads.isLead, true)),
         campaignNotExcluded(leads.campaignId, excluded),
       ),
     );
 
   for (const l of leadRows) {
+    // Business-timezone day, matching the ad platforms' account-timezone spend
+    // dates — a late-evening CT lead must not land on tomorrow's (UTC) row.
+    const date = businessDate(l.occurredAt);
+    // Trim the over-wide scan back to the window the delete actually clears, so we
+    // never insert a row outside it.
+    if (date < sinceDate) continue;
     const row = bump({
-      // Business-timezone day, matching the ad platforms' account-timezone spend
-      // dates — a late-evening CT lead must not land on tomorrow's (UTC) row.
-      date: businessDate(l.occurredAt),
+      date,
       sourceId: l.sourceId ?? null,
       campaignId: l.campaignId ?? null,
       location: (l.location ?? "unknown") as RoiAcc["location"],

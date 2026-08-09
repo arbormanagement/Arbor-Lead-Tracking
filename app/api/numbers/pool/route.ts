@@ -1,7 +1,7 @@
 import { and, desc, eq, gt, isNull, sql } from "drizzle-orm";
 import { authorizeAdmin, unauthorized } from "@/lib/admin-auth";
 import { db } from "@/lib/db/client";
-import { numberAssignments, sources, trackingNumbers } from "@/lib/db/schema";
+import { numberAssignments, pools, sources, trackingNumbers } from "@/lib/db/schema";
 
 export const runtime = "nodejs";
 
@@ -21,17 +21,23 @@ export async function GET(req: Request) {
 
   const now = new Date();
 
+  // Must mirror `leaseNumber` EXACTLY, including the pools.is_dni join. If this
+  // reports a number as in-rotation that leasing would never pick, the endpoint
+  // lies in precisely the situation it exists to diagnose.
   const poolRows = await db
     .select({
       id: trackingNumbers.id,
       phoneNumber: trackingNumbers.phoneNumber,
       status: trackingNumbers.status,
+      pool: trackingNumbers.pool,
+      isDni: pools.isDni,
       leaseId: numberAssignments.id,
       expiresAt: numberAssignments.expiresAt,
       leaseSource: numberAssignments.source,
       leaseGclid: numberAssignments.gclid,
     })
     .from(trackingNumbers)
+    .leftJoin(pools, eq(pools.key, trackingNumbers.pool))
     .leftJoin(
       numberAssignments,
       and(
@@ -43,14 +49,29 @@ export async function GET(req: Request) {
     .where(and(eq(trackingNumbers.isStatic, false), eq(trackingNumbers.status, "active")))
     .orderBy(trackingNumbers.createdAt);
 
-  const numbers = poolRows.map((r) => ({
+  const inRotation = poolRows.filter((r) => r.isDni === true);
+
+  const numbers = inRotation.map((r) => ({
     phoneNumber: r.phoneNumber,
+    pool: r.pool,
     leased: !!r.leaseId,
     expiresAt: r.expiresAt,
     secondsUntilFree: r.expiresAt ? Math.max(0, Math.round((+r.expiresAt - +now) / 1000)) : null,
     leaseSource: r.leaseSource,
     leaseHasGclid: !!r.leaseGclid,
   }));
+
+  // Active, non-static, but sitting in a pool that DNI does not draw from (or a
+  // pool row that doesn't exist). These look like pool numbers in the numbers
+  // table and are not in rotation — the single most confusing state available, so
+  // name it rather than leaving it to be inferred from a smaller poolSize.
+  const excludedFromRotation = poolRows
+    .filter((r) => r.isDni !== true)
+    .map((r) => ({
+      phoneNumber: r.phoneNumber,
+      pool: r.pool,
+      reason: r.isDni === null ? `pool '${r.pool}' is not a known pool` : `pool '${r.pool}' has is_dni = false`,
+    }));
 
   const leased = numbers.filter((n) => n.leased).length;
   const free = numbers.length - leased;
@@ -98,6 +119,10 @@ export async function GET(req: Request) {
     fallbackSource: fallback?.sourceKey ?? null,
     activeLeasesTotal: activeLeases,
     numbers,
+    // Non-empty here means numbers you probably expect to rotate are not
+    // rotating. Fix by moving them to a DNI-flagged pool (Settings → Numbers),
+    // or mark them static if they are meant to be single-source.
+    excludedFromRotation,
     recentAssignments: recent,
   });
 }

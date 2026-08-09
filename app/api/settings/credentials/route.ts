@@ -2,6 +2,7 @@ import { z } from "zod";
 import { getSession } from "@/lib/auth";
 import { credentialEncryptionAvailable } from "@/lib/crypto";
 import { credentialStatus, getSpec, setCredential } from "@/lib/credentials";
+import { db } from "@/lib/db/client";
 
 export const runtime = "nodejs";
 
@@ -34,10 +35,15 @@ export async function POST(req: Request) {
 
   const allowed = new Set(spec.fields.map((f) => f.key));
   try {
-    for (const [key, value] of Object.entries(parsed.data.values)) {
-      if (!allowed.has(key)) continue; // ignore stray keys
-      await setCredential(spec.platform, key, value.trim());
-    }
+    // One transaction for the whole set: a platform's fields are only meaningful
+    // together (client_id with its refresh_token, key with its secret), so a
+    // partial save is worse than no save.
+    await db.transaction(async (tx) => {
+      for (const [key, value] of Object.entries(parsed.data.values)) {
+        if (!allowed.has(key)) continue; // ignore stray keys
+        await setCredential(spec.platform, key, value.trim(), undefined, tx);
+      }
+    });
     return Response.json({ ok: true, status: await credentialStatus(spec.platform) });
   } catch (err) {
     // Most likely the integration_credentials table is missing (DB not migrated to

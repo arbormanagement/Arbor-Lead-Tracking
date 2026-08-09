@@ -431,7 +431,15 @@ curl -H "Authorization: Bearer $CRON_SECRET" https://<domain>/api/cron/<job>
 Notes:
 - A failed run is logged and the worker keeps going; the next tick retries.
 - `protect: true` skips a tick if the previous run of that same job is still in flight,
-  so a slow sync queues behind itself instead of stacking.
+  so a slow sync queues behind itself instead of stacking. This only covers the *worker's*
+  fetch, though — a tick that times out client-side leaves the web-side handler running.
+  The real guard is server-side: `withSyncRun` claims the partial unique index
+  `sync_runs_one_running_uq`, so a second concurrent run of the same job is **skipped**
+  (`{"skipped": true}` in the response) rather than interleaved.
+- The cron routes pass **no window override**. Each job owns its own policy — `spend` is
+  a rolling 35-day re-pull plus an automatic cold-start backfill, `conversions` uses 90 days
+  to match Google's click lookback. Don't add a `sinceDays` here to "make it cheaper";
+  that is what silently disabled spend's self-healing until 2026-08-09.
 - There is **no execution time limit** on Railway. The old `maxDuration` exports in the
   route files are inert now; long syncs no longer need to fit in 300s.
 

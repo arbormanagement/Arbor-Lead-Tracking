@@ -5,14 +5,32 @@ import { syncRuns } from "@/lib/db/schema";
 /** A `running` row older than this is a zombie — the process died mid-run. */
 const STALE_RUN_HOURS = 6;
 
+/** Returned instead of the job's stats when another run of the same job is in flight. */
+export interface SyncSkipped {
+  skipped: true;
+  reason: string;
+}
+
+export function isSyncSkipped(r: unknown): r is SyncSkipped {
+  return typeof r === "object" && r !== null && (r as SyncSkipped).skipped === true;
+}
+
 /**
  * Wrap a sync job so every run is recorded in `sync_runs` (visible on /spend).
  * Records start, then success+stats or error. Re-throws so callers/cron see failure.
+ *
+ * Also the job-level mutex: the `running` row is CLAIMED against a partial unique
+ * index (one per job), so a second concurrent run of the same job is skipped rather
+ * than interleaved. The cron worker's `protect` flag is not sufficient — it only
+ * serializes the worker's own fetch, and a tick that times out client-side leaves
+ * the web-side handler running while the next tick fires. Overlap is not benign:
+ * attribution's reset/re-derive passes corrupt each other's lead statuses, and
+ * transcribe pays Deepgram twice for the same recordings.
  */
 export async function withSyncRun<T extends Record<string, unknown>>(
   job: string,
   fn: () => Promise<T>,
-): Promise<T> {
+): Promise<T | SyncSkipped> {
   // Reap zombies first: a crash/redeploy mid-run leaves a `running` row that
   // would otherwise look in-flight forever.
   await db
@@ -26,7 +44,20 @@ export async function withSyncRun<T extends Record<string, unknown>>(
       ),
     );
 
-  const [run] = await db.insert(syncRuns).values({ job, status: "running" }).returning({ id: syncRuns.id });
+  // Claim the job. ON CONFLICT DO NOTHING against `sync_runs_one_running_uq`
+  // returns no row when another run already holds it — a clean skip, no error
+  // code to interpret. Zombie reaping above means a dead process can't hold the
+  // claim past STALE_RUN_HOURS.
+  const [run] = await db
+    .insert(syncRuns)
+    .values({ job, status: "running" })
+    .onConflictDoNothing()
+    .returning({ id: syncRuns.id });
+  if (!run) {
+    console.warn(`[sync] ${job} already in flight — skipping this run`);
+    return { skipped: true, reason: `another '${job}' run is already in flight` };
+  }
+
   try {
     const stats = await fn();
     await db

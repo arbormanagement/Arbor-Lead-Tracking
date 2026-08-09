@@ -15,6 +15,17 @@ const GRACE_MS = 15 * 60 * 1000;
 export interface InboundAttribution {
   sourceKey: string | null;
   assignmentId: string | null;
+  /**
+   * The whole lease, not just its source. Everything else frozen onto it at assign
+   * time — campaign, keyword, click ids, landing page, session/visitor — belongs on
+   * the lead the contact produces. Returning only the source meant every DNI call
+   * (and now text) reached `attributions` and campaign-level `roi_daily` with a
+   * NULL campaign and NULL gclid, so paid contacts could be credited to a source
+   * but never to the campaign or click that actually produced them, and the
+   * offline-conversion upload had no gclid to send. The row is already fetched
+   * below; discarding it was pure loss.
+   */
+  lease: typeof numberAssignments.$inferSelect | null;
 }
 
 /**
@@ -31,7 +42,7 @@ export async function resolveInboundAttribution(
       .from(sources)
       .where(eq(sources.id, tn.staticSourceId))
       .limit(1);
-    return { sourceKey: src?.key ?? null, assignmentId: null };
+    return { sourceKey: src?.key ?? null, assignmentId: null, lease: null };
   }
 
   const graceCutoff = new Date(Date.now() - GRACE_MS);
@@ -48,8 +59,8 @@ export async function resolveInboundAttribution(
     .limit(1);
 
   return assignment
-    ? { sourceKey: assignment.source ?? null, assignmentId: assignment.id }
-    : { sourceKey: null, assignmentId: null };
+    ? { sourceKey: assignment.source ?? null, assignmentId: assignment.id, lease: assignment }
+    : { sourceKey: null, assignmentId: null, lease: null };
 }
 
 /**

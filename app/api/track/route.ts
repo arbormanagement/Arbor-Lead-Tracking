@@ -1,4 +1,5 @@
-import { eq } from "drizzle-orm";
+import { createHash } from "node:crypto";
+import { eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@/lib/db/client";
 import { formSubmissions, leads, sources, visitors, webSessions } from "@/lib/db/schema";
@@ -113,6 +114,7 @@ export async function POST(req: Request) {
     utmSource: utm.source,
     utmMedium: utm.medium,
     referrer,
+    currentUrl: form?.pageUrl ?? url,
   });
   const sourceId = await getOrCreateSource(cls.sourceKey);
   // classify lowercases its output; normalize raw UTM the same way so "CPC" and
@@ -164,11 +166,69 @@ export async function POST(req: Request) {
       location,
       derivedSourceId: sourceId,
     })
-    .onConflictDoUpdate({ target: webSessions.id, set: { lastActivityAt: now } });
+    .onConflictDoUpdate({
+      target: webSessions.id,
+      set: {
+        lastActivityAt: now,
+        // Backfill, never overwrite. /api/dni/assign seeds a session row to satisfy
+        // the lease's FKs but cannot populate these (it has no source resolution and
+        // no page context), and it frequently wins the race against this beacon — so
+        // without a backfill those sessions keep `derived_source_id` NULL forever and
+        // drop out of every surface that groups sessions by source. COALESCE keeps
+        // the session's original last-touch frozen where it already exists.
+        derivedSourceId: sql`coalesce(${webSessions.derivedSourceId}, excluded.derived_source_id)`,
+        location: sql`coalesce(${webSessions.location}, excluded.location)`,
+        content: sql`coalesce(${webSessions.content}, excluded.content)`,
+        msclkid: sql`coalesce(${webSessions.msclkid}, excluded.msclkid)`,
+      },
+    });
 
   // 3) Form submission → web_form lead.
   if (parsed.event === "form_submit" && form) {
     const c = mapFormFields(form.fields);
+
+    // Attribute from the SESSION, falling back to this event. The submit event
+    // carries only what is on the URL at submit time, so on any hard navigation
+    // (or a direct entry to an inner page) it has no click ids and an own-domain
+    // referrer — a Google Ads lead would be filed as direct/self-referral with a
+    // null gclid, breaking both ROI and the offline-conversion upload, while the
+    // real values sit on the session row one read away. The session holds the
+    // attribution frozen when the visit began, which is exactly last-touch.
+    const [sess] = await db
+      .select({
+        gclid: webSessions.gclid,
+        gbraid: webSessions.gbraid,
+        wbraid: webSessions.wbraid,
+        fbclid: webSessions.fbclid,
+        medium: webSessions.medium,
+        derivedSourceId: webSessions.derivedSourceId,
+        referrer: webSessions.referrer,
+        landingPage: webSessions.landingPage,
+      })
+      .from(webSessions)
+      .where(eq(webSessions.id, sid))
+      .limit(1);
+
+    const leadSourceId = sess?.derivedSourceId ?? sourceId;
+
+    // Idempotency key for the submission. The browser posts once and does not
+    // retry, but a double-clicked submit button fires two `submit` events, and a
+    // keepalive beacon can be re-sent by the browser after a connection reset —
+    // each of which minted a second identical lead. Keying on the session + form +
+    // exact field values (sorted, so key order can't vary the hash) collapses
+    // those; an identical submission from the same session is the same inquiry
+    // either way. Enforced by leads_type_external_id_uq, so concurrent duplicates
+    // lose the insert rather than racing the check.
+    const dedupeKey = createHash("sha256")
+      .update(
+        JSON.stringify([
+          sid,
+          form.formId ?? "",
+          Object.entries(form.fields).sort(([a], [b]) => a.localeCompare(b)),
+        ]),
+      )
+      .digest("hex")
+      .slice(0, 32);
 
     // Thread it into the sender's conversation. A form carrying BOTH a phone and
     // an email is the event that stitches those two identities together, so a
@@ -187,6 +247,7 @@ export async function POST(req: Request) {
     const [lead] = await db
       .insert(leads)
       .values({
+        externalId: dedupeKey,
         type: "web_form",
         status: "new",
         isLead: true, // a submitted web form is inherently a lead
@@ -196,41 +257,55 @@ export async function POST(req: Request) {
         message: c.message,
         conversationId: thread?.conversationId ?? null,
         contactId: thread?.contactId ?? null,
-        sourceId,
-        medium,
-        gclid: click.gclid,
-        gbraid: click.gbraid,
-        wbraid: click.wbraid,
-        fbclid: click.fbclid,
+        sourceId: leadSourceId,
+        medium: sess?.medium ?? medium,
+        gclid: click.gclid ?? sess?.gclid,
+        gbraid: click.gbraid ?? sess?.gbraid,
+        wbraid: click.wbraid ?? sess?.wbraid,
+        fbclid: click.fbclid ?? sess?.fbclid,
+        // The page the form was on is the useful landing page for the lead itself;
+        // the session's own landing page is kept on the session row.
         landingPage: form.pageUrl ?? url,
-        referrer,
+        referrer: referrer ?? sess?.referrer,
         location,
         visitorId: vid,
         webSessionId: sid,
         occurredAt: now,
       })
+      .onConflictDoNothing()
       .returning({ id: leads.id });
 
-    await db.insert(formSubmissions).values({
-      leadId: lead.id,
-      conversationId: thread?.conversationId ?? null,
-      webSessionId: sid,
-      formId: form.formId,
-      pageUrl: form.pageUrl ?? url,
-      fields: form.fields,
-      submittedAt: now,
-    });
+    // Lost the dedupe race (or a genuine re-post): the lead and its submission row
+    // already exist, so adding another form_submissions row would leave the
+    // original lead with two — and would re-announce the same form in the thread.
+    if (lead) {
+      await db.insert(formSubmissions).values({
+        leadId: lead.id,
+        conversationId: thread?.conversationId ?? null,
+        webSessionId: sid,
+        formId: form.formId,
+        pageUrl: form.pageUrl ?? url,
+        // Redacted, not raw. The snippet strips password INPUTS, but that is a
+        // client-side check on input.type only: hidden CSRF tokens, and card or
+        // SSN digits typed into an ordinary text box, still arrive here and would
+        // be stored verbatim in jsonb forever. Contact details the app exists to
+        // capture (name/email/phone) are unaffected — they are read from the lead
+        // columns above, not from this blob.
+        fields: redactSensitiveFields(form.fields),
+        submittedAt: now,
+      });
 
-    if (thread) {
-      try {
-        await recordThreadActivity(thread.conversationId, {
-          channel: "form",
-          direction: "inbound",
-          preview: preview(c.message) ?? `Form submitted${form.formId ? ` · ${form.formId}` : ""}`,
-          occurredAt: now,
-        });
-      } catch (err) {
-        console.error("[track] thread activity failed (form still recorded)", err);
+      if (thread) {
+        try {
+          await recordThreadActivity(thread.conversationId, {
+            channel: "form",
+            direction: "inbound",
+            preview: preview(c.message) ?? `Form submitted${form.formId ? ` · ${form.formId}` : ""}`,
+            occurredAt: now,
+          });
+        } catch (err) {
+          console.error("[track] thread activity failed (form still recorded)", err);
+        }
       }
     }
   }
@@ -261,24 +336,107 @@ function inferLocation(url?: string): "edwardsville" | "ofallon" | "unknown" {
   return "unknown";
 }
 
+/** Field names that should never be stored, whatever their value. */
+const SENSITIVE_NAME =
+  /pass(word|wd)?|\bpwd\b|secret|token|csrf|nonce|authenticity|api[-_]?key|cvv|cvc|ssn|social.?security|routing|account.?number|card.?number|\bcc\b/i;
+/** Value shapes worth redacting even under an innocuous field name. */
+const CARD_LIKE = /\b(?:\d[ -]*?){13,19}\b/;
+const SSN_LIKE = /\b\d{3}-\d{2}-\d{4}\b/;
+
+function luhnValid(digits: string): boolean {
+  let sum = 0;
+  let double = false;
+  for (let i = digits.length - 1; i >= 0; i--) {
+    let d = digits.charCodeAt(i) - 48;
+    if (double) d = d * 2 > 9 ? d * 2 - 9 : d * 2;
+    sum += d;
+    double = !double;
+  }
+  return sum % 10 === 0;
+}
+
+function redactSensitiveFields(fields: Record<string, string>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(fields)) {
+    if (SENSITIVE_NAME.test(k)) {
+      out[k] = "[redacted]";
+      continue;
+    }
+    if (SSN_LIKE.test(v)) {
+      out[k] = "[redacted]";
+      continue;
+    }
+    // Luhn-check before redacting a long digit run, so a phone number or a
+    // job-reference number isn't mistaken for a card.
+    const m = v.match(CARD_LIKE);
+    const digits = m?.[0].replace(/\D/g, "") ?? "";
+    if (digits.length >= 13 && digits.length <= 19 && luhnValid(digits)) {
+      out[k] = "[redacted]";
+      continue;
+    }
+    out[k] = v;
+  }
+  return out;
+}
+
 function mapFormFields(fields: Record<string, string>) {
   const entries = Object.entries(fields);
-  const find = (needles: string[]) => {
-    for (const [k, v] of entries) {
-      const lk = k.toLowerCase();
-      if (v && needles.some((n) => lk.includes(n))) return String(v).slice(0, 1000);
+  /**
+   * First field whose name matches a needle. Matching is exact-or-boundary rather
+   * than bare substring, and it is first-match-wins over an arbitrary key order:
+   * a plain `includes("number")` lets `number_of_trees` win the phone slot ahead of
+   * `phone`, and `normalizePhone("5")` then returns null, so the lead loses the
+   * phone that lead↔HCP matching (and therefore all revenue attribution) depends
+   * on. `last` behaved the same way against `last_service_date`.
+   */
+  /** Exact (or separator-stripped exact) only — for needles too generic to be
+   *  matched loosely. `number` is the motivating case: as a whole field name it
+   *  means a phone number, but as a fragment it matches `number_of_trees`. */
+  const findExact = (needles: string[]) => {
+    for (const n of needles) {
+      for (const [k, v] of entries) {
+        const lk = k.toLowerCase();
+        if (v && (lk === n || lk.replace(/[^a-z0-9]/g, "") === n)) return String(v).slice(0, 1000);
+      }
     }
     return null;
   };
-  // Prefer an explicit name; otherwise stitch first + last.
-  const first = find(["first", "fname"]);
-  const last = find(["last", "lname"]);
+  const find = (needles: string[]) => {
+    const matches = (key: string, n: string) => {
+      if (key === n) return true;
+      // An exact match once separators are stripped, so `last_name` / `last-name`
+      // / `lastName` all satisfy the needle `lastname` while `last_service_date`
+      // does not.
+      const flat = key.replace(/[^a-z0-9]/g, "");
+      if (flat === n || flat === `${n}s`) return true;
+      // Otherwise the needle must sit at a word edge, never mid-token. A trailing
+      // plural is allowed so `comments`/`details`/`notes` match too.
+      return new RegExp(`(^|[^a-z0-9])${n}s?([^a-z0-9]|$)`).test(key);
+    };
+    // Needle-major: a needle earlier in the list beats an arbitrary field order,
+    // so the specific names are consumed before the loose ones.
+    for (const n of needles) {
+      for (const [k, v] of entries) {
+        if (v && matches(k.toLowerCase(), n)) return String(v).slice(0, 1000);
+      }
+    }
+    return null;
+  };
+  // Split first/last wins when BOTH halves are present — otherwise the generic
+  // "name" needle matches `last_name` itself and the lead is filed under a surname
+  // with the given name dropped. Fall back to an explicit full-name field.
+  const first = find(["firstname", "first", "fname"]);
+  const last = find(["lastname", "last", "lname"]);
   const stitched = [first, last].filter(Boolean).join(" ") || null;
-  const name = find(["fullname", "your-name", "name"]) ?? stitched;
+  const name = (first && last ? stitched : null) ?? find(["fullname", "your-name", "name"]) ?? stitched;
   return {
     name,
     email: find(["email", "e-mail"]),
-    phone: find(["phone", "tel", "mobile", "number"]),
-    message: find(["message", "comment", "detail", "description", "note", "project"]),
+    // "number" only as a whole field name, and only after the unambiguous ones:
+    // loose-matching it steals the phone slot from fields like `number_of_trees`,
+    // and the resulting non-phone fails normalizePhone — leaving the lead with no
+    // phone at all, which is what lead↔HCP revenue matching keys on.
+    phone: find(["phone", "tel", "telephone", "mobile", "cell"]) ?? findExact(["number", "contactnumber"]),
+    message: find(["message", "comment", "details", "detail", "description", "note", "project"]),
   };
 }
