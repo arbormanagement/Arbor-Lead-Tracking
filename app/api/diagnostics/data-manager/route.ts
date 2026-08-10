@@ -1,5 +1,5 @@
 import { authorizeAdmin, unauthorized } from "@/lib/admin-auth";
-import { probeDataManager } from "@/lib/integrations/data-manager";
+import { probeDataManager, probeDataManagerShapes } from "@/lib/integrations/data-manager";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -30,8 +30,13 @@ export async function GET(req: Request) {
   const auth = await authorizeAdmin(req);
   if (!auth.ok) return unauthorized();
 
+  // `?mode=shapes` answers a different question from the default age probe: not
+  // "may we send", but "is the payload the exporter builds actually the schema
+  // Google expects". Same validateOnly guarantee — nothing is recorded either way.
+  const mode = new URL(req.url).searchParams.get("mode");
+
   try {
-    return Response.json(await probeDataManager());
+    return Response.json(mode === "shapes" ? await probeDataManagerShapes() : await probeDataManager());
   } catch (err) {
     return Response.json(
       { ok: false, error: err instanceof Error ? err.message : String(err) },
