@@ -160,15 +160,21 @@ export async function GET(req: Request) {
     .from(calls);
 
   // ── Configuration sanity ────────────────────────────────────────────────────
-  const creds: Record<string, { configured: string[]; missing: string[] }> = {};
+  const creds: Record<string, { configured: string[]; missing: string[]; undecryptable: string[] }> = {};
   for (const spec of CREDENTIAL_SPECS) {
     const platform = spec.platform;
     const status = await credentialStatus(platform);
     creds[platform] = {
       configured: status.filter((f) => f.set).map((f) => f.key),
-      missing: status.filter((f) => !f.set).map((f) => f.key),
+      missing: status.filter((f) => !f.set && !f.undecryptable).map((f) => f.key),
+      // Stored but unreadable. Reporting these as merely "missing" is wrong in the
+      // way that matters: it reads as "never configured" when the truth is "you
+      // configured it, and the app cannot see it".
+      undecryptable: status.filter((f) => f.undecryptable).map((f) => f.key),
     };
   }
+
+  const undecryptableTotal = Object.values(creds).reduce((n, c) => n + c.undecryptable.length, 0);
 
   const config = {
     // Which commit is actually serving this request. Merging is not deploying,
@@ -197,6 +203,17 @@ export async function GET(req: Request) {
   }
   if (!config.twilioAuthTokenSet) {
     warnings.push("Twilio auth token is not set — /api/twilio/status and /recording fail closed, so no recording will ever persist");
+  }
+  if (undecryptableTotal > 0) {
+    const platforms = Object.entries(creds)
+      .filter(([, c]) => c.undecryptable.length)
+      .map(([p, c]) => `${p} (${c.undecryptable.join(", ")})`)
+      .join("; ");
+    warnings.push(
+      `${undecryptableTotal} stored credential(s) cannot be decrypted with the current ` +
+        `CREDENTIALS_ENCRYPTION_KEY — the app is silently running on env fallbacks, and anything ` +
+        `saved in Settings is NOT taking effect: ${platforms}`,
+    );
   }
   if (pool.excludedFromRotation.length) {
     warnings.push(`${pool.excludedFromRotation.length} active non-static number(s) are not in a DNI pool and will never rotate`);
