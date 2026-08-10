@@ -184,6 +184,15 @@ export async function GET(req: Request) {
   for (const j of jobs) {
     if (j.stuckRunning) warnings.push(`sync job '${j.job}' has been 'running' for over 6h — its claim is blocking later ticks`);
     if (j.lastStatus === "error") warnings.push(`sync job '${j.job}' last run failed: ${j.lastError ?? "unknown error"}`);
+    // A run can SUCCEED while the work inside it failed — conversions.export
+    // reporting {sent: 0, failed: 1} is a success row with a dropped upload behind
+    // it. Reading only `status` is exactly the blind spot that let a dead spend
+    // provider report success for weeks, so surface per-item failures too.
+    const stats = j.lastSuccessStats as Record<string, unknown> | null;
+    for (const key of ["failed", "failedProviders"]) {
+      const n = stats && typeof stats[key] === "number" ? (stats[key] as number) : 0;
+      if (n > 0) warnings.push(`sync job '${j.job}' succeeded but reported ${n} failed item(s) (stats.${key})`);
+    }
     if (j.hoursSinceSuccess !== null && j.hoursSinceSuccess > 48) {
       warnings.push(`sync job '${j.job}' has not succeeded in ${j.hoursSinceSuccess}h`);
     }
