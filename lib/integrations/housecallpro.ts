@@ -116,12 +116,29 @@ class HousecallProProvider implements RevenueProvider {
       sort_by: "updated_at",
       sort_direction: "desc",
     }, cutoff);
-    return rows
-      .filter((j) => {
-        const updated = parseDate(j.updated_at ?? j.updated_at_iso);
-        return !updated || updated.getTime() >= cutoff;
-      })
-      .map(mapJob);
+    // Fall back to created_at when a job carries no updated_at. Filtering on
+    // updated_at alone and KEEPING undated rows (`!updated || …`) means that if
+    // the payload has no updated_at at all, both this filter and paginate's
+    // early-stop become no-ops — the "incremental" pull silently walks to the page
+    // cap and returns everything, every hour. The previous `scheduled_start_min`
+    // bound was server-side and hid that. created_at is always present (mapJob
+    // relies on it), so this stays bounded even in that case; it just can't spot a
+    // late completion, which is no worse than the behaviour it replaced.
+    let missingUpdatedAt = 0;
+    const filtered = rows.filter((j) => {
+      const updated = parseDate(j.updated_at ?? j.updated_at_iso);
+      if (!updated) missingUpdatedAt++;
+      const when = updated ?? parseDate(j.created_at);
+      return !when || when.getTime() >= cutoff;
+    });
+    if (missingUpdatedAt > 0) {
+      console.warn(
+        `[hcp] /jobs: ${missingUpdatedAt}/${rows.length} rows have no updated_at — ` +
+          `the incremental window fell back to created_at for those, so a job completed long ` +
+          `after it was created will not be re-synced. Check the HCP payload shape.`,
+      );
+    }
+    return filtered.map(mapJob);
   }
 
   async listEstimates({ sinceDays }: { sinceDays: number }): Promise<HcpEstimateDTO[]> {
