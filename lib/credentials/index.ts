@@ -56,10 +56,14 @@ export async function getPlatformCreds(platform: string, tenantId = DEFAULT_TENA
           // revoked token, or the wrong account entirely — while Settings keeps
           // showing the credential as set and sourced from the database.
           undecryptable.push(r.key);
+          // Message only — passing `err` prints its stack, and with every stored
+          // credential failing at once that turned one condition into ~700 log
+          // lines of identical frames that say nothing beyond "resolved from the
+          // cron route". The reason is the useful part; keep it, drop the rest.
           console.error(
             `[credentials] decrypt failed for ${platform}.${r.key} — falling back to env. ` +
-              `If CREDENTIALS_ENCRYPTION_KEY was rotated, re-enter this credential in Settings.`,
-            err,
+              `If CREDENTIALS_ENCRYPTION_KEY was rotated, re-enter this credential in Settings. ` +
+              `Reason: ${err instanceof Error ? err.message : String(err)}`,
           );
         }
       }
