@@ -133,8 +133,34 @@ server-side dedup, which is what the bolted-on attempt cap was standing in for.
   suggest "revoke and retry" as a fix for something in this app.
 - **Probes** (`/api/diagnostics/data-manager`, `validateOnly` so nothing is recorded):
   the default mode walks event ages, `?mode=shapes` validates the payload schema itself.
-  Verified 2026-08-10: event ages 0/3/30/89 days all accepted, so the **90-day export
-  window is usable** and the 72-hour figure in the docs does not bind here.
+  Use them before changing the payload — Google's parser is the authority, and its
+  rejections are often generic enough that guessing costs more than probing.
+  **Schema as confirmed 2026-08-10:**
+  - event ages 0/3/30/89 days all accepted → the **90-day export window is usable**, and
+    the 72-hour figure in the docs does not bind here.
+  - click ids live at `adIdentifiers.{gclid,gbraid,wbraid}`. A flat `gclid` is
+    `Cannot find field` — i.e. the obvious shape fails, and would have failed silently.
+  - a click id and hashed `userData` validate **on the same event**, which the old upload
+    endpoint refused. `userData` alone also validates, so leads with no click id are
+    exportable for the first time (not yet enabled — see below).
+  - `eventSource` ∈ {`WEB`,`APP`,`IN_STORE`,`PHONE`,`OTHER`}. `PHONE_CALL`, `OFFLINE` and
+    `CRM` all read as plausible and are all rejected; one bad value fails the whole batch.
+    Calls map to `PHONE`.
+  - **`eventTimestamp` may not be in the future** — +1h and +7d are both rejected with a
+    generic "There was a problem with the request" that names no field. This bit the
+    `scheduled` stage, which is dated from the estimate's *appointment* time. Clamped to
+    `now` at the transport boundary in `lib/sync/conversions.ts`.
+- **A 200 from ingest means accepted for processing, not attributed.** Matching is
+  asynchronous, so `sent` in `sync_runs` proves the payload was valid and the destination
+  exists — only the Google Ads UI confirms a conversion actually landed.
+- **First successful uploads: 2026-08-10** (8 events; the exporter had never once succeeded
+  before that). `failingExports` / `abandonedExports` in `/api/diagnostics` are the place to
+  look when that changes — the former exists because waiting for the attempt cap to expose
+  an error means seeing it only after the row is out of retries.
+- **Not yet done:** eligibility still requires a click id. Widening to `userData`-only
+  (Enhanced Conversions for Leads) would make organic calls exportable, but needs the
+  account's customer-data terms accepted and the setting enabled on each conversion action
+  first — uploads are accepted either way, so getting this wrong is invisible.
 
 ### The conversion actions, and why nothing bids on them yet
 All four are `UPLOAD_CLICKS`, ENABLED, `clickThroughLookbackWindowDays: 90` — which
