@@ -160,7 +160,7 @@ export async function GET(req: Request) {
     .from(calls);
 
   // ── Configuration sanity ────────────────────────────────────────────────────
-  const creds: Record<string, { configured: string[]; missing: string[]; undecryptable: string[] }> = {};
+  const creds: Record<string, { configured: string[]; missing: string[]; undecryptable: string[]; dbOverridesEnv: string[] }> = {};
   for (const spec of CREDENTIAL_SPECS) {
     const platform = spec.platform;
     const status = await credentialStatus(platform);
@@ -171,6 +171,10 @@ export async function GET(req: Request) {
       // way that matters: it reads as "never configured" when the truth is "you
       // configured it, and the app cannot see it".
       undecryptable: status.filter((f) => f.undecryptable).map((f) => f.key),
+      // Stored value decrypts and differs from env — the database is what the app
+      // uses here. After restoring an encryption key, these are exactly the fields
+      // whose live value just changed.
+      dbOverridesEnv: status.filter((f) => f.dbOverridesEnv).map((f) => f.key),
     };
   }
 
@@ -213,6 +217,18 @@ export async function GET(req: Request) {
       `${undecryptableTotal} stored credential(s) cannot be decrypted with the current ` +
         `CREDENTIALS_ENCRYPTION_KEY — the app is silently running on env fallbacks, and anything ` +
         `saved in Settings is NOT taking effect: ${platforms}`,
+    );
+  }
+  const overrideTotal = Object.values(creds).reduce((n, c) => n + c.dbOverridesEnv.length, 0);
+  if (overrideTotal > 0 && undecryptableTotal === 0) {
+    const where = Object.entries(creds)
+      .filter(([, c]) => c.dbOverridesEnv.length)
+      .map(([p, c]) => `${p} (${c.dbOverridesEnv.join(", ")})`)
+      .join("; ");
+    warnings.push(
+      `${overrideTotal} credential(s) differ between the database and the environment, and the ` +
+        `DATABASE value is the one in use — verify these are current, since a stale stored value ` +
+        `now shadows a working env one: ${where}`,
     );
   }
   if (pool.excludedFromRotation.length) {
