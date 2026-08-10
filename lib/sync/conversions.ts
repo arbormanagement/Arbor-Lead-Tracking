@@ -2,7 +2,7 @@ import { and, desc, eq, gte, inArray, ne, or, sql } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { calls, conversionExports, facebookLeads, hcpEstimates, leads, numberAssignments } from "@/lib/db/schema";
 import { getPlatformCreds } from "@/lib/credentials";
-import { googleAds, type ClickConversionInput } from "@/lib/integrations/google-ads";
+import { ingestEvents, type EventSource, type IngestEvent } from "@/lib/integrations/data-manager";
 import { facebook, type CapiEvent } from "@/lib/integrations/facebook";
 import { hashEmail, hashPhone } from "@/lib/conversions/hash";
 import { withSyncRun } from "./run";
@@ -19,7 +19,13 @@ export const MAX_EXPORT_ATTEMPTS = 5;
  * platform so bidding can optimize toward won revenue. Organic/GBP leads have
  * neither identifier and are correctly never uploaded. Idempotent via
  * `conversion_exports` (unique per lead+platform+event); a row only reaches
- * 'sent' once, so retries never double-count.
+ * 'sent' once, so retries never double-count. Google additionally dedups on
+ * `transactionId` server-side, so even a replayed batch cannot double-count.
+ *
+ * Google goes through the DATA MANAGER API, not the Google Ads
+ * ConversionUploadService — that endpoint is closed to new integrations and
+ * rejected every upload this job ever made, on policy rather than on data. See
+ * `lib/integrations/data-manager.ts`.
  *
  * Gated: each destination runs only when its credentials + targets are configured
  * (Google conversion-action ids, Meta pixel id) — so this no-ops until wired.
@@ -286,16 +292,30 @@ export async function syncConversions({ sinceDays = 90, limit = 500 }: { sinceDa
     const googleTasks = todo.filter((t) => t.platform === "google");
     if (googleTasks.length) {
       try {
-        const inputs: ClickConversionInput[] = googleTasks.map((t) => ({
-          [t.identifierType]: t.identifier, // gclid | gbraid | wbraid
-          conversionAction: googleAction[t.event]!,
-          conversionDateTime: googleDateTime(t.convertedAt),
+        const events: IngestEvent[] = googleTasks.map((t) => ({
+          // Same key the export row is unique on, so a replay of an already-sent
+          // conversion is discarded by Google rather than counted twice.
+          transactionId: key(t.leadId, t.platform, t.event),
+          conversionActionId: googleAction[t.event]!,
+          eventTimestamp: t.convertedAt,
           valueDollars: t.valueCents / 100,
+          eventSource: eventSourceFor(t.leadType),
+          // Spelled out rather than computed from identifierType: that field also
+          // carries Meta's fbclid/leadgen_id, and a computed key would let one
+          // through as an unknown property instead of failing here.
+          gclid: t.identifierType === "gclid" ? t.identifier : null,
+          gbraid: t.identifierType === "gbraid" ? t.identifier : null,
+          wbraid: t.identifierType === "wbraid" ? t.identifier : null,
+          // Sent ALONGSIDE the click id, which the old upload endpoint refused —
+          // it rejected any conversion pairing a click id with user identifiers.
+          // Google still matches on the click id first; these only widen it.
+          emailLc: t.emailLc,
+          phoneE164: t.phoneE164,
         }));
-        const results = await googleAds.uploadClickConversions(inputs);
-        for (let i = 0; i < googleTasks.length; i++) {
-          const r = results[i] ?? { ok: false, error: "no result" };
-          await markExport(googleTasks[i], r.ok ? "sent" : "error", r);
+        const results = await ingestEvents(events);
+        for (const t of googleTasks) {
+          const r = results.get(key(t.leadId, t.platform, t.event)) ?? { ok: false, error: "no result" };
+          await markExport(t, r.ok ? "sent" : "error", r);
           r.ok ? sent++ : failed++;
         }
       } catch (err) {
@@ -386,8 +406,14 @@ async function markExport(t: Task, status: "sent" | "error", r: { ok: boolean; e
     );
 }
 
-/** Google Ads conversion_date_time format: "yyyy-MM-dd HH:mm:ss+00:00" (UTC). */
-function googleDateTime(d: Date): string {
-  const p = (n: number) => String(n).padStart(2, "0");
-  return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())}+00:00`;
+/**
+ * Lead type -> Data Manager `EventSource`. The legal values were established by
+ * sweeping the enum against the live API: WEB, APP, IN_STORE, PHONE, OTHER.
+ * PHONE_CALL, OFFLINE and CRM all read as plausible and are all rejected, so this
+ * mapping is not a matter of taste — anything else fails the whole batch.
+ */
+function eventSourceFor(leadType: string): EventSource {
+  if (leadType === "call" || leadType === "sms") return "PHONE";
+  if (leadType === "web_form") return "WEB";
+  return "OTHER";
 }
