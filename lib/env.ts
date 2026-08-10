@@ -101,11 +101,18 @@ export const env = createEnv({
     // each route opts in, and token callers cannot purchase numbers. Unset (the
     // default) disables token auth entirely — session-only, as before.
     ADMIN_API_TOKEN: z.string().min(24).optional(),
+
+    // Injected by Railway at build: the commit this container is running. Purely
+    // informational, surfaced by /api/diagnostics so "is the fix actually live?"
+    // is a fact you can read rather than something inferred from whether some
+    // new field happens to appear in a job's stats.
+    RAILWAY_GIT_COMMIT_SHA: z.string().optional(),
   },
   client: {},
   // Next.js inlines process.env at build; pass through explicitly.
   runtimeEnv: {
     APP_BASE_URL: process.env.APP_BASE_URL,
+    RAILWAY_GIT_COMMIT_SHA: process.env.RAILWAY_GIT_COMMIT_SHA,
     NODE_ENV: process.env.NODE_ENV,
     DATABASE_URL: process.env.DATABASE_URL,
     DATABASE_URL_UNPOOLED: process.env.DATABASE_URL_UNPOOLED,

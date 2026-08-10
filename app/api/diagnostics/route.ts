@@ -151,6 +151,10 @@ export async function GET(req: Request) {
   }
 
   const config = {
+    // Which commit is actually serving this request. Merging is not deploying,
+    // and every other signal here is indirect — compare this against the repo to
+    // settle "is that fix live yet?" in one look.
+    commit: env.RAILWAY_GIT_COMMIT_SHA ? env.RAILWAY_GIT_COMMIT_SHA.slice(0, 7) : "unknown",
     appBaseUrl: env.APP_BASE_URL,
     // A trailing slash here silently invalidates every Twilio signature.
     appBaseUrlHasTrailingSlash: /\/$/.test(env.APP_BASE_URL ?? ""),
