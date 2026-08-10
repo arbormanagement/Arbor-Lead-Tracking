@@ -17,6 +17,11 @@ interface HcpConfig {
   base: string;
 }
 
+/** Floor for the /jobs schedule window. Wide enough that a job scheduled months
+ *  ago and completed today still re-syncs — the case a tight window missed — while
+ *  keeping the pull bounded server-side. */
+const JOBS_MIN_WINDOW_DAYS = 180;
+
 class HousecallProProvider implements RevenueProvider {
   readonly name = "housecallpro:direct";
 
@@ -105,40 +110,49 @@ class HousecallProProvider implements RevenueProvider {
   async listJobs({ sinceDays }: { sinceDays: number }): Promise<HcpJobDTO[]> {
     const cfg = await this.config();
     const cutoff = Date.now() - sinceDays * 86_400_000;
-    // Windowed on updated_at, like customers and estimates — NOT on
-    // scheduled_start. The RevenueProvider contract is "jobs created/updated
-    // within the window", and filtering by schedule date meant a job scheduled
-    // more than `sinceDays` ago but completed or invoiced today fell outside the
-    // query and never re-synced, so its status and totals froze at whatever the
-    // last in-window pull saw. Weather-delayed tree work makes that ordinary.
-    // The updated_at sort plus the early-stop keeps this to a few pages.
+    // Keep a SERVER-SIDE bound, always.
+    //
+    // Dropping `scheduled_start_min` for pure updated_at windowing was a
+    // regression: /jobs rows do not carry a parseable updated_at (customers and
+    // estimates do — same filter, and they correctly return 0 for a 3-hour
+    // window), so nothing was dateable, the client filter kept every row, and the
+    // "incremental" pull fetched the entire job history — 636 rows, 7 full pages —
+    // once an hour. Observed in production 2026-08-10.
+    //
+    // The original 30-day schedule window was too tight for the real complaint:
+    // a job scheduled months ago and completed today would never re-sync. So keep
+    // a schedule bound, but a wide one — that stays bounded no matter what the
+    // payload looks like, while covering late completions by a margin that
+    // weather-delayed tree work comfortably fits inside.
+    const windowDays = Math.max(sinceDays, JOBS_MIN_WINDOW_DAYS);
+    const min = new Date(Date.now() - windowDays * 86_400_000).toISOString();
     const rows = await this.paginate(cfg, "/jobs", "jobs", {
       sort_by: "updated_at",
       sort_direction: "desc",
+      scheduled_start_min: min,
     }, cutoff);
-    // Fall back to created_at when a job carries no updated_at. Filtering on
-    // updated_at alone and KEEPING undated rows (`!updated || …`) means that if
-    // the payload has no updated_at at all, both this filter and paginate's
-    // early-stop become no-ops — the "incremental" pull silently walks to the page
-    // cap and returns everything, every hour. The previous `scheduled_start_min`
-    // bound was server-side and hid that. created_at is always present (mapJob
-    // relies on it), so this stays bounded even in that case; it just can't spot a
-    // late completion, which is no worse than the behaviour it replaced.
-    let missingUpdatedAt = 0;
-    const filtered = rows.filter((j) => {
-      const updated = parseDate(j.updated_at ?? j.updated_at_iso);
-      if (!updated) missingUpdatedAt++;
-      const when = updated ?? parseDate(j.created_at);
-      return !when || when.getTime() >= cutoff;
-    });
-    if (missingUpdatedAt > 0) {
+
+    // One-time shape probe. The field names above are assumptions about HCP's
+    // payload, and the cost of a wrong assumption here is a silently unbounded
+    // sync — so say what actually came back rather than leaving it to be inferred
+    // from a row count months later.
+    if (rows.length > 0 && !parseDate(rows[0]!.updated_at ?? rows[0]!.updated_at_iso)) {
       console.warn(
-        `[hcp] /jobs: ${missingUpdatedAt}/${rows.length} rows have no updated_at — ` +
-          `the incremental window fell back to created_at for those, so a job completed long ` +
-          `after it was created will not be re-synced. Check the HCP payload shape.`,
+        `[hcp] /jobs rows have no parseable updated_at — windowing falls back to the ` +
+          `${windowDays}d scheduled_start bound. Available keys: ${Object.keys(rows[0]!).join(", ")}`,
       );
     }
-    return filtered.map(mapJob);
+    // Narrow further to the incremental window where the row can be dated, but do
+    // NOT rely on that for boundedness — the server-side window above is what
+    // guarantees it. An undateable row is kept rather than dropped: losing a job
+    // outright is worse than syncing it more often than needed, and the pull is
+    // already bounded either way.
+    return rows
+      .filter((j) => {
+        const when = parseDate(j.updated_at ?? j.updated_at_iso) ?? parseDate(j.created_at);
+        return !when || when.getTime() >= cutoff;
+      })
+      .map(mapJob);
   }
 
   async listEstimates({ sinceDays }: { sinceDays: number }): Promise<HcpEstimateDTO[]> {
