@@ -278,6 +278,20 @@ export async function probeDataManagerShapes() {
     ...["WEB", "APP", "IN_STORE", "PHONE", "OFFLINE", "CRM", "OTHER", "UNSPECIFIED", "EVENT_SOURCE_UNSPECIFIED"].map(
       (v) => ({ name: `eventSource=${v}`, event: { userData: ids, eventSource: v } }),
     ),
+    // The first real run failed on exactly two events, both of stage `scheduled`,
+    // whose timestamp is the estimate's APPOINTMENT time — routinely in the
+    // future. A conversion that has not happened yet is a contradiction, so the
+    // hypothesis is that Google rejects a future eventTimestamp. Testing it
+    // beats assuming it: the returned error is the generic "There was a problem
+    // with the request", which names no field.
+    {
+      name: "eventTimestamp +7d (future)",
+      event: { userData: ids, eventTimestamp: new Date(Date.now() + 7 * 86_400_000).toISOString() },
+    },
+    {
+      name: "eventTimestamp +1h (future)",
+      event: { userData: ids, eventTimestamp: new Date(Date.now() + 3_600_000).toISOString() },
+    },
   ];
 
   const results: Array<Record<string, unknown>> = [];
