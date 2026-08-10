@@ -24,6 +24,17 @@ import { DATA_MANAGER_SCOPE } from "./data-manager";
  *     the CURRENT key. That matters right now: the rows written under the old
  *     CREDENTIALS_ENCRYPTION_KEY no longer decrypt, and anything written through
  *     this path is readable again by construction.
+ *
+ * SHARED CLIENT — read before changing anything here. OAuth client
+ * `425178785038-….apps.googleusercontent.com` is used by BOTH this app and the
+ * Arbor MCP server (Railway project "MCP Server", `GOOGLE_CLIENT_ID` /
+ * `GOOGLE_REFRESH_TOKEN`, redirect `https://arbor-mcp.up.railway.app/oauth/google/callback`).
+ * Two consequences:
+ *   · adding a redirect URI is additive — the MCP server's stays registered — and
+ *     a refresh token issued here does not invalidate the one it already holds.
+ *     Google only evicts old tokens past 100 per client per account; there are two.
+ *   · REVOKING the grant, however, kills every token for this client at once. So
+ *     "revoke and retry" is never the right advice for a problem in this app.
  */
 
 const AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
@@ -132,7 +143,19 @@ export async function exchangeCode(code: string): Promise<TokenExchange> {
     // Google withholds it when the grant already exists and prompt=consent was
     // dropped or overridden. Say so plainly — the symptom otherwise looks like a
     // successful connect that changed nothing.
-    return { grantedScopes, error: "Google returned no refresh_token (the existing grant was reused). Revoke this app's access at myaccount.google.com/permissions and connect again." };
+    //
+    // Deliberately NOT suggesting "revoke this app at myaccount.google.com and
+    // retry", which is the usual advice: this OAuth client is SHARED with the
+    // Arbor MCP server (see the note at the top of this file), and revoking the
+    // grant would invalidate its GOOGLE_REFRESH_TOKEN too, taking out every
+    // Google tool there to fix a problem in this app.
+    return {
+      grantedScopes,
+      error:
+        "Google returned no refresh_token — the existing grant was reused. Try Connect again. " +
+        "Do NOT revoke access at myaccount.google.com: this OAuth client is shared with the Arbor MCP server " +
+        "and revoking would invalidate its Google credentials as well.",
+    };
   }
   return { refreshToken: json.refresh_token, grantedScopes };
 }
