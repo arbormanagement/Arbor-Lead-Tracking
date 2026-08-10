@@ -84,6 +84,105 @@ async function accessToken(cfg: DataManagerConfig): Promise<{ token?: string; er
 
 const sha256Hex = (v: string) => createHash("sha256").update(v).digest("hex");
 
+/** Google requires email lowercased/trimmed and phone in E.164 BEFORE hashing.
+ *  Hashing an unnormalized value produces a valid-looking digest that matches
+ *  nobody, which is indistinguishable from "this customer never clicked an ad". */
+export const hashEmailForDm = (email: string) => sha256Hex(email.trim().toLowerCase());
+export const hashPhoneForDm = (e164: string) => sha256Hex(e164.trim());
+
+function destinationsFor(cfg: DataManagerConfig, conversionActionId: string) {
+  return [
+    {
+      operatingAccount: { accountType: "GOOGLE_ADS", accountId: cfg.customerId },
+      ...(cfg.loginCustomerId
+        ? { loginAccount: { accountType: "GOOGLE_ADS", accountId: cfg.loginCustomerId } }
+        : {}),
+      productDestinationId: conversionActionId,
+    },
+  ];
+}
+
+/**
+ * Probe the SHAPE of the payload the exporter intends to send, not just whether
+ * auth works.
+ *
+ * The age probe proved the account accepts a minimal event. It says nothing about
+ * the fields the real exporter has to carry — where a gclid lives, what
+ * `eventSource` values are legal, whether a click id and hashed user identifiers
+ * may travel together. Those are exactly the parts I would otherwise be guessing
+ * from prose docs, and a wrong guess ships as a silently rejected upload.
+ *
+ * `validateOnly: true` makes Google's own parser the authority: unknown fields
+ * come back as INVALID_ARGUMENT, bad enums name the field. Nothing is recorded.
+ */
+export async function probeDataManagerShapes() {
+  const cfg = await config();
+  const auth = await accessToken(cfg);
+  if (!auth.token) return { ok: false, stage: "oauth", error: auth.error };
+
+  const when = new Date(Date.now() - 86_400_000).toISOString();
+  const gclid = "TeStGcLiD_probe_only_0000000000";
+  const ids = { userIdentifiers: [{ emailAddress: hashEmailForDm("probe@example.invalid") }] };
+
+  // Each candidate is one hypothesis about the schema. Named so the result reads
+  // as an answer ("adIdentifiers.gclid works, flat gclid does not") rather than a
+  // pile of HTTP codes.
+  const candidates: Array<{ name: string; event: Record<string, unknown> }> = [
+    { name: "adIdentifiers.gclid", event: { adIdentifiers: { gclid } } },
+    { name: "adIdentifiers.gclid + userData", event: { adIdentifiers: { gclid }, userData: ids } },
+    { name: "flat gclid", event: { gclid } },
+    { name: "adIdentifiers.gbraid", event: { adIdentifiers: { gbraid: gclid } } },
+    { name: "adIdentifiers.wbraid", event: { adIdentifiers: { wbraid: gclid } } },
+    { name: "userData only", event: { userData: ids } },
+    { name: "eventSource=PHONE_CALL", event: { userData: ids, eventSource: "PHONE_CALL" } },
+    { name: "eventSource=WEB", event: { userData: ids, eventSource: "WEB" } },
+    { name: "no eventSource", event: { userData: ids }, },
+  ];
+
+  const results: Array<Record<string, unknown>> = [];
+  for (const [i, c] of candidates.entries()) {
+    const body = {
+      destinations: destinationsFor(cfg, cfg.conversionActionId),
+      events: [
+        {
+          transactionId: `shape-probe-${i}`,
+          eventTimestamp: when,
+          conversionValue: 12.34,
+          currency: "USD",
+          eventSource: "WEB",
+          ...c.event,
+        },
+      ],
+      encoding: "HEX",
+      validateOnly: true,
+    };
+    const res = await fetchWithRetry(
+      INGEST_URL,
+      {
+        method: "POST",
+        headers: { Authorization: `Bearer ${auth.token}`, "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+      { retries: 0, timeoutMs: 30_000 },
+    );
+    const text = await res.text();
+    results.push({
+      candidate: c.name,
+      httpStatus: res.status,
+      accepted: res.ok,
+      // Only the failures need detail; a 200 carries nothing but a requestId.
+      response: res.ok ? "ok" : text.replace(/\s+/g, " ").slice(0, 300),
+    });
+  }
+
+  return {
+    ok: results.some((r) => r.accepted),
+    accepted: results.filter((r) => r.accepted).map((r) => r.candidate),
+    rejected: results.filter((r) => !r.accepted).map((r) => r.candidate),
+    results,
+  };
+}
+
 /**
  * Validate-only ingest at several event ages, to find the real upper bound on how
  * old a conversion may be. Nothing is recorded: `validateOnly` makes Google check
