@@ -142,6 +142,24 @@ export async function GET(req: Request) {
     .orderBy(desc(sql`count(*)`))
     .limit(10);
 
+  // Waiting for abandonment to reveal the error is backwards: by then the export
+  // has failed five times and is out of retries, and the run that reported
+  // `failed: 2` gave no way to see WHY without going to the database. The first
+  // failure is the one worth reading — it is still fixable and still retrying.
+  const failingExports = await db
+    .select({
+      platform: conversionExports.platform,
+      event: conversionExports.event,
+      error: conversionExports.error,
+      n: sql<number>`count(*)::int`,
+      maxAttempts: sql<number>`max(${conversionExports.attempts})::int`,
+    })
+    .from(conversionExports)
+    .where(and(eq(conversionExports.status, "error"), sql`${conversionExports.attempts} < ${MAX_EXPORT_ATTEMPTS}`))
+    .groupBy(conversionExports.platform, conversionExports.event, conversionExports.error)
+    .orderBy(desc(sql`count(*)`))
+    .limit(10);
+
   // ── Ingest volume: has anything actually arrived? ───────────────────────────
   const [vol] = await db
     .select({
@@ -275,6 +293,7 @@ export async function GET(req: Request) {
     pool,
     jobs,
     abandonedExports,
+    failingExports,
     volume: { ...vol, ...callVol },
     credentials: creds,
   });
