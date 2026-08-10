@@ -284,3 +284,71 @@ function mapEstimate(e: Record<string, unknown>): HcpEstimateDTO {
 }
 
 export const housecallpro = new HousecallProProvider();
+
+/**
+ * Report the SHAPE of one row from an HCP list endpoint — which fields exist, and
+ * which of them are usable as a sync window.
+ *
+ * This exists because `/jobs` returns no parseable `updated_at`, which silently
+ * turned an incremental pull into a full-history one, and the only way to learn
+ * the real field names was reading container logs. Answering the question
+ * directly is better than shipping a way to read logs over HTTP: logs carry
+ * arbitrary content — customer phone numbers and addresses in error context,
+ * access tokens that ride in Graph query strings — and none of that belongs
+ * behind a bearer token.
+ *
+ * So: field NAMES, plus values only for fields that parse as a date. A timestamp
+ * identifies nothing about a customer; a name or an address would.
+ */
+export async function probeHcpShape(
+  path: "/jobs" | "/customers" | "/estimates",
+): Promise<{
+  path: string;
+  sampled: number;
+  keys: string[];
+  dateFields: Array<{ key: string; sample: string }>;
+  windowable: string[];
+}> {
+  const c = await getPlatformCreds("housecallpro");
+  if (!c.api_key) throw new Error("HousecallPro API key is not configured");
+  const base = c.api_base || env.HCP_API_BASE;
+  const listKey = path.slice(1); // "/jobs" -> "jobs"
+
+  const url = new URL(path, base);
+  url.searchParams.set("page", "1");
+  url.searchParams.set("page_size", "1");
+  const res = await fetchWithRetry(
+    url,
+    { headers: { Authorization: `Token ${c.api_key}`, Accept: "application/json" } },
+    { timeoutMs: 30_000 },
+  );
+  if (!res.ok) throw new Error(`HCP ${res.status} ${path}: ${(await res.text()).slice(0, 300)}`);
+
+  const body = (await res.json()) as Record<string, unknown>;
+  const items =
+    (body[listKey] as Array<Record<string, unknown>>) ?? (body.data as Array<Record<string, unknown>>) ?? [];
+  const row = items[0];
+  if (!row) return { path, sampled: 0, keys: [], dateFields: [], windowable: [] };
+
+  // Require an ISO-8601-shaped value, not merely something `new Date()` accepts.
+  // "Parses as a date" is far too loose to be a redaction rule: a free-text field
+  // like `notes: "Gate code 4417"` parses (year 4417) and would echo the gate code
+  // back in the sample. Matching the actual timestamp shape means only genuine
+  // date fields are ever quoted.
+  const ISO_DATE = /^\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}(:\d{2})?(\.\d+)?(Z|[+-]\d{2}:?\d{2})?)?$/;
+  const dateFields: Array<{ key: string; sample: string }> = [];
+  for (const [k, v] of Object.entries(row)) {
+    if (typeof v !== "string" || !ISO_DATE.test(v)) continue;
+    const d = parseDate(v);
+    if (d) dateFields.push({ key: k, sample: d.toISOString() });
+  }
+
+  return {
+    path,
+    sampled: items.length,
+    keys: Object.keys(row).sort(),
+    dateFields,
+    // What the sync could legitimately window on, in preference order.
+    windowable: ["updated_at", "updated_at_iso", "created_at"].filter((k) => dateFields.some((d) => d.key === k)),
+  };
+}
