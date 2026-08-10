@@ -9,6 +9,14 @@ export interface FieldStatus {
   set: boolean;
   source: "db" | "env" | null;
   last4: string | null;
+  /** A row IS stored for this key but will not decrypt with the current
+   *  CREDENTIALS_ENCRYPTION_KEY. Without this the field renders as plain "env",
+   *  which is indistinguishable from "never stored" — and hides the fact that a
+   *  saved credential is being silently ignored. */
+  undecryptable?: boolean;
+  /** Stored value decrypts AND differs from the env fallback, so the database is
+   *  what the app actually uses for this field. */
+  dbOverridesEnv?: boolean;
 }
 export interface Field {
   key: string;
@@ -144,23 +152,33 @@ export function PlatformCard({ platform, canSave }: { platform: Platform; canSav
       <div style={{ display: "grid", gap: 10 }}>
         {platform.fields.map((f) => {
           const st = statusFor(f.key);
-          const badge = st?.set
-            ? `${st.source === "db" ? "saved" : "env"} · ${f.secret ? "••••" : ""}${st.last4 ?? ""}`
-            : "not set";
+          const masked = `${f.secret ? "••••" : ""}${st?.last4 ?? ""}`;
+          // Order matters: an unreadable row must win over "set", because the value
+          // in use is NOT the one that was saved here.
+          const badge = st?.undecryptable
+            ? st.set
+              ? `unreadable — using env · ${masked}`
+              : "unreadable — no value in use"
+            : st?.set
+              ? `${st.source === "db" ? "saved" : "env"} · ${masked}`
+              : "not set";
+          const badgeColor = st?.undecryptable ? "var(--danger)" : st?.set ? "var(--muted)" : "var(--warn)";
           const isPixel = platform.platform === "facebook" && f.key === "conversions_pixel_id";
           const isConvAction = platform.platform === "google_ads" && f.key.startsWith("conversion_action_");
           return (
             <div key={f.key} style={{ display: "grid", gridTemplateColumns: "200px 1fr", gap: 10, alignItems: "center" }}>
               <label style={{ color: "var(--muted)", fontSize: 13 }}>
                 {f.label}
-                <div style={{ fontSize: 11, color: st?.set ? "var(--muted)" : "var(--warn)" }}>{badge}</div>
+                <div style={{ fontSize: 11, color: badgeColor }}>{badge}</div>
               </label>
               <div>
                 <input
                   type={f.secret ? "password" : "text"}
+                  // "saved" here regardless of source was actively misleading: every
+                  // field read as stored, including ones only coming from env.
                   placeholder={
                     st?.set
-                      ? `saved · ${f.secret ? "••••" : ""}${st.last4 ?? ""} — leave blank to keep`
+                      ? `${st.source === "db" ? "saved" : "from env"} · ${masked} — leave blank to keep`
                       : f.placeholder || ""
                   }
                   value={values[f.key] ?? ""}
