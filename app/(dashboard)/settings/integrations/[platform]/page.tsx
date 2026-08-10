@@ -83,12 +83,21 @@ export default async function IntegrationDetailPage({
           <a className="btn" href="/api/oauth/google/start">
             Connect Google Ads
           </a>
-          <p className="muted" style={{ fontSize: 11, marginTop: 10, lineHeight: 1.5 }}>
-            One-time setup: this exact URI must be listed under <em>Authorized redirect URIs</em> on the
-            OAuth client in Google Cloud Console, or Google rejects the request before it ever reaches
-            this app.
+          <p className="muted" style={{ fontSize: 11, marginTop: 10, lineHeight: 1.6 }}>
+            <strong>One-time setup, still required:</strong> this exact URI must be listed under{" "}
+            <em>Authorized redirect URIs</em> on the OAuth client in{" "}
+            <a
+              href="https://console.cloud.google.com/apis/credentials"
+              target="_blank"
+              rel="noreferrer"
+              style={{ color: "var(--accent)" }}
+            >
+              Google Cloud Console → Credentials
+            </a>
+            . Verified against Google on 2026-08-10: it is <em>not</em> registered yet, so Connect will
+            fail with <code>redirect_uri_mismatch</code> until it is added.
             <br />
-            <code>{redirectUri()}</code>
+            <code style={{ wordBreak: "break-all" }}>{redirectUri()}</code>
           </p>
         </div>
       )}
