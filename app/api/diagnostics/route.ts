@@ -3,9 +3,10 @@ import { authorizeAdmin, unauthorized } from "@/lib/admin-auth";
 import { credentialStatus } from "@/lib/credentials";
 import { CREDENTIAL_SPECS } from "@/lib/credentials/spec";
 import { db } from "@/lib/db/client";
-import { calls, leads, numberAssignments, pools, syncRuns, trackingNumbers } from "@/lib/db/schema";
+import { calls, conversionExports, leads, numberAssignments, pools, syncRuns, trackingNumbers } from "@/lib/db/schema";
 import { env } from "@/lib/env";
 import { businessDate, BUSINESS_TZ } from "@/lib/tz";
+import { MAX_EXPORT_ATTEMPTS } from "@/lib/sync/conversions";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -122,6 +123,25 @@ export async function GET(req: Request) {
       .map((r) => ({ phoneNumber: r.phoneNumber, pool: r.pool })),
   };
 
+  // ── Why did abandoned exports fail? ─────────────────────────────────────────
+  // Knowing that N conversions were given up on is only half an answer: the fix
+  // depends entirely on WHY, and that error text is sitting one column away. Group
+  // it so a systemic cause (one expired credential) is obviously distinct from N
+  // unrelated bad click ids.
+  const abandonedExports = await db
+    .select({
+      platform: conversionExports.platform,
+      event: conversionExports.event,
+      attempts: conversionExports.attempts,
+      error: conversionExports.error,
+      n: sql<number>`count(*)::int`,
+    })
+    .from(conversionExports)
+    .where(gte(conversionExports.attempts, MAX_EXPORT_ATTEMPTS))
+    .groupBy(conversionExports.platform, conversionExports.event, conversionExports.attempts, conversionExports.error)
+    .orderBy(desc(sql`count(*)`))
+    .limit(10);
+
   // ── Ingest volume: has anything actually arrived? ───────────────────────────
   const [vol] = await db
     .select({
@@ -221,6 +241,7 @@ export async function GET(req: Request) {
     config,
     pool,
     jobs,
+    abandonedExports,
     volume: { ...vol, ...callVol },
     credentials: creds,
   });
