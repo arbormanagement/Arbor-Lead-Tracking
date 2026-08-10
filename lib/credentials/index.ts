@@ -11,7 +11,11 @@ const DEFAULT_TENANT = "default";
 const CACHE_TTL_MS = 60_000;
 
 type Creds = Record<string, string | null>;
-const cache = new Map<string, { at: number; data: Creds }>();
+/** Keys whose stored ciphertext would not decrypt on the last resolve, per
+ *  `${tenantId}:${platform}`. Cached alongside the values so Settings and
+ *  /api/diagnostics can tell "not configured" apart from "configured, but the
+ *  stored value is unreadable and we are silently running on env instead". */
+const cache = new Map<string, { at: number; data: Creds; undecryptable: string[] }>();
 
 function envFallback(spec: CredSpec): Creds {
   const e = env as unknown as Record<string, string | undefined>;
@@ -34,6 +38,7 @@ export async function getPlatformCreds(platform: string, tenantId = DEFAULT_TENA
   if (hit && Date.now() - hit.at < CACHE_TTL_MS) return hit.data;
 
   const data = envFallback(spec);
+  const undecryptable: string[] = [];
 
   if (credentialEncryptionAvailable()) {
     try {
@@ -50,6 +55,7 @@ export async function getPlatformCreds(platform: string, tenantId = DEFAULT_TENA
           // app then quietly runs on whatever stale value is still in env — an old
           // revoked token, or the wrong account entirely — while Settings keeps
           // showing the credential as set and sourced from the database.
+          undecryptable.push(r.key);
           console.error(
             `[credentials] decrypt failed for ${platform}.${r.key} — falling back to env. ` +
               `If CREDENTIALS_ENCRYPTION_KEY was rotated, re-enter this credential in Settings.`,
@@ -65,7 +71,7 @@ export async function getPlatformCreds(platform: string, tenantId = DEFAULT_TENA
     }
   }
 
-  cache.set(cacheKey, { at: Date.now(), data });
+  cache.set(cacheKey, { at: Date.now(), data, undecryptable });
   return data;
 }
 
@@ -119,6 +125,19 @@ export interface FieldStatus {
   set: boolean;
   source: "db" | "env" | null;
   last4: string | null;
+  /** A row IS stored for this key, but its ciphertext will not decrypt with the
+   *  current CREDENTIALS_ENCRYPTION_KEY — so whatever the UI shows, the value in
+   *  use is the env fallback, or nothing at all. */
+  undecryptable: boolean;
+}
+
+/**
+ * Keys whose stored value could not be decrypted on the most recent resolve.
+ * Resolves first so the answer reflects the current key, not a stale cache.
+ */
+export async function undecryptableKeys(platform: string, tenantId = DEFAULT_TENANT): Promise<string[]> {
+  await getPlatformCreds(platform, tenantId);
+  return cache.get(`${tenantId}:${platform}`)?.undecryptable ?? [];
 }
 
 /**
@@ -144,10 +163,14 @@ export async function credentialStatus(platform: string, tenantId = DEFAULT_TENA
     }
   }
   const resolved = await getPlatformCreds(platform, tenantId);
+  const bad = new Set(await undecryptableKeys(platform, tenantId));
 
   return spec.fields.map((f) => {
     const val = resolved[f.key];
-    const source: "db" | "env" | null = dbKeys.has(f.key) ? "db" : val ? "env" : null;
+    // A DB row that will not decrypt is NOT the source of the value in use —
+    // reporting "db" there is precisely the lie that hid a key rotation for weeks.
+    const storedAndReadable = dbKeys.has(f.key) && !bad.has(f.key);
+    const source: "db" | "env" | null = storedAndReadable ? "db" : val ? "env" : null;
     return {
       key: f.key,
       label: f.label,
@@ -155,6 +178,7 @@ export async function credentialStatus(platform: string, tenantId = DEFAULT_TENA
       set: !!val,
       source,
       last4: val && f.secret ? val.slice(-4) : val && !f.secret ? val : null,
+      undecryptable: bad.has(f.key),
     };
   });
 }
