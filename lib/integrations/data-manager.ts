@@ -134,9 +134,14 @@ export async function probeDataManagerShapes() {
     { name: "adIdentifiers.gbraid", event: { adIdentifiers: { gbraid: gclid } } },
     { name: "adIdentifiers.wbraid", event: { adIdentifiers: { wbraid: gclid } } },
     { name: "userData only", event: { userData: ids } },
-    { name: "eventSource=PHONE_CALL", event: { userData: ids, eventSource: "PHONE_CALL" } },
-    { name: "eventSource=WEB", event: { userData: ids, eventSource: "WEB" } },
-    { name: "no eventSource", event: { userData: ids }, },
+    { name: "no eventSource", event: { userData: ids } },
+    // EventSource enum sweep. PHONE_CALL was rejected by name, and the error does
+    // not enumerate the legal values, so the only way to learn them is to ask.
+    // Calls are the highest-volume lead type here, so which value represents an
+    // offline/phone conversion is not a cosmetic detail.
+    ...["WEB", "APP", "IN_STORE", "PHONE", "OFFLINE", "CRM", "OTHER", "UNSPECIFIED", "EVENT_SOURCE_UNSPECIFIED"].map(
+      (v) => ({ name: `eventSource=${v}`, event: { userData: ids, eventSource: v } }),
+    ),
   ];
 
   const results: Array<Record<string, unknown>> = [];
