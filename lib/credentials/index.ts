@@ -133,6 +133,12 @@ export interface FieldStatus {
    *  current CREDENTIALS_ENCRYPTION_KEY — so whatever the UI shows, the value in
    *  use is the env fallback, or nothing at all. */
   undecryptable: boolean;
+  /** The stored value decrypts AND differs from the env fallback, so the database
+   *  is what the app actually uses here. Matters most when restoring a previously
+   *  wrong encryption key: every field where this is true silently changes which
+   *  credential is live, and a stale stored value will quietly replace a working
+   *  env one. Boolean only — the values themselves never leave the server. */
+  dbOverridesEnv: boolean;
 }
 
 /**
@@ -168,6 +174,7 @@ export async function credentialStatus(platform: string, tenantId = DEFAULT_TENA
   }
   const resolved = await getPlatformCreds(platform, tenantId);
   const bad = new Set(await undecryptableKeys(platform, tenantId));
+  const envVals = envFallback(spec);
 
   return spec.fields.map((f) => {
     const val = resolved[f.key];
@@ -183,6 +190,7 @@ export async function credentialStatus(platform: string, tenantId = DEFAULT_TENA
       source,
       last4: val && f.secret ? val.slice(-4) : val && !f.secret ? val : null,
       undecryptable: bad.has(f.key),
+      dbOverridesEnv: storedAndReadable && !!envVals[f.key] && envVals[f.key] !== val,
     };
   });
 }
