@@ -103,6 +103,142 @@ function destinationsFor(cfg: DataManagerConfig, conversionActionId: string) {
 }
 
 /**
+ * Legal `EventSource` values, established by sweeping the enum against the live
+ * API (2026-08-10) because the rejection message names the bad value but never
+ * lists the good ones. `OFFLINE`, `CRM` and `PHONE_CALL` all read as plausible
+ * and are all rejected; `PHONE` is the one that covers a tracked call, which is
+ * this business's highest-volume lead type.
+ */
+export type EventSource = "WEB" | "APP" | "IN_STORE" | "PHONE" | "OTHER";
+
+export interface IngestEvent {
+  /** Stable per (lead, stage). Data Manager dedups on it server-side, which is
+   *  what makes a retry safe — see the note on `retries` in `ingestEvents`. */
+  transactionId: string;
+  /** Bare numeric conversion-action id — the destination this event belongs to. */
+  conversionActionId: string;
+  eventTimestamp: Date;
+  valueDollars: number;
+  eventSource: EventSource;
+  gclid?: string | null;
+  gbraid?: string | null;
+  wbraid?: string | null;
+  /** Hashed and sent alongside the click id when present. Google matches on the
+   *  click id first; the identifiers only widen the match. */
+  emailLc?: string | null;
+  phoneE164?: string | null;
+}
+
+export interface IngestResult {
+  ok: boolean;
+  error?: string;
+  raw?: unknown;
+}
+
+/** One event as Data Manager wants it. Shape verified field-by-field by
+ *  `probeDataManagerShapes` — notably `adIdentifiers.gclid` rather than a flat
+ *  `gclid`, which is "Cannot find field". */
+function buildEvent(e: IngestEvent) {
+  const userIdentifiers: Array<Record<string, string>> = [];
+  if (e.emailLc) userIdentifiers.push({ emailAddress: hashEmailForDm(e.emailLc) });
+  if (e.phoneE164) userIdentifiers.push({ phoneNumber: hashPhoneForDm(e.phoneE164) });
+
+  const adIdentifiers: Record<string, string> = {};
+  // Exactly one click id, in the same preference order the exporter resolves them.
+  if (e.gclid) adIdentifiers.gclid = e.gclid;
+  else if (e.gbraid) adIdentifiers.gbraid = e.gbraid;
+  else if (e.wbraid) adIdentifiers.wbraid = e.wbraid;
+
+  return {
+    transactionId: e.transactionId,
+    eventTimestamp: e.eventTimestamp.toISOString(),
+    conversionValue: e.valueDollars,
+    currency: "USD",
+    eventSource: e.eventSource,
+    ...(Object.keys(adIdentifiers).length ? { adIdentifiers } : {}),
+    ...(userIdentifiers.length ? { userData: { userIdentifiers } } : {}),
+  };
+}
+
+/**
+ * Send conversions. Returns a result per `transactionId` so the caller can mark
+ * each export row individually.
+ *
+ * One request per destination: `destinations` applies to every event in the body,
+ * so events bound for different conversion actions cannot share a request.
+ *
+ * Two honest limits worth knowing before reading the return value:
+ *   · a 200 means ACCEPTED FOR PROCESSING, not attributed. Matching happens
+ *     asynchronously on Google's side, so `ok: true` says the payload was valid
+ *     and the destination exists — it does not promise the conversion will show
+ *     up in the account. Only the Google Ads UI can confirm that.
+ *   · results are therefore per-BATCH, not per-event. Every event in a failed
+ *     request is marked failed together, which is why batches are kept small
+ *     enough that one bad row doesn't drag many good ones down with it.
+ */
+export async function ingestEvents(events: IngestEvent[]): Promise<Map<string, IngestResult>> {
+  const out = new Map<string, IngestResult>();
+  if (!events.length) return out;
+
+  const cfg = await config();
+  const auth = await accessToken(cfg);
+  if (!auth.token) {
+    for (const e of events) out.set(e.transactionId, { ok: false, error: auth.error ?? "no access token" });
+    return out;
+  }
+
+  const byDestination = new Map<string, IngestEvent[]>();
+  for (const e of events) {
+    const list = byDestination.get(e.conversionActionId);
+    if (list) list.push(e);
+    else byDestination.set(e.conversionActionId, [e]);
+  }
+
+  const BATCH = 200;
+  for (const [conversionActionId, list] of byDestination) {
+    for (let i = 0; i < list.length; i += BATCH) {
+      const chunk = list.slice(i, i + BATCH);
+      const body = {
+        destinations: destinationsFor(cfg, conversionActionId),
+        events: chunk.map(buildEvent),
+        encoding: "HEX",
+      };
+      try {
+        const res = await fetchWithRetry(
+          INGEST_URL,
+          {
+            method: "POST",
+            headers: { Authorization: `Bearer ${auth.token}`, "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+          },
+          // Retries are SAFE here, unlike on the old upload endpoint. That one had
+          // no dedup, so a 5xx returned after Google had already recorded the
+          // conversion turned into a duplicate (or a CONVERSION_ALREADY_EXISTS
+          // error stored as a failure) on retry. `transactionId` removes the
+          // hazard: a replayed event is discarded server-side.
+          { retries: 2, timeoutMs: 30_000 },
+        );
+        const text = await res.text();
+        let raw: unknown = text;
+        try {
+          raw = JSON.parse(text);
+        } catch {
+          /* keep the text — a non-JSON body is itself the diagnostic */
+        }
+        const result: IngestResult = res.ok
+          ? { ok: true, raw }
+          : { ok: false, error: `Data Manager ${res.status}: ${text.replace(/\s+/g, " ").slice(0, 300)}`, raw };
+        for (const e of chunk) out.set(e.transactionId, result);
+      } catch (err) {
+        const error = err instanceof Error ? err.message : String(err);
+        for (const e of chunk) out.set(e.transactionId, { ok: false, error });
+      }
+    }
+  }
+  return out;
+}
+
+/**
  * Probe the SHAPE of the payload the exporter intends to send, not just whether
  * auth works.
  *
@@ -198,15 +334,7 @@ export async function probeDataManager() {
   const auth = await accessToken(cfg);
   if (!auth.token) return { ok: false, stage: "oauth", error: auth.error };
 
-  const destinations = [
-    {
-      operatingAccount: { accountType: "GOOGLE_ADS", accountId: cfg.customerId },
-      ...(cfg.loginCustomerId
-        ? { loginAccount: { accountType: "GOOGLE_ADS", accountId: cfg.loginCustomerId } }
-        : {}),
-      productDestinationId: cfg.conversionActionId,
-    },
-  ];
+  const destinations = destinationsFor(cfg, cfg.conversionActionId);
 
   // Ages spanning the window the exporter actually needs. 90 days is the current
   // export window (it matches Google's click lookback); 3 days probes the 72-hour

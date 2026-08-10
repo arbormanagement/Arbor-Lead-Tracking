@@ -192,101 +192,12 @@ class GoogleAdsProvider implements SpendProvider {
       category: r.conversionAction?.category ?? null,
     }));
   }
-
-  /**
-   * Offline Conversion Import: upload gclid-matched conversions (closed-loop
-   * feedback so Smart Bidding can optimize toward won revenue). Uploads ONE
-   * conversion per request — at our volume that's fine, and it gives clean
-   * per-item success/failure without parsing partial-failure indices, so the
-   * caller's `conversion_exports` 'sent' guard can never double-count on retry.
-   * Uses the existing adwords OAuth (the scope is read+write; no new token needed).
-   */
-  async uploadClickConversions(items: ClickConversionInput[]): Promise<UploadResult[]> {
-    if (!items.length) return [];
-    const cfg = await this.config();
-    const token = await this.accessToken(cfg);
-    const headers: Record<string, string> = {
-      Authorization: `Bearer ${token}`,
-      "developer-token": cfg.developerToken,
-      "Content-Type": "application/json",
-    };
-    if (cfg.loginCustomerId) headers["login-customer-id"] = cfg.loginCustomerId.replace(/-/g, "");
-
-    const out: UploadResult[] = [];
-    for (const it of items) {
-      try {
-        const body = {
-          conversions: [
-            {
-              // Exactly one click identifier per conversion. gbraid/wbraid are the
-              // iOS/Safari replacements for gclid; Google rejects a conversion that
-              // pairs either with user_identifiers (Enhanced Conversions for Leads),
-              // which we never send — click-id matching only.
-              ...(it.gclid ? { gclid: it.gclid } : it.gbraid ? { gbraid: it.gbraid } : { wbraid: it.wbraid }),
-              conversionAction: normalizeConversionAction(it.conversionAction, cfg.customerId),
-              conversionDateTime: it.conversionDateTime,
-              conversionValue: it.valueDollars,
-              currencyCode: it.currencyCode ?? "USD",
-            },
-          ],
-          partialFailure: true,
-        };
-        // retries: 0 — this is a non-idempotent WRITE. A 5xx returned after Google
-        // already recorded the conversion would, on retry, come back as a
-        // CONVERSION_ALREADY_EXISTS partial failure, which we then store as an
-        // error; combined with the attempt cap that burns the row's retries on a
-        // conversion that actually landed. The 10-minute job is the retry.
-        const res = await fetchWithRetry(
-          `https://googleads.googleapis.com/${GOOGLE_ADS_API_VERSION}/customers/${cfg.customerId}:uploadClickConversions`,
-          { method: "POST", headers, body: JSON.stringify(body) },
-          { retries: 0, timeoutMs: 30_000 },
-        );
-        const json = (await res.json()) as { partialFailureError?: { message?: string } };
-        if (!res.ok) {
-          out.push({ ok: false, error: `Google Ads ${res.status}: ${JSON.stringify(json)}`, raw: json });
-          continue;
-        }
-        if (json.partialFailureError) {
-          out.push({ ok: false, error: json.partialFailureError.message ?? "partial failure", raw: json });
-          continue;
-        }
-        out.push({ ok: true, raw: json });
-      } catch (err) {
-        out.push({ ok: false, error: err instanceof Error ? err.message : String(err) });
-      }
-    }
-    return out;
-  }
-}
-
-/** Accept either a full resource name or a bare numeric id from settings. */
-function normalizeConversionAction(action: string, customerId: string): string {
-  const a = action.trim();
-  if (a.startsWith("customers/")) return a;
-  return `customers/${customerId}/conversionActions/${a.replace(/[^0-9]/g, "")}`;
 }
 
 export interface ConversionActionOption {
   id: string;
   name: string;
   category: string | null;
-}
-
-export interface ClickConversionInput {
-  /** Exactly one of gclid / gbraid / wbraid. */
-  gclid?: string;
-  gbraid?: string;
-  wbraid?: string;
-  conversionAction: string; // resource name or bare numeric id
-  conversionDateTime: string; // "yyyy-MM-dd HH:mm:ss+00:00"
-  valueDollars: number;
-  currencyCode?: string;
-}
-
-export interface UploadResult {
-  ok: boolean;
-  error?: string;
-  raw?: unknown;
 }
 
 export interface LsaLead {
