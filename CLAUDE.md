@@ -112,6 +112,59 @@ things from it that constrain this codebase:
   conversion integrations still need rebuilding on the app's own actions. See
   `callrail-migration/conversion-signal-gate.md` in `arbor-general`.
 
+## Conversion export → Google Ads (state as of 2026-08-10)
+
+The exporter had **never once succeeded**: Google closed
+`ConversionUploadService.UploadClickConversions` to new integrations, so every upload was
+rejected on policy rather than on data. Rows sat at 22–26 attempts. The replacement is the
+**Data Manager API** (`POST https://datamanager.googleapis.com/v1/events:ingest`,
+`lib/integrations/data-manager.ts`), which is better than a like-for-like port in two ways:
+a click id and hashed user identifiers may travel on the SAME event (the old API rejected
+that pairing, so an organic call exported nothing), and `transactionId` gives real
+server-side dedup, which is what the bolted-on attempt cap was standing in for.
+
+- **Scope.** Data Manager needs `.../auth/datamanager`; the original token only had
+  `.../auth/adwords`. Re-consent is now self-service: Settings → Integrations → Google Ads
+  → **Connect** (`/api/oauth/google/start`). Done 2026-08-10.
+- **⚠️ The Google OAuth client is SHARED with the Arbor MCP server**
+  (`425178785038-…`, MCP redirect `https://arbor-mcp.up.railway.app/oauth/google/callback`).
+  Adding a redirect URI and minting a token are both additive and safe. **Revoking the
+  grant is not** — it kills every token on that client, including the MCP server's. Never
+  suggest "revoke and retry" as a fix for something in this app.
+- **Probes** (`/api/diagnostics/data-manager`, `validateOnly` so nothing is recorded):
+  the default mode walks event ages, `?mode=shapes` validates the payload schema itself.
+  Verified 2026-08-10: event ages 0/3/30/89 days all accepted, so the **90-day export
+  window is usable** and the 72-hour figure in the docs does not bind here.
+
+### The conversion actions, and why nothing bids on them yet
+All four are `UPLOAD_CLICKS`, ENABLED, `clickThroughLookbackWindowDays: 90` — which
+exactly matches the exporter's 90-day window, so nothing is truncated at the far edge.
+
+| stage | id | Google Ads name | category |
+|---|---|---|---|
+| lead | 7714104423 | Lead Created | CONTACT |
+| qualified | 7695123530 | Estimate Created | QUALIFIED_LEAD |
+| scheduled | 7714132224 | Estimate Scheduled | BOOK_APPOINTMENT |
+| won | 7695519049 | Estimate Won | CONVERTED_LEAD |
+
+**All four are `includeInConversionsMetric: false` — observation only.** Conversions will
+upload and appear in reports, and Smart Bidding will ignore every one of them. Fixing the
+transport does not by itself change a single bid.
+
+**Decision (2026-08-10, Justin):** promote **Lead Created** to the biddable signal; leave
+Won as observation for now. Volume is the reason — 21 won leads against 211 qualified is
+far too thin for Smart Bidding to learn on won revenue, and a value-based strategy fed
+that sparsely optimizes noise.
+
+**Sequencing matters, and is deliberate:** promote only AFTER uploads are confirmed
+flowing. Flipping first means the 90-day backfill lands as a single spike into a live
+bidding signal, which reads as a sudden performance change that has nothing to do with the
+ads. Backfill while observation-only, confirm the counts, then promote.
+
+**Revisit when:** won-estimate conversions are sustained (roughly 30+/month) — at that
+point Estimate Won becomes a candidate for value-based bidding and this ranking should be
+re-argued rather than assumed.
+
 ## Defaults (Justin can change)
 - v1 channels: calls + web forms + FB leadgen (SMS deferred).
 - Call routing: office +16188368004 first (configurable).
