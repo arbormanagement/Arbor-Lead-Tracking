@@ -9,7 +9,7 @@ import { withSyncRun } from "./run";
 
 /** Stop retrying an export after this many failed attempts. Matches the
  *  poison-pill guard the transcription backlog already uses. */
-const MAX_EXPORT_ATTEMPTS = 5;
+export const MAX_EXPORT_ATTEMPTS = 5;
 
 /**
  * conversions.export — closed-loop feedback. Finds qualified/won leads that came
