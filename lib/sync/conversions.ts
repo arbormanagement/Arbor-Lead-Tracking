@@ -297,7 +297,14 @@ export async function syncConversions({ sinceDays = 90, limit = 500 }: { sinceDa
           // conversion is discarded by Google rather than counted twice.
           transactionId: key(t.leadId, t.platform, t.event),
           conversionActionId: googleAction[t.event]!,
-          eventTimestamp: t.convertedAt,
+          // Never in the future. `scheduled` is dated from the estimate's
+          // APPOINTMENT time, which is routinely days ahead — a conversion that
+          // has not happened yet is a contradiction, and Google rejects the whole
+          // batch for it. The booking itself already happened, so `now` is the
+          // closest honest timestamp we have; HCP exposes the appointment date,
+          // not the moment it was booked. (The Meta branch has always clamped for
+          // the same reason, against a 7-day bound.)
+          eventTimestamp: new Date(Math.min(t.convertedAt.getTime(), Date.now())),
           valueDollars: t.valueCents / 100,
           eventSource: eventSourceFor(t.leadType),
           // Spelled out rather than computed from identifierType: that field also
