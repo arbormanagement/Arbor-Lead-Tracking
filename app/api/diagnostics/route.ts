@@ -193,6 +193,16 @@ export async function GET(req: Request) {
       const n = stats && typeof stats[key] === "number" ? (stats[key] as number) : 0;
       if (n > 0) warnings.push(`sync job '${j.job}' succeeded but reported ${n} failed item(s) (stats.${key})`);
     }
+    // `abandoned` is the quieter case and needs its own check: once an export
+    // passes its retry cap it stops being counted in `failed`, so the run goes
+    // clean while the work is permanently undone. Retrying forever was the wrong
+    // answer, but so is forgetting.
+    const abandoned = stats && typeof stats.abandoned === "number" ? (stats.abandoned as number) : 0;
+    if (abandoned > 0) {
+      warnings.push(
+        `sync job '${j.job}' has permanently abandoned ${abandoned} item(s) after repeated failures — they will never be retried`,
+      );
+    }
     if (j.hoursSinceSuccess !== null && j.hoursSinceSuccess > 48) {
       warnings.push(`sync job '${j.job}' has not succeeded in ${j.hoursSinceSuccess}h`);
     }

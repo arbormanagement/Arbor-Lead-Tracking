@@ -243,8 +243,22 @@ export async function syncConversions({ sinceDays = 90, limit = 500 }: { sinceDa
     const todo = tasks.filter(
       (t) => !sentKeys.has(key(t.leadId, t.platform, t.event)) && !exhausted.has(key(t.leadId, t.platform, t.event)),
     );
+    // Giving up has to be REPORTED, not just logged. Once a row passes the cap it
+    // leaves `todo`, so `failed` drops to 0 and the run looks clean — the export is
+    // permanently un-uploaded and the only trace is a console line nobody reads.
+    // Surface it in stats so /api/diagnostics can warn on it.
     if (exhausted.size) console.warn(`[conversions] ${exhausted.size} export(s) past ${MAX_EXPORT_ATTEMPTS} attempts — not retried`);
-    if (!todo.length) return { candidates: rows.length, sent: 0, failed: 0, note: "all already exported" };
+    if (!todo.length) {
+      return {
+        candidates: rows.length,
+        sent: 0,
+        failed: 0,
+        abandoned: exhausted.size,
+        note: exhausted.size
+          ? `nothing left to try — ${exhausted.size} export(s) permanently abandoned after ${MAX_EXPORT_ATTEMPTS} attempts`
+          : "all already exported",
+      };
+    }
 
     for (let i = 0; i < todo.length; i += 100) {
       await db
@@ -334,7 +348,7 @@ export async function syncConversions({ sinceDays = 90, limit = 500 }: { sinceDa
       }
     }
 
-    return { candidates: rows.length, attempted: todo.length, sent, failed, google: googleTasks.length, facebook: fbTasks.length };
+    return { candidates: rows.length, attempted: todo.length, sent, failed, abandoned: exhausted.size, google: googleTasks.length, facebook: fbTasks.length };
   });
 }
 
