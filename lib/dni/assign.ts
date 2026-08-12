@@ -3,7 +3,30 @@ import { ulid } from "ulid";
 import { db } from "@/lib/db/client";
 import { numberAssignments, sources, trackingNumbers } from "@/lib/db/schema";
 
-const LEASE_MINUTES = 30;
+/**
+ * How long a number stays out AFTER a visitor's last pageview — `getActiveAssignmentForSession`
+ * pushes this window forward on every pageview, so an actively browsing visitor never loses
+ * their number. This is idle time only.
+ *
+ * It is also the pool's real capacity control: numbers ÷ hold time = visitors servable per
+ * hour. At 30 minutes, five numbers served ~7.5 visitors/hour against a measured peak of 9,
+ * so the pool sat exhausted through every busy hour and those visitors were handed the static
+ * fallback — which is the site's own hard-coded number, making their sessions indistinguishable
+ * from untracked direct traffic.
+ *
+ * 15 matches what CallRail's published sizing rule implies (pool = peak hourly visitors ÷ 4,
+ * minimum 4 — i.e. each number recycles ~4×/hour). Arbor's peak is 9/hour, so that rule returns
+ * the 4-number minimum and the existing 5 numbers are sufficient: this is a hold-time problem,
+ * not a pool-size one. Halving it roughly doubles capacity to ~20 visitors/hour for no cost.
+ *
+ * The cost of shortening is a visitor who loads a page, idles past the window, then dials the
+ * number still on screen after it has been re-leased — their call resolves to the new lease's
+ * source. That trade is why this isn't shorter still.
+ */
+const LEASE_MINUTES = 15;
+/** Cookie-blocked browsers mint a fresh sid per pageview; this caps the damage. Note it also
+ *  means one visitor can hold two numbers, where CallRail assigns one per session — the next
+ *  lever to pull if exhaustion returns after the hold-time fix. */
 const MAX_ACTIVE_LEASES_PER_VISITOR = 2;
 
 export interface AttributionSnapshot {
