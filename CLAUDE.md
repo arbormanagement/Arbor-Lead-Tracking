@@ -245,13 +245,22 @@ far too thin for Smart Bidding to learn on won revenue, and a value-based strate
 that sparsely optimizes noise. That decision is *satisfied* today; the problem is that
 Estimate Created came along uninvited.
 
-**Fix, when taken:** set the campaign conversion goal `QUALIFIED_LEAD/WEBSITE` to
-`biddable: false` on 23633267649 (`googleads_update_campaign_conversion_goal`). Prefer this
-over clearing `primary_for_goal` on the action — it is scoped to the one campaign, and it
+**✅ Fixed 2026-08-12:** campaign conversion goal `QUALIFIED_LEAD/WEBSITE` set to
+`biddable: false` on 23633267649 (`googleads_update_campaign_conversion_goal`). Chosen over
+clearing `primary_for_goal` on the action because it is scoped to the one campaign, and it
 leaves Estimate Created reporting normally as the funnel-stage observation it was meant to
-be. Historical conversion counts are not restated, so the "Conversions" trend will step
-DOWN on the change date for reasons that have nothing to do with performance; note the date
-before reading the graph.
+be. **Historical conversion counts are not restated, so the "Conversions" trend steps DOWN
+on 08-12 for reasons that have nothing to do with performance** — and Maximize Conversions
+re-learns against a signal roughly half its former size, so expect CPA figures to move
+before the campaign settles. Do not read either as an ads problem.
+
+Biddable goals remaining on this campaign: `CONTACT/WEBSITE` (Lead Created — the intended
+signal), `PHONE_CALL_LEAD/CALL_FROM_ADS` + `CONTACT/CALL_FROM_ADS` (Calls from ads), and
+`SUBMIT_LEAD_FORM/WEBSITE` — that last one is CallRail's Form Capture, biddable but fed
+nothing since 08-07, so it is inert rather than wrong. The Calls-from-ads overlap described
+above was left in place deliberately: it is Google's own count of a call-asset call, and
+dropping it would leave nothing counting those calls whenever our classifier declines to
+export one.
 
 **CallRail's actions stopped on their own.** Form Capture (7054757256) and First Time Phone
 Call (7054686637) last received data 2026-08-07, the day before cutover — both are still
