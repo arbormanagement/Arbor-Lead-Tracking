@@ -49,6 +49,16 @@ Edwardsville + O'Fallon). WhatConverts-style. Single-tenant. Owner: Justin
   Runbook: `DEPLOY.md`. No serverless execution ceiling — `maxDuration` exports are inert.
 - Money in **integer cents**; phones in **E.164** (`lib/phone.ts`); IDs are **ULIDs**.
 - Env access only via `lib/env.ts` (validated). Never read `process.env` directly.
+- **Stored credentials (`integration_credentials`) survived the Railway move but their
+  encryption key did not.** 8 rows — housecallpro, facebook, deepgram, twilio — are
+  ciphertext from a `CREDENTIALS_ENCRYPTION_KEY` nobody holds, so they are unrecoverable and
+  the app has been silently running on env fallbacks (which are correct, so nothing broke).
+  They are not harmless: they pin `/api/diagnostics` to `ok:false` permanently, which is how
+  a monitoring surface stops being read. Clear them, don't try to recover them.
+  `google_ads.refresh_token` DOES decrypt and DOES override env — it is the Data Manager
+  re-consent from 2026-08-10, and clearing it breaks the conversion exporter. In the UI the
+  dead rows and that live one look identical, which is why `POST /api/settings/credentials`
+  accepts `ADMIN_API_TOKEN` for **clearing only**.
 - DB client (`lib/db/client.ts`) is driver-switchable via `DB_DRIVER`: `pg` (default,
   long-lived node-postgres pool — supports the interactive txn Phase 4 DNI leasing needs)
   or `neon-http` (stateless HTTPS, for serverless/edge or TCP-blocked networks).
@@ -106,8 +116,15 @@ things from it that constrain this codebase:
   recording was ever persisted. Calls still connected, so nothing surfaced in the app.
   **Diagnostic:** Twilio's Monitor Alerts API logs every non-2xx webhook response as error
   11200/15003 — `GET https://monitor.twilio.com/v1/Alerts?StartDate=…`. Railway logs showed
-  nothing. Check it after any webhook or credential change; zero alerts is the pass
-  condition.
+  nothing. Check it after any webhook or credential change. **The pass condition is zero
+  11200/15003, not zero alerts.** A steady trickle of **32021** (SHAKEN/STIR: "'dest' value
+  specified in PASSporT claim does not match SIP To header value") is expected and is not
+  actionable: it fires on the INBOUND leg, where the originating carrier signed the call for
+  the number the caller actually dialed. When an intermediary forwards that call on to a
+  tracking number, the SIP To header no longer matches what was signed — a mismatch by
+  construction. Hence most of them landing on the LSA number (Google forwards LSA calls) and
+  a few on the ported published numbers. Verified 2026-08-12 against the four most recent:
+  every one `completed`, 35–354s. Nothing in this codebase signs those legs.
 - CallRail is **not cancelled** — recordings still need archiving, and the Google Ads + GA4
   conversion integrations still need rebuilding on the app's own actions. See
   `callrail-migration/conversion-signal-gate.md` in `arbor-general`.
@@ -239,6 +256,23 @@ re-argued rather than assumed.
   someone contacting the business, so it threads and shows in `/inbox` — it just never
   becomes a lead, so it stays out of ROI either way.
 - Spend sync is self-healing (`lib/sync/spend.ts`): rolling 35-day re-pull (platforms restate) + automatic cold-start backfill reaching to each platform's earliest lead (≤365d — spend with no leads to match is deliberately not fetched), keyed `(platform, external_campaign_id, date)`. No manual backfills.
+- **The ad platforms' UTM templates are part of this app's input contract, and they drifted
+  (audited + fixed 2026-08-12).** Google Ads applies the most specific tracking template only —
+  ad > ad group > campaign > account — so an ad-group template silently defeats a correct
+  campaign one. Arbor's four ad groups emitted `utm_source=adwords&utm_medium=<ad group prose>`
+  and the account default emitted `utm_medium={adname}`, which is not a real ValueTrack
+  parameter and passed through literally. All five are now consolidated into one campaign-level
+  template on `Search | Tree Services` (23633267649). **`utm_campaign` must carry
+  `{campaignname}`, NOT `{campaignid}`** — `/api/twilio/voice` links a lease to a campaign by
+  matching `campaigns.name`, so an id there resolves to null. The account-level default still
+  holds the old `{adname}` string and can only be edited in the Google Ads UI (no API tool);
+  it is shadowed for every live campaign, so it bites only a campaign created without its own.
+- Both Google Business Profiles link to the site as `utm_source=google+my+business` — which
+  arrives as `"google my business"`, since `+` decodes to a space. `classifySource` therefore
+  compares utm values **squashed** to letters and digits, so a spelling change in a tag can't
+  mint a parallel source. It also maps `utm_source=adwords` to `google/cpc` on the source
+  alone: the mediums beside it are prose, and those URLs stay bookmarked and cached long after
+  the templates that minted them are fixed.
 - DNI leasing draws only from pools flagged `pools.is_dni`, so a number provisioned for a mailer
   (default pool `reserved`) can't be handed to website visitors before it's marked static.
   `number_assignments_active_idx` is UNIQUE — one active lease per number — and `leaseNumber`

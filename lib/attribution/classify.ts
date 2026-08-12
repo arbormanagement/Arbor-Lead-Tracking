@@ -37,15 +37,50 @@ export function classifySource(p: TouchParams): Classification {
   const src = p.utmSource?.toLowerCase();
   const med = p.utmMedium?.toLowerCase();
   if (src || med) {
-    if (med === "cpc" || med === "ppc" || med === "paid") {
-      if (src?.includes("google")) return { sourceKey: "google/cpc", medium: "cpc" };
+    // Match on a squashed form. The same channel reaches us spelled several ways
+    // — `utm_source=google+my+business` arrives as "google my business" (a `+` in
+    // a query string decodes to a space), and the same value is written elsewhere
+    // as google_my_business or googlemybusiness. Comparing the raw string meant
+    // whichever spelling the tag happened to use decided the source.
+    const srcKey = squash(src);
+    const medKey = squash(med);
+
+    // Google Ads' own name for itself, and unambiguous: nothing organic tags
+    // itself `adwords`. Deliberately a source-only test, because the mediums that
+    // arrive next to it are prose, not channels — the account had ad-group
+    // tracking templates emitting `utm_source=adwords&utm_medium=Tree Removal in
+    // {LOCATION(City)}`, and an account-level one emitting `utm_medium={adname}`,
+    // which is not a real ValueTrack parameter and so passed through literally.
+    // Those templates are fixed, but the URLs they minted are bookmarked, cached
+    // and shared, so they keep arriving. Auto-tagging normally settles the click
+    // before this point (a gclid is checked first); this catches the one without
+    // it, which would otherwise mint a per-ad-group source that no Google Ads
+    // spend is ever keyed to — a lead with real cost behind it and no way to see
+    // that cost.
+    if (srcKey === "adwords" || srcKey === "googleads") {
+      return { sourceKey: "google/cpc", medium: "cpc" };
+    }
+
+    if (medKey === "cpc" || medKey === "ppc" || medKey === "paid") {
+      if (srcKey.includes("google")) return { sourceKey: "google/cpc", medium: "cpc" };
       // Instagram inventory is bought and reported in the same Meta campaigns, so
       // `utm_source=instagram` must group with facebook/paid or Meta ROI splits in
       // two and neither half reconciles with the platform's spend.
-      if (src?.includes("facebook") || src?.includes("meta") || src?.includes("instagram"))
+      if (srcKey.includes("facebook") || srcKey.includes("meta") || srcKey.includes("instagram"))
         return { sourceKey: "facebook/paid", medium: "paid" };
     }
-    if (src?.includes("gbp") || src?.includes("google_business") || med === "gbp") {
+    // Both Business Profiles link to the site with
+    // `utm_source=google+my+business&utm_medium=organic`, which matched none of
+    // the spellings this once tested for. The result was a second, parallel `google
+    // my business/organic` source sitting alongside `gbp` — the calls to the two
+    // GBP tracking numbers landed on one and every click through to the website on
+    // the other, so neither told you what the profiles were worth.
+    if (
+      srcKey.includes("gbp") ||
+      srcKey.includes("googlemybusiness") ||
+      srcKey.includes("googlebusiness") ||
+      medKey === "gbp"
+    ) {
       return { sourceKey: "gbp", medium: "organic" };
     }
     return { sourceKey: `${src ?? "other"}/${med ?? "referral"}`, medium: med ?? "referral" };
@@ -66,6 +101,16 @@ export function classifySource(p: TouchParams): Classification {
   }
 
   return { sourceKey: "direct", medium: "none" };
+}
+
+/**
+ * Reduce a utm value to letters and digits, so the spelling a given tag happens
+ * to use stops mattering: "google my business" (what `google+my+business`
+ * decodes to), "google_my_business" and "GoogleMyBusiness" all compare equal.
+ * Input is already lowercased by the caller.
+ */
+function squash(v?: string | null): string {
+  return (v ?? "").replace(/[^a-z0-9]/g, "");
 }
 
 function hostOf(url: string): string | null {
