@@ -49,16 +49,25 @@ Edwardsville + O'Fallon). WhatConverts-style. Single-tenant. Owner: Justin
   Runbook: `DEPLOY.md`. No serverless execution ceiling — `maxDuration` exports are inert.
 - Money in **integer cents**; phones in **E.164** (`lib/phone.ts`); IDs are **ULIDs**.
 - Env access only via `lib/env.ts` (validated). Never read `process.env` directly.
-- **Stored credentials (`integration_credentials`) survived the Railway move but their
-  encryption key did not.** 8 rows — housecallpro, facebook, deepgram, twilio — are
-  ciphertext from a `CREDENTIALS_ENCRYPTION_KEY` nobody holds, so they are unrecoverable and
-  the app has been silently running on env fallbacks (which are correct, so nothing broke).
-  They are not harmless: they pin `/api/diagnostics` to `ok:false` permanently, which is how
-  a monitoring surface stops being read. Clear them, don't try to recover them.
-  `google_ads.refresh_token` DOES decrypt and DOES override env — it is the Data Manager
-  re-consent from 2026-08-10, and clearing it breaks the conversion exporter. In the UI the
-  dead rows and that live one look identical, which is why `POST /api/settings/credentials`
-  accepts `ADMIN_API_TOKEN` for **clearing only**.
+- **Credentials are ENV-ONLY as of 2026-08-12. `integration_credentials` is empty and should
+  stay that way.** The DB store still exists (resolver, spec, Settings) and DB values still
+  override env if any row is written — so writing one silently takes precedence over the
+  variable a deploy sets, which is the whole failure this removed. The Railway move carried
+  the rows over but not the `CREDENTIALS_ENCRYPTION_KEY`, leaving 8 undecryptable rows that
+  pinned `/api/diagnostics` to `ok:false` for weeks while the app ran on env fallbacks; the
+  9th (`google_ads.refresh_token`, the Data Manager re-consent) decrypted and shadowed env.
+  All were cleared once a `datamanager`-scoped token was minted into
+  `GOOGLE_ADS_REFRESH_TOKEN` and verified end-to-end via `/api/diagnostics/data-manager`.
+  `POST /api/settings/credentials` accepts `ADMIN_API_TOKEN` for **clearing only** — a token
+  can never set a value, since clearing can only fall back to env while setting could repoint
+  an integration at another account with the UI still showing every field as set.
+  **Re-consent is now manual**: OAuth Playground against the shared client with
+  `.../auth/adwords` + `.../auth/datamanager` typed into "Input your own scopes" (Data Manager
+  is not in its product list), then paste into Railway. Verify with a `grant_type=refresh_token`
+  exchange and read the returned `scope` before trusting it — a consent that silently omits
+  `datamanager` still returns a valid-looking token, and the exporter only fails later.
+  **Back up `CREDENTIALS_ENCRYPTION_KEY` anyway** — it is what a future stored secret would
+  depend on, and losing it is how this started.
 - DB client (`lib/db/client.ts`) is driver-switchable via `DB_DRIVER`: `pg` (default,
   long-lived node-postgres pool — supports the interactive txn Phase 4 DNI leasing needs)
   or `neon-http` (stateless HTTPS, for serverless/edge or TCP-blocked networks).
@@ -273,6 +282,17 @@ re-argued rather than assumed.
   mint a parallel source. It also maps `utm_source=adwords` to `google/cpc` on the source
   alone: the mediums beside it are prose, and those URLs stay bookmarked and cached long after
   the templates that minted them are fixed.
+- **Pool capacity is set by HOLD TIME, not pool size** — `LEASE_MINUTES` ÷ numbers is how many
+  visitors an hour the pool can serve, and the lease window is pushed forward on every pageview,
+  so it is idle time after the LAST one. At 30 minutes the 5 numbers served ~7.5 visitors/hour
+  against a measured peak of 9 (GA4, 14 days), so the pool sat exhausted through busy hours and
+  those visitors got the static fallback — which is the site's own published number, so their
+  sessions are indistinguishable from untracked direct traffic. Cut to 15 on 2026-08-12.
+  **Reach for hold time before buying numbers:** CallRail's published rule (pool = peak hourly
+  visitors ÷ 4, min 4) returns 4 for Arbor, so 5 numbers was never the constraint — it ran the
+  same 5 for the same traffic without exhausting. `exhausted` in `/api/diagnostics` is the
+  signal; if it returns, `MAX_ACTIVE_LEASES_PER_VISITOR = 2` is the next lever (CallRail
+  assigns one per session).
 - DNI leasing draws only from pools flagged `pools.is_dni`, so a number provisioned for a mailer
   (default pool `reserved`) can't be handed to website visitors before it's marked static.
   `number_assignments_active_idx` is UNIQUE — one active lease per number — and `leaseNumber`
