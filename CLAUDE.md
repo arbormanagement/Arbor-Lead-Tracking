@@ -239,6 +239,23 @@ re-argued rather than assumed.
   someone contacting the business, so it threads and shows in `/inbox` — it just never
   becomes a lead, so it stays out of ROI either way.
 - Spend sync is self-healing (`lib/sync/spend.ts`): rolling 35-day re-pull (platforms restate) + automatic cold-start backfill reaching to each platform's earliest lead (≤365d — spend with no leads to match is deliberately not fetched), keyed `(platform, external_campaign_id, date)`. No manual backfills.
+- **The ad platforms' UTM templates are part of this app's input contract, and they drifted
+  (audited + fixed 2026-08-12).** Google Ads applies the most specific tracking template only —
+  ad > ad group > campaign > account — so an ad-group template silently defeats a correct
+  campaign one. Arbor's four ad groups emitted `utm_source=adwords&utm_medium=<ad group prose>`
+  and the account default emitted `utm_medium={adname}`, which is not a real ValueTrack
+  parameter and passed through literally. All five are now consolidated into one campaign-level
+  template on `Search | Tree Services` (23633267649). **`utm_campaign` must carry
+  `{campaignname}`, NOT `{campaignid}`** — `/api/twilio/voice` links a lease to a campaign by
+  matching `campaigns.name`, so an id there resolves to null. The account-level default still
+  holds the old `{adname}` string and can only be edited in the Google Ads UI (no API tool);
+  it is shadowed for every live campaign, so it bites only a campaign created without its own.
+- Both Google Business Profiles link to the site as `utm_source=google+my+business` — which
+  arrives as `"google my business"`, since `+` decodes to a space. `classifySource` therefore
+  compares utm values **squashed** to letters and digits, so a spelling change in a tag can't
+  mint a parallel source. It also maps `utm_source=adwords` to `google/cpc` on the source
+  alone: the mediums beside it are prose, and those URLs stay bookmarked and cached long after
+  the templates that minted them are fixed.
 - DNI leasing draws only from pools flagged `pools.is_dni`, so a number provisioned for a mailer
   (default pool `reserved`) can't be handed to website visitors before it's marked static.
   `number_assignments_active_idx` is UNIQUE — one active lease per number — and `leaseNumber`
