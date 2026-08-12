@@ -178,25 +178,19 @@ export async function GET(req: Request) {
     .from(calls);
 
   // ── Configuration sanity ────────────────────────────────────────────────────
-  const creds: Record<string, { configured: string[]; missing: string[]; undecryptable: string[]; dbOverridesEnv: string[] }> = {};
+  // Credentials resolve from env only (the DB store was removed 2026-08-12), so a field is
+  // set or it isn't — there is no third state where a stored value silently outranks env.
+  // `missing` names the env var to set rather than the internal key, since that is the thing
+  // an operator has to go and change.
+  const creds: Record<string, { configured: string[]; missing: string[] }> = {};
   for (const spec of CREDENTIAL_SPECS) {
     const platform = spec.platform;
     const status = await credentialStatus(platform);
     creds[platform] = {
       configured: status.filter((f) => f.set).map((f) => f.key),
-      missing: status.filter((f) => !f.set && !f.undecryptable).map((f) => f.key),
-      // Stored but unreadable. Reporting these as merely "missing" is wrong in the
-      // way that matters: it reads as "never configured" when the truth is "you
-      // configured it, and the app cannot see it".
-      undecryptable: status.filter((f) => f.undecryptable).map((f) => f.key),
-      // Stored value decrypts and differs from env — the database is what the app
-      // uses here. After restoring an encryption key, these are exactly the fields
-      // whose live value just changed.
-      dbOverridesEnv: status.filter((f) => f.dbOverridesEnv).map((f) => f.key),
+      missing: status.filter((f) => !f.set).map((f) => f.envKey ?? f.key),
     };
   }
-
-  const undecryptableTotal = Object.values(creds).reduce((n, c) => n + c.undecryptable.length, 0);
 
   const config = {
     // Which commit is actually serving this request. Merging is not deploying,
@@ -212,7 +206,6 @@ export async function GET(req: Request) {
     twilioAuthTokenSet: creds.twilio?.configured.includes("auth_token") ?? false,
     adminApiTokenSet: !!env.ADMIN_API_TOKEN,
     cronSecretSet: !!env.CRON_SECRET,
-    credentialEncryptionKeySet: !!env.CREDENTIALS_ENCRYPTION_KEY,
     dbDriver: env.DB_DRIVER,
     businessTimezone: BUSINESS_TZ,
     businessDateToday: businessDate(now),
@@ -225,29 +218,6 @@ export async function GET(req: Request) {
   }
   if (!config.twilioAuthTokenSet) {
     warnings.push("Twilio auth token is not set — /api/twilio/status and /recording fail closed, so no recording will ever persist");
-  }
-  if (undecryptableTotal > 0) {
-    const platforms = Object.entries(creds)
-      .filter(([, c]) => c.undecryptable.length)
-      .map(([p, c]) => `${p} (${c.undecryptable.join(", ")})`)
-      .join("; ");
-    warnings.push(
-      `${undecryptableTotal} stored credential(s) cannot be decrypted with the current ` +
-        `CREDENTIALS_ENCRYPTION_KEY — the app is silently running on env fallbacks, and anything ` +
-        `saved in Settings is NOT taking effect: ${platforms}`,
-    );
-  }
-  const overrideTotal = Object.values(creds).reduce((n, c) => n + c.dbOverridesEnv.length, 0);
-  if (overrideTotal > 0 && undecryptableTotal === 0) {
-    const where = Object.entries(creds)
-      .filter(([, c]) => c.dbOverridesEnv.length)
-      .map(([p, c]) => `${p} (${c.dbOverridesEnv.join(", ")})`)
-      .join("; ");
-    warnings.push(
-      `${overrideTotal} credential(s) differ between the database and the environment, and the ` +
-        `DATABASE value is the one in use — verify these are current, since a stale stored value ` +
-        `now shadows a working env one: ${where}`,
-    );
   }
   if (pool.excludedFromRotation.length) {
     warnings.push(`${pool.excludedFromRotation.length} active non-static number(s) are not in a DNI pool and will never rotate`);
