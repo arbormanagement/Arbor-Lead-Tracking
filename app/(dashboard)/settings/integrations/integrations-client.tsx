@@ -54,7 +54,9 @@ export function PlatformCard({ platform }: { platform: Platform }) {
   return (
     <div className="card">
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-        <div style={{ fontWeight: 700, fontSize: 15 }}>{platform.label}</div>
+        {/* The page header already names the platform — repeating it here just reads as a
+            duplicate title. This row exists to hold Test. */}
+        <div style={{ fontWeight: 700, fontSize: 15 }}>Credentials</div>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
           {msg && <span style={{ color: msg.ok ? "var(--accent)" : "var(--danger)", fontSize: 13 }}>{msg.text}</span>}
           <button onClick={test} disabled={testing} style={btn()}>
@@ -69,11 +71,29 @@ export function PlatformCard({ platform }: { platform: Platform }) {
           return (
             <div
               key={f.key}
-              style={{ display: "grid", gridTemplateColumns: "240px 1fr auto", gap: 10, alignItems: "baseline" }}
+              style={{
+                display: "grid",
+                // minmax(0,…) on the sized tracks so a long non-secret value (the OAuth client
+                // id is ~72 chars) wraps instead of forcing the grid wider than its card.
+                gridTemplateColumns: "minmax(120px, 220px) minmax(0, auto) minmax(0, 1fr)",
+                gap: 10,
+                alignItems: "baseline",
+              }}
             >
               <div style={{ color: "var(--muted)", fontSize: 13 }}>{f.label}</div>
-              <code style={{ fontSize: 11, color: "var(--muted)", wordBreak: "break-all" }}>{f.envKey ?? "—"}</code>
-              <div style={{ fontSize: 12, color: f.set ? "var(--muted)" : "var(--warn)", whiteSpace: "nowrap" }}>
+              {/* justifySelf matters: a grid child is blockified, so without it this chip
+                  stretches the full track and reads as an empty input on a read-only page. */}
+              <code style={{ fontSize: 11, color: "var(--muted)", justifySelf: "start", wordBreak: "break-all" }}>
+                {f.envKey ?? "—"}
+              </code>
+              <div
+                style={{
+                  fontSize: 12,
+                  color: f.set ? "var(--muted)" : "var(--warn)",
+                  textAlign: "right",
+                  wordBreak: "break-all",
+                }}
+              >
                 {f.set ? masked || "set" : "not set"}
               </div>
             </div>
