@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { getSession } from "@/lib/auth";
+import { authorizeAdmin, forbidden, unauthorized } from "@/lib/admin-auth";
 import { credentialEncryptionAvailable } from "@/lib/crypto";
 import { credentialStatus, getSpec, setCredential } from "@/lib/credentials";
 import { db } from "@/lib/db/client";
@@ -17,8 +17,8 @@ const Body = z.object({
 });
 
 export async function POST(req: Request) {
-  const session = await getSession();
-  if (!session) return Response.json({ error: "unauthorized" }, { status: 401 });
+  const auth = await authorizeAdmin(req);
+  if (!auth.ok) return unauthorized();
 
   if (!credentialEncryptionAvailable()) {
     return Response.json(
@@ -32,6 +32,23 @@ export async function POST(req: Request) {
 
   const spec = getSpec(parsed.data.platform);
   if (!spec) return Response.json({ error: "unknown platform" }, { status: 400 });
+
+  // A machine token may CLEAR a credential but never set one. The asymmetry is the
+  // point: clearing can only fall back to env, so the worst case is an integration
+  // reverting to the value the deploy already trusts — while setting one could
+  // silently repoint an integration at a different account, with the UI still
+  // reporting every field as set. Same split `/api/numbers` draws between importing
+  // an owned number and buying one.
+  //
+  // Clearing is the half worth automating, because the case that needs it is a
+  // rotated CREDENTIALS_ENCRYPTION_KEY: every stored secret goes undecryptable at
+  // once, and the repair is to delete rows that are already dead weight. Dull,
+  // precise, and easy to get wrong by hand — an undecryptable row and a working one
+  // look identical in Settings, so clearing the wrong field takes a live integration
+  // down while looking exactly like the fix.
+  if (auth.via === "token" && Object.values(parsed.data.values).some((v) => v.trim() !== "")) {
+    return forbidden("token auth may only clear credentials; setting one requires a signed-in admin");
+  }
 
   const allowed = new Set(spec.fields.map((f) => f.key));
   try {

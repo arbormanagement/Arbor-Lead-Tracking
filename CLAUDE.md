@@ -49,6 +49,16 @@ Edwardsville + O'Fallon). WhatConverts-style. Single-tenant. Owner: Justin
   Runbook: `DEPLOY.md`. No serverless execution ceiling — `maxDuration` exports are inert.
 - Money in **integer cents**; phones in **E.164** (`lib/phone.ts`); IDs are **ULIDs**.
 - Env access only via `lib/env.ts` (validated). Never read `process.env` directly.
+- **Stored credentials (`integration_credentials`) survived the Railway move but their
+  encryption key did not.** 8 rows — housecallpro, facebook, deepgram, twilio — are
+  ciphertext from a `CREDENTIALS_ENCRYPTION_KEY` nobody holds, so they are unrecoverable and
+  the app has been silently running on env fallbacks (which are correct, so nothing broke).
+  They are not harmless: they pin `/api/diagnostics` to `ok:false` permanently, which is how
+  a monitoring surface stops being read. Clear them, don't try to recover them.
+  `google_ads.refresh_token` DOES decrypt and DOES override env — it is the Data Manager
+  re-consent from 2026-08-10, and clearing it breaks the conversion exporter. In the UI the
+  dead rows and that live one look identical, which is why `POST /api/settings/credentials`
+  accepts `ADMIN_API_TOKEN` for **clearing only**.
 - DB client (`lib/db/client.ts`) is driver-switchable via `DB_DRIVER`: `pg` (default,
   long-lived node-postgres pool — supports the interactive txn Phase 4 DNI leasing needs)
   or `neon-http` (stateless HTTPS, for serverless/edge or TCP-blocked networks).
@@ -106,8 +116,15 @@ things from it that constrain this codebase:
   recording was ever persisted. Calls still connected, so nothing surfaced in the app.
   **Diagnostic:** Twilio's Monitor Alerts API logs every non-2xx webhook response as error
   11200/15003 — `GET https://monitor.twilio.com/v1/Alerts?StartDate=…`. Railway logs showed
-  nothing. Check it after any webhook or credential change; zero alerts is the pass
-  condition.
+  nothing. Check it after any webhook or credential change. **The pass condition is zero
+  11200/15003, not zero alerts.** A steady trickle of **32021** (SHAKEN/STIR: "'dest' value
+  specified in PASSporT claim does not match SIP To header value") is expected and is not
+  actionable: it fires on the INBOUND leg, where the originating carrier signed the call for
+  the number the caller actually dialed. When an intermediary forwards that call on to a
+  tracking number, the SIP To header no longer matches what was signed — a mismatch by
+  construction. Hence most of them landing on the LSA number (Google forwards LSA calls) and
+  a few on the ported published numbers. Verified 2026-08-12 against the four most recent:
+  every one `completed`, 35–354s. Nothing in this codebase signs those legs.
 - CallRail is **not cancelled** — recordings still need archiving, and the Google Ads + GA4
   conversion integrations still need rebuilding on the app's own actions. See
   `callrail-migration/conversion-signal-gate.md` in `arbor-general`.
