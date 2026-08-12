@@ -3,7 +3,8 @@ import { authorizeAdmin, unauthorized } from "@/lib/admin-auth";
 import { credentialStatus } from "@/lib/credentials";
 import { CREDENTIAL_SPECS } from "@/lib/credentials/spec";
 import { db } from "@/lib/db/client";
-import { calls, conversionExports, leads, numberAssignments, pools, syncRuns, trackingNumbers } from "@/lib/db/schema";
+import { calls, conversionExports, leads, numberAssignments, pools, syncRuns, trackingNumbers, webSessions } from "@/lib/db/schema";
+import { isLikelyBot } from "@/lib/bot";
 import { env } from "@/lib/env";
 import { businessDate, BUSINESS_TZ } from "@/lib/tz";
 import { MAX_EXPORT_ATTEMPTS } from "@/lib/sync/conversions";
@@ -160,6 +161,27 @@ export async function GET(req: Request) {
     .orderBy(desc(sql`count(*)`))
     .limit(10);
 
+  // ── Crawler share of web sessions ───────────────────────────────────────────
+  // The DNI pool kept exhausting and bot traffic was the leading suspect, but nothing
+  // recorded WHAT was asking for a number, so the theory could be neither confirmed nor
+  // killed. user_agent is captured on pageview now; this turns it into a number. Classified
+  // in JS with the same predicate /api/dni/assign gates on, so the two cannot drift.
+  const recentSessions = await db
+    .select({ userAgent: webSessions.userAgent, createdAt: webSessions.createdAt })
+    .from(webSessions)
+    .where(gte(webSessions.createdAt, dayAgo))
+    .limit(5000);
+  const botSessions = recentSessions.filter((r) => isLikelyBot(r.userAgent)).length;
+  const unknownUa = recentSessions.filter((r) => r.userAgent === null).length;
+  const traffic = {
+    sessions24h: recentSessions.length,
+    botSessions24h: botSessions,
+    botShare: recentSessions.length ? Math.round((botSessions / recentSessions.length) * 100) : 0,
+    // Rows written before user_agent was captured — they read as bots to the predicate, so
+    // botShare is only meaningful once this reaches zero.
+    noUserAgentRecorded: unknownUa,
+  };
+
   // ── Ingest volume: has anything actually arrived? ───────────────────────────
   const [vol] = await db
     .select({
@@ -264,6 +286,7 @@ export async function GET(req: Request) {
     jobs,
     abandonedExports,
     failingExports,
+    traffic,
     volume: { ...vol, ...callVol },
     credentials: creds,
   });
