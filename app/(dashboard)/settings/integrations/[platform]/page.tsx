@@ -1,37 +1,18 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { credentialStatus, getSpec } from "@/lib/credentials";
-import { credentialEncryptionAvailable } from "@/lib/crypto";
-import { redirectUri } from "@/lib/integrations/google-oauth";
 import { PlatformCard } from "../integrations-client";
 
 export const dynamic = "force-dynamic";
 
-export default async function IntegrationDetailPage({
-  params,
-  searchParams,
-}: {
-  params: Promise<{ platform: string }>;
-  searchParams: Promise<Record<string, string | string[] | undefined>>;
-}) {
+export default async function IntegrationDetailPage({ params }: { params: Promise<{ platform: string }> }) {
   const { platform } = await params;
   const spec = getSpec(platform);
   if (!spec) notFound();
 
-  const sp = await searchParams;
-  const oauthStatus = typeof sp.google_oauth === "string" ? sp.google_oauth : null;
-  const oauthMessage = typeof sp.message === "string" ? sp.message : null;
-
-  const encryptionOn = credentialEncryptionAvailable();
   const platformData = {
     platform: spec.platform,
     label: spec.label,
-    fields: spec.fields.map((f) => ({
-      key: f.key,
-      label: f.label,
-      secret: !!f.secret,
-      placeholder: f.placeholder ?? "",
-    })),
     status: await credentialStatus(spec.platform),
   };
 
@@ -43,66 +24,51 @@ export default async function IntegrationDetailPage({
             ← Integrations
           </Link>
           <h1 className="page-title" style={{ marginTop: 4 }}>{spec.label}</h1>
-          <p className="page-sub">Platform API credentials — encrypted at rest.</p>
+          <p className="page-sub">
+            Read-only. Values come from Railway environment variables on the <code>web</code> service —
+            edit them there, then redeploy. <strong>Test</strong> calls the provider, which is the only
+            way to tell a working credential from a merely present one.
+          </p>
         </div>
       </div>
 
-      {!encryptionOn && (
-        <div className="empty" style={{ marginBottom: 20 }}>
-          Set <code>CREDENTIALS_ENCRYPTION_KEY</code> in the environment to store credentials in-app.
-          Until then values are read from env only and saving is disabled.
-        </div>
-      )}
-
       {spec.platform === "google_ads" && (
         <div className="card pad" style={{ marginBottom: 20 }}>
-          <h2 style={{ fontSize: 14, margin: "0 0 6px" }}>Connect with Google</h2>
-          <p className="muted" style={{ fontSize: 12, margin: "0 0 10px", lineHeight: 1.5 }}>
-            Mints a refresh token with both <code>adwords</code> (spend + reporting) and{" "}
-            <code>datamanager</code> (offline conversion export) and stores it encrypted. Consent is
-            incremental, so scopes you have already granted are kept. Offline conversion export cannot
-            work without the second scope — the token currently in use only has the first.
-          </p>
-          {oauthStatus && (
-            <div
-              style={{
-                marginBottom: 10,
-                fontSize: 12,
-                lineHeight: 1.5,
-                padding: "9px 11px",
-                borderRadius: "var(--radius-sm)",
-                border: "1px solid var(--border)",
-                color: oauthStatus === "ok" ? "var(--accent)" : "var(--danger)",
-                wordBreak: "break-word",
-              }}
-            >
-              <strong>{oauthStatus === "ok" ? "Connected" : "Not connected"}</strong>
-              {oauthMessage ? ` — ${oauthMessage}` : null}
-            </div>
-          )}
-          <a className="btn" href="/api/oauth/google/start">
-            Connect Google Ads
-          </a>
-          <p className="muted" style={{ fontSize: 11, marginTop: 10, lineHeight: 1.6 }}>
-            <strong>One-time setup, still required:</strong> this exact URI must be listed under{" "}
-            <em>Authorized redirect URIs</em> on the OAuth client in{" "}
+          <h2 style={{ fontSize: 14, margin: "0 0 6px" }}>Replacing the refresh token</h2>
+          <p className="muted" style={{ fontSize: 12, margin: 0, lineHeight: 1.6 }}>
+            There is no Connect button — the in-app OAuth flow was removed with the credential store,
+            because it could only write somewhere nothing reads any more. To mint a replacement, run
+            consent in the{" "}
             <a
-              href="https://console.cloud.google.com/apis/credentials"
+              href="https://developers.google.com/oauthplayground"
               target="_blank"
               rel="noreferrer"
               style={{ color: "var(--accent)" }}
             >
-              Google Cloud Console → Credentials
-            </a>
-            . Verified against Google on 2026-08-10: it is <em>not</em> registered yet, so Connect will
-            fail with <code>redirect_uri_mismatch</code> until it is added.
+              OAuth Playground
+            </a>{" "}
+            against this account&apos;s client, then paste the refresh token into{" "}
+            <code>GOOGLE_ADS_REFRESH_TOKEN</code>.
             <br />
-            <code style={{ wordBreak: "break-all" }}>{redirectUri()}</code>
+            <br />
+            Both scopes are required and must be typed into <em>Input your own scopes</em> — Data
+            Manager is not in the Playground&apos;s product list, and a consent that silently omits it
+            still returns a valid-looking token that only fails later, at export time:
+            <br />
+            <code style={{ wordBreak: "break-all" }}>
+              https://www.googleapis.com/auth/adwords https://www.googleapis.com/auth/datamanager
+            </code>
+            <br />
+            <br />
+            Verify before trusting it: <code>/api/diagnostics/data-manager</code> validates against
+            Google without recording anything. <strong>Never revoke the grant</strong> to force a fresh
+            token — the OAuth client is shared with the Arbor MCP server, and revoking kills its token
+            too.
           </p>
         </div>
       )}
 
-      <PlatformCard platform={platformData} canSave={encryptionOn} />
+      <PlatformCard platform={platformData} />
     </>
   );
 }

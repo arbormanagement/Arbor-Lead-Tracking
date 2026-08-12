@@ -1,12 +1,9 @@
 import Link from "next/link";
 import { CREDENTIAL_SPECS, credentialStatus } from "@/lib/credentials";
-import { credentialEncryptionAvailable } from "@/lib/crypto";
 
 export const dynamic = "force-dynamic";
 
 export default async function IntegrationsPage() {
-  const encryptionOn = credentialEncryptionAvailable();
-
   const platforms = await Promise.all(
     CREDENTIAL_SPECS.map(async (s) => {
       const status = await credentialStatus(s.platform);
@@ -26,17 +23,12 @@ export default async function IntegrationsPage() {
         <div>
           <h1 className="page-title">Integrations</h1>
           <p className="page-sub">
-            Platform API credentials — encrypted at rest. Twilio + database secrets stay in env.
+            Read-only status. Every credential comes from a Railway environment variable on the{" "}
+            <code>web</code> service — there is no in-app store, so there is exactly one place a value
+            can come from. Open a platform to see which variable backs each field, and to test it.
           </p>
         </div>
       </div>
-
-      {!encryptionOn && (
-        <div className="empty" style={{ marginBottom: 20 }}>
-          Set <code>CREDENTIALS_ENCRYPTION_KEY</code> in the environment to store credentials in-app.
-          Until then values are read from env only and saving is disabled.
-        </div>
-      )}
 
       <div className="cards">
         {platforms.map((p) => {

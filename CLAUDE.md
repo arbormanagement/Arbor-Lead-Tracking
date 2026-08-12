@@ -49,25 +49,27 @@ Edwardsville + O'Fallon). WhatConverts-style. Single-tenant. Owner: Justin
   Runbook: `DEPLOY.md`. No serverless execution ceiling — `maxDuration` exports are inert.
 - Money in **integer cents**; phones in **E.164** (`lib/phone.ts`); IDs are **ULIDs**.
 - Env access only via `lib/env.ts` (validated). Never read `process.env` directly.
-- **Credentials are ENV-ONLY as of 2026-08-12. `integration_credentials` is empty and should
-  stay that way.** The DB store still exists (resolver, spec, Settings) and DB values still
-  override env if any row is written — so writing one silently takes precedence over the
-  variable a deploy sets, which is the whole failure this removed. The Railway move carried
-  the rows over but not the `CREDENTIALS_ENCRYPTION_KEY`, leaving 8 undecryptable rows that
-  pinned `/api/diagnostics` to `ok:false` for weeks while the app ran on env fallbacks; the
-  9th (`google_ads.refresh_token`, the Data Manager re-consent) decrypted and shadowed env.
-  All were cleared once a `datamanager`-scoped token was minted into
-  `GOOGLE_ADS_REFRESH_TOKEN` and verified end-to-end via `/api/diagnostics/data-manager`.
-  `POST /api/settings/credentials` accepts `ADMIN_API_TOKEN` for **clearing only** — a token
-  can never set a value, since clearing can only fall back to env while setting could repoint
-  an integration at another account with the UI still showing every field as set.
-  **Re-consent is now manual**: OAuth Playground against the shared client with
+- **Credentials are ENV-ONLY (2026-08-12). There is no in-app credential store — don't add one
+  back without reading this.** `lib/credentials` resolves purely from `lib/env.ts`; the DB
+  store, its AES-GCM envelope (`lib/crypto.ts`), `CREDENTIALS_ENCRYPTION_KEY`, the write route
+  and the Google Connect OAuth flow are all deleted. The reason is precedence, not encryption:
+  a stored row silently outranked the variable a deploy sets, so the two could disagree with
+  nothing on screen saying which was live. The Railway move carried the rows over but not the
+  key, leaving 8 undecryptable rows that pinned `/api/diagnostics` to `ok:false` for weeks
+  while the app ran on env fallbacks, plus `google_ads.refresh_token` which decrypted and
+  shadowed env. **Side effect worth keeping: credential resolution no longer touches the DB,
+  so it cannot fail on a blip — which matters because `/api/twilio/voice` must answer in <3s
+  and `/status` + `/sms` fail CLOSED on an unresolvable auth token.**
+  The `integration_credentials` table is still in the schema, empty, and read by nothing.
+  **Re-consent for Google is now manual**: OAuth Playground against the shared client with
   `.../auth/adwords` + `.../auth/datamanager` typed into "Input your own scopes" (Data Manager
-  is not in its product list), then paste into Railway. Verify with a `grant_type=refresh_token`
-  exchange and read the returned `scope` before trusting it — a consent that silently omits
-  `datamanager` still returns a valid-looking token, and the exporter only fails later.
-  **Back up `CREDENTIALS_ENCRYPTION_KEY` anyway** — it is what a future stored secret would
-  depend on, and losing it is how this started.
+  is not in its product list), then paste into `GOOGLE_ADS_REFRESH_TOKEN`. Verify with a
+  `grant_type=refresh_token` exchange and READ the returned `scope` — a consent that silently
+  omits `datamanager` still returns a valid-looking token, and the exporter only fails later.
+  Then confirm end-to-end with `/api/diagnostics/data-manager` (validateOnly, records nothing).
+  **Never revoke the grant** to force a fresh token: the OAuth client is shared with the Arbor
+  MCP server. Settings → Integrations is read-only status plus **Test**, which calls each
+  provider — the only way to tell a working credential from a merely present one.
 - DB client (`lib/db/client.ts`) is driver-switchable via `DB_DRIVER`: `pg` (default,
   long-lived node-postgres pool — supports the interactive txn Phase 4 DNI leasing needs)
   or `neon-http` (stateless HTTPS, for serverless/edge or TCP-blocked networks).
