@@ -73,19 +73,14 @@ export function PlatformCard({ platform }: { platform: Platform }) {
               key={f.key}
               style={{
                 display: "grid",
-                // minmax(0,…) on the sized tracks so a long non-secret value (the OAuth client
-                // id is ~72 chars) wraps instead of forcing the grid wider than its card.
-                gridTemplateColumns: "minmax(120px, 220px) minmax(0, auto) minmax(0, 1fr)",
+                // minmax(0,…) so a long non-secret value (the OAuth client id is ~72 chars)
+                // wraps instead of forcing the grid wider than its card.
+                gridTemplateColumns: "minmax(120px, 260px) minmax(0, 1fr)",
                 gap: 10,
                 alignItems: "baseline",
               }}
             >
               <div style={{ color: "var(--muted)", fontSize: 13 }}>{f.label}</div>
-              {/* justifySelf matters: a grid child is blockified, so without it this chip
-                  stretches the full track and reads as an empty input on a read-only page. */}
-              <code style={{ fontSize: 11, color: "var(--muted)", justifySelf: "start", wordBreak: "break-all" }}>
-                {f.envKey ?? "—"}
-              </code>
               <div
                 style={{
                   fontSize: 12,
@@ -94,7 +89,11 @@ export function PlatformCard({ platform }: { platform: Platform }) {
                   wordBreak: "break-all",
                 }}
               >
-                {f.set ? masked || "set" : "not set"}
+                {/* The env var name is only worth screen space when it is the thing you have to
+                    go and do something about. On a configured field it is noise — you are not
+                    going to edit it from here, and repeating it on every row made a read-only
+                    page look like a form. */}
+                {f.set ? masked || "set" : <>not set — set <code style={{ fontSize: 11 }}>{f.envKey ?? f.key}</code></>}
               </div>
             </div>
           );

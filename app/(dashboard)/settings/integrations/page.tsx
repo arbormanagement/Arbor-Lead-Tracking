@@ -25,7 +25,7 @@ export default async function IntegrationsPage() {
           <p className="page-sub">
             Read-only status. Every credential comes from a Railway environment variable on the{" "}
             <code>web</code> service — there is no in-app store, so there is exactly one place a value
-            can come from. Open a platform to see which variable backs each field, and to test it.
+            can come from. Open a platform to test that its credentials actually authenticate.
           </p>
         </div>
       </div>
