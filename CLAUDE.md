@@ -267,6 +267,39 @@ Call (7054686637) last received data 2026-08-07, the day before cutover — both
 ENABLED and still `primaryForGoal: true`, so they inflate any trailing-30-day total that
 reaches back past 08-07, but they are not an ongoing double-count.
 
+### "Estimate created" is NOT a quality gate in this HCP account
+The obvious reading of the stage list — lead is a proxy, an estimate means the office
+judged the job worth pricing — is wrong here, and it is worth knowing before anyone
+promotes `qualified` on that reasoning (asked and checked 2026-08-12).
+
+An HCP estimate is created **at intake, when the office books the visit**. Its `work_status`
+is an appointment lifecycle, not a pricing decision: `needs scheduling`, `scheduled`,
+`in progress`, `complete unrated/rated`, `user canceled`, `created job from estimate`.
+Sampled 100 estimates spanning 08-06→08-12 — roughly 16/day, and that is a capped page so
+it is a floor — of which 17 were `user canceled` and 10 became jobs.
+
+Two independent lines of evidence say Estimate Created carries almost the same information
+as Lead Created: the intake semantics above, and the ad data running exactly 1:1 (08-08
+1/1, 08-09 1/1, 08-10 2.19/2.22, 08-11 3/3). A real qualification gate would show attrition
+between the two stages. There is none. **So bidding on `qualified` buys the same
+conversions several hours later, plus a dependency on office data entry** — strictly worse
+than `lead`, which is already spam-filtered and (for calls) gated on classifier
+`is_lead = true`, so it is not raw call volume either.
+
+**The stage that actually discriminates is `scheduled`** — the customer committed to a
+date — and unlike `won` its volume supports bidding: ~1.5/day post-cutover (~45/month)
+against `lead`'s ~1.8/day. That makes it the candidate to promote, NOT `qualified`.
+Before it can be, fix its timestamp: `scheduled` is dated from the estimate's APPOINTMENT
+time and clamped to `now` at `lib/sync/conversions.ts`, so it currently lands at export
+time rather than at booking time. Tolerable for an observation signal inside the 90-day
+window; not something to bid on.
+
+**Do not re-decide this on <2 weeks of data.** Click-id capture only began at the 08-08
+cutover, so nothing before that ever exported — every figure above rests on four days.
+All four actions keep reporting regardless of which one bids, so waiting costs nothing,
+and changing the biddable signal twice in one week gives Smart Bidding two overlapping
+learning periods and no attributable result.
+
 **Revisit when:** won-estimate conversions are sustained (roughly 30+/month) — at that
 point Estimate Won becomes a candidate for value-based bidding and this ranking should be
 re-argued rather than assumed.
