@@ -3,27 +3,59 @@
 Sends qualified/won leads (with dollar value) back to the ad platforms so bidding
 can optimize toward **won revenue**, not just raw lead volume.
 
-## Status (2026-07-27)
+## Status (2026-08-11)
 
 - **Meta — live.** Pixel/dataset id configured; the hourly job has sent 103 `Lead`
-  and 15 `Purchase` events with zero errors. Every one matched by `leadgen_id`
-  (all paid leads today are Meta lead forms).
-- **Google — configured but idle.** "Estimate Created"/"Estimate Won" show 0
-  conversions because **no lead carries a `gclid`** — Google traffic isn't landing
-  through `track.js` yet. The blocker is web-tracking rollout, not this job.
+  and 15 `Purchase` events with zero errors, matched by `leadgen_id`.
+- **Google — live since 2026-08-08.** `track.js` took over the same day CallRail's
+  numbers transferred, and Google Ads shows the app's own actions firing from
+  08-08: `Lead Created`, `Estimate Created`, `Estimate Scheduled` and one
+  `Estimate Won`. The July note below ("configured but idle, no lead carries a
+  `gclid`") described the pre-`track.js` state and no longer holds. Two live
+  caveats:
+  - **Values are sparse.** Only ~4 of 19 uploaded conversions carried a non-zero
+    value in the first days, and `Estimate Won` ($325) came in below
+    `Estimate Created` ($350) and `Estimate Scheduled` ($1,575). Uploading `$0`
+    is worse than uploading nothing once anything bids on value — verify the
+    per-stage value mapping before switching to Maximize Conversion Value.
+  - **Double-counting is a Google-side setting, and is currently on.** `Lead
+    Created` and `Estimate Created` are both `primary_for_goal`, and one customer
+    legitimately fires both, so the same lead counts twice in bidding. This job is
+    right to report each stage once; the account has to pick which one bids.
 
 ## How it works
 
 - **Trigger:** the hourly attribution run flips a lead `new → qualified → won`.
 - **Job:** `conversions.export` (`lib/sync/conversions.ts`) — cron `/api/cron/conversions`
   hourly at `:37` (after attribution at `:22`); manual `POST /api/sync/conversions`.
-- **Matching:** only leads that came from a paid click (or a Meta lead form) are
-  eligible — `gclid`/`gbraid`/`wbraid` → Google Ads, `fbclid` or `leadgen_id` → Meta.
-  `gbraid`/`wbraid` are the iOS/Safari click ids Google substitutes for `gclid`;
-  exactly one identifier goes on each upload, and Google rejects them alongside
-  `user_identifiers`, which we never send. Pooled-DNI call leads inherit the click
-  id from their number lease (`number_assignments`). Organic/GBP/direct leads have
-  no identifier and are correctly never uploaded.
+- **Matching:** `gclid`/`gbraid`/`wbraid` → Google Ads, `fbclid` or `leadgen_id` → Meta.
+  `gbraid`/`wbraid` are the iOS/Safari click ids Google substitutes for `gclid`.
+  Pooled-DNI call leads inherit the click id from their number lease
+  (`number_assignments`). Organic/GBP/direct leads have no identifier and are
+  correctly never uploaded. **Since the Data Manager migration a click id and
+  hashed user identifiers ride the SAME event** (the old endpoint rejected that
+  pairing), so hashed email/phone now go on every Google upload to widen the match.
+- **No-click-id fallback for paid Google sources** — `USER_DATA_FALLBACK_SOURCES`
+  in `lib/sync/conversions.ts`. A lead whose source is `google/cpc` but which
+  carries no click id still exports, matched on hashed email/phone alone.
+  This exists because **"no click id ⇒ not from the ad" is false for a static
+  tracking number wired straight to a Google ad.** `+16184145907` is the call-only /
+  call-extension asset on campaign `23633267649` (plus account-level asset
+  `172222076754`), so a call to it can *only* have come from a Google ad — yet
+  static numbers hold no DNI lease (`resolveInboundAttribution` returns
+  `lease: null`), so there is no gclid to inherit and every one of those ~24
+  calls/month was silently skipped. Google still counted them natively via its own
+  `Calls from ads` action, but that action is value-1-per-call, so the won-estimate
+  dollars never arrived — exactly the signal this job exists to deliver. The
+  fallback also rescues paid web leads whose gclid was lost to an ad blocker or a
+  stripped referrer.
+  The allowlist is deliberately narrow — **not** "any lead with a phone". Organic,
+  GBP, direct and referral leads lack a click id because they genuinely were not
+  sent by an ad; uploading them invites Google to take credit for traffic it never
+  sent. **`google/lsa` is deliberately excluded**: LSA numbers are static and have
+  the identical problem, but LSA bidding does not run through these conversion
+  actions, and a hashed phone can match a Search click by the same person —
+  crediting Search for an LSA lead. Add it as a deliberate decision, not a default.
 - **Events:** `qualified` (value = quote) and `won` (value = approved amount).
   Google → two conversion actions; Meta → `Lead` / `Purchase`.
 - **Conversion time** is the HCP estimate's created/approved timestamp, not the lead
@@ -94,6 +126,13 @@ that ages past that never exports. Three ceilings sit above ours:
 
 ## Known limitations (v1)
 
-- Google Enhanced Conversions for Leads (hashed email/phone fallback when no click
+- ~~Google Enhanced Conversions for Leads (hashed email/phone fallback when no click
   id) is not implemented; only click-id matching. This is intentional — no click id
-  means the lead didn't come from the ad, so it shouldn't be uploaded anyway.
+  means the lead didn't come from the ad, so it shouldn't be uploaded anyway.~~
+  **Resolved 2026-08-11.** Two things made the old rationale wrong. The Data Manager
+  migration removed the technical blocker (identifiers no longer have to travel
+  alone, and a `userData`-only event is valid — see the `"userData only"` probe
+  case). And the premise itself was false for static paid numbers: after the
+  CallRail transfer, `+16184145907` carries Google call-extension traffic with no
+  click id by construction. Scoped fallback added above; the "don't upload
+  non-ad traffic" instinct survives as the allowlist.
