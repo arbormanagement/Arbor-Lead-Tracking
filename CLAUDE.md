@@ -190,30 +190,73 @@ server-side dedup, which is what the bolted-on attempt cap was standing in for.
   account's customer-data terms accepted and the setting enabled on each conversion action
   first — uploads are accepted either way, so getting this wrong is invisible.
 
-### The conversion actions, and why nothing bids on them yet
+### The conversion actions, and what actually bids on them
 All four are `UPLOAD_CLICKS`, ENABLED, `clickThroughLookbackWindowDays: 90` — which
 exactly matches the exporter's 90-day window, so nothing is truncated at the far edge.
 
-| stage | id | Google Ads name | category |
-|---|---|---|---|
-| lead | 7714104423 | Lead Created | CONTACT |
-| qualified | 7695123530 | Estimate Created | QUALIFIED_LEAD |
-| scheduled | 7714132224 | Estimate Scheduled | BOOK_APPOINTMENT |
-| won | 7695519049 | Estimate Won | CONVERTED_LEAD |
+| stage | id | Google Ads name | category | `primaryForGoal` | bids on `Search \| Tree Services`? |
+|---|---|---|---|---|---|
+| lead | 7714104423 | Lead Created | CONTACT | true | **yes** |
+| qualified | 7695123530 | Estimate Created | QUALIFIED_LEAD | true | **yes — double-counts the lead** |
+| scheduled | 7714132224 | Estimate Scheduled | BOOK_APPOINTMENT | false | no |
+| won | 7695519049 | Estimate Won | CONVERTED_LEAD | false | no |
 
-**All four are `includeInConversionsMetric: false` — observation only.** Conversions will
-upload and appear in reports, and Smart Bidding will ignore every one of them. Fixing the
-transport does not by itself change a single bid.
+**⚠️ `includeInConversionsMetric: false` DOES NOT mean observation-only, and believing it
+did is what let a double-count run live.** All four actions carry that flag, and two of
+them are nevertheless in the Conversions column feeding `MAXIMIZE_CONVERSIONS`. The flag is
+the legacy account-goal switch; in the goal-based world what counts is the pair
+**(campaign's conversion goal for the action's CATEGORY is biddable) AND
+(`conversion_action.primary_for_goal`)**. Neither half is visible on the action row you'd
+naturally check.
+
+Verified 2026-08-12 on `Search | Tree Services` (23633267649, `MAXIMIZE_CONVERSIONS`,
+LAST_30_DAYS: 403 clicks, $7,352.67, `metrics.conversions` 77.410205). Segmenting by
+conversion action sums to that figure EXACTLY — Calls from ads 21 + First Time Phone Call
+16.002749 + Form Capture 26 + Estimate Created 7.216106 + Lead Created 7.19135. The three
+actions that contribute nothing (Repeat Phone Call, Estimate Scheduled, Estimate Won) are
+exactly the three with `primaryForGoal: false`. That correspondence is the proof; the
+`includeInConversionsMetric` flag predicts none of it.
+
+**Goals are keyed by CATEGORY, so a new action inherits whatever its category already
+had.** This campaign does not use the account defaults — it carries campaign-specific goals
+left over from CallRail, which made `CONTACT/WEBSITE` (then "First Time Phone Call") and
+`QUALIFIED_LEAD/WEBSITE` (then "Website Phone Call") biddable. Creating Lead Created as
+CONTACT and Estimate Created as QUALIFIED_LEAD dropped them straight into two live bidding
+goals. The account-level goals are a different set again (`CONVERTED_LEAD/WEBSITE` and
+`BOOK_APPOINTMENT/WEBSITE` biddable, `CONTACT`/`QUALIFIED_LEAD` not), so reading the
+account tells you nothing about this campaign — **always read
+`campaign_conversion_goal` for the campaign in question.**
+
+**The live double-count (2026-08-12):** every exported lead fires Lead Created AND Estimate
+Created, both biddable, so one customer counts twice. Daily since the 08-08 cutover —
+08-08 1/1, 08-09 1/1, 08-10 2.19/2.22, 08-11 3/3 — a clean 1:1, i.e. ~100% inflation of
+the signal `MAXIMIZE_CONVERSIONS` is spending against. A second, smaller overlap sits
+beside it: a call to the call-only asset `+16184145907` fires Google's native **Calls from
+ads** (biddable) and is ALSO exported by us as Lead Created via
+`USER_DATA_FALLBACK_SOURCES`, so those calls count twice too.
+
+None of this is an exporter bug. The exporter reports each stage once, dedupes on
+`transactionId`, and is doing exactly what it was built to do — **which stages are allowed
+to bid is a Google-side decision, and it was made by inheritance rather than deliberately.**
 
 **Decision (2026-08-10, Justin):** promote **Lead Created** to the biddable signal; leave
 Won as observation for now. Volume is the reason — 21 won leads against 211 qualified is
 far too thin for Smart Bidding to learn on won revenue, and a value-based strategy fed
-that sparsely optimizes noise.
+that sparsely optimizes noise. That decision is *satisfied* today; the problem is that
+Estimate Created came along uninvited.
 
-**Sequencing matters, and is deliberate:** promote only AFTER uploads are confirmed
-flowing. Flipping first means the 90-day backfill lands as a single spike into a live
-bidding signal, which reads as a sudden performance change that has nothing to do with the
-ads. Backfill while observation-only, confirm the counts, then promote.
+**Fix, when taken:** set the campaign conversion goal `QUALIFIED_LEAD/WEBSITE` to
+`biddable: false` on 23633267649 (`googleads_update_campaign_conversion_goal`). Prefer this
+over clearing `primary_for_goal` on the action — it is scoped to the one campaign, and it
+leaves Estimate Created reporting normally as the funnel-stage observation it was meant to
+be. Historical conversion counts are not restated, so the "Conversions" trend will step
+DOWN on the change date for reasons that have nothing to do with performance; note the date
+before reading the graph.
+
+**CallRail's actions stopped on their own.** Form Capture (7054757256) and First Time Phone
+Call (7054686637) last received data 2026-08-07, the day before cutover — both are still
+ENABLED and still `primaryForGoal: true`, so they inflate any trailing-30-day total that
+reaches back past 08-07, but they are not an ongoing double-count.
 
 **Revisit when:** won-estimate conversions are sustained (roughly 30+/month) — at that
 point Estimate Won becomes a candidate for value-based bidding and this ranking should be
