@@ -112,6 +112,68 @@ export async function getNewestAssignmentAtVisitorCap(vid: string): Promise<Leas
 }
 
 /**
+ * Hand back a number already leased to someone whose attribution is IDENTICAL to this
+ * visitor's, instead of spending a second number to say the same thing.
+ *
+ * The pool exists to tell SOURCES apart. Two visitors who both resolve to `direct` with no
+ * click id, no campaign and no keyword are already indistinguishable in every report the app
+ * produces — `roi_daily` keys on (date, source, campaign, location), and both would land on
+ * the same row. Giving them separate numbers buys nothing and consumes the capacity that a
+ * visitor arriving on a gclid genuinely needs, because that one cannot be shared with anybody.
+ *
+ * Checked BEFORE leasing, not as an exhaustion fallback. Sharing only on exhaustion would be
+ * too late to help — the numbers would already be spent — and it would make a visitor's
+ * displayed number depend on how full the pool happened to be when they landed.
+ *
+ * What this deliberately gives up: the shared caller's lead links to the other session's
+ * `landing_page`, since `/voice` resolves the newest assignment on the number. That is a
+ * coarser answer to "which page drove this call", never a wrong one to "which source did".
+ * Candidates on the same landing page are preferred first, so it usually costs nothing at all.
+ *
+ * A click id is never shared in either direction: it identifies one specific ad click, so two
+ * visitors behind it is a wrong answer rather than a coarse one.
+ */
+export async function findShareableLease(snap: AttributionSnapshot): Promise<LeaseResult | null> {
+  if (snap.gclid || snap.gbraid || snap.wbraid || snap.fbclid) return null;
+
+  // IS NOT DISTINCT FROM, because these columns are routinely null and `= null` is never true —
+  // plain equality would match nothing and silently disable sharing for exactly the direct /
+  // organic traffic it exists to serve.
+  const [row] = await db
+    .select({ id: numberAssignments.id, phone: trackingNumbers.phoneNumber })
+    .from(numberAssignments)
+    .innerJoin(trackingNumbers, eq(trackingNumbers.id, numberAssignments.trackingNumberId))
+    .where(
+      and(
+        isNull(numberAssignments.releasedAt),
+        gt(numberAssignments.expiresAt, new Date()),
+        isNull(numberAssignments.gclid),
+        isNull(numberAssignments.gbraid),
+        isNull(numberAssignments.wbraid),
+        isNull(numberAssignments.fbclid),
+        sql`${numberAssignments.source} IS NOT DISTINCT FROM ${snap.source ?? null}`,
+        sql`${numberAssignments.medium} IS NOT DISTINCT FROM ${snap.medium ?? null}`,
+        sql`${numberAssignments.campaign} IS NOT DISTINCT FROM ${snap.campaign ?? null}`,
+        sql`${numberAssignments.keyword} IS NOT DISTINCT FROM ${snap.keyword ?? null}`,
+      ),
+    )
+    .orderBy(sql`(${numberAssignments.landingPage} IS NOT DISTINCT FROM ${snap.landingPage ?? null}) DESC`, desc(numberAssignments.assignedAt))
+    .limit(1);
+
+  if (!row) return null;
+
+  // Push the window forward as if this were the holder's own pageview. Without it the number
+  // on a sharer's screen can expire mid-visit and be re-leased to someone else, which is the
+  // one way sharing could turn a coarse answer into a wrong one.
+  await db
+    .update(numberAssignments)
+    .set({ expiresAt: new Date(Date.now() + LEASE_MINUTES * 60_000) })
+    .where(eq(numberAssignments.id, row.id));
+
+  return { phoneNumber: row.phone, assignmentId: row.id, reused: true };
+}
+
+/**
  * Atomically lease a free number from the single shared website pool — every
  * non-static active number is part of one rotation (CallRail-style); the visitor's
  * source is frozen onto the lease, not derived from the number, so a call resolves

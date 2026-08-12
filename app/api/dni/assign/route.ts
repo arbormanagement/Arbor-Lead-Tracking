@@ -2,10 +2,12 @@ import { z } from "zod";
 import { classifySource } from "@/lib/attribution/classify";
 import { db } from "@/lib/db/client";
 import { visitors, webSessions } from "@/lib/db/schema";
+import { isLikelyBot } from "@/lib/bot";
 import { isAllowedOrigin } from "@/lib/origin";
 import { formatPhoneDisplay } from "@/lib/phone";
 import { clientIp, rateLimit } from "@/lib/rate-limit";
 import {
+  findShareableLease,
   getActiveAssignmentForSession,
   getFallbackNumber,
   getNewestAssignmentAtVisitorCap,
@@ -73,6 +75,13 @@ export async function POST(req: Request) {
   // always send Origin on a POST, so requiring it costs real visitors nothing.
   if (!(await isAllowedOrigin(req, { requireOrigin: true }))) {
     return Response.json({ error: "origin not allowed" }, { status: 403, headers: CORS });
+  }
+  // A crawler will never dial the number it is handed, but it holds one for the full lease
+  // window while it does not. Returning null leaves the page on its own hard-coded number,
+  // which is exactly the right outcome for a bot and costs a misdetected human only their
+  // attribution, not their call.
+  if (isLikelyBot(req.headers.get("user-agent"))) {
+    return Response.json({ number: null }, { headers: CORS });
   }
   // Tighter than /api/track's budget: a page needs ONE lease per session, not 30
   // per minute, and each request can consume a scarce pool number.
@@ -165,6 +174,11 @@ export async function POST(req: Request) {
     // drain the pool.
     const capped = await getNewestAssignmentAtVisitorCap(vid);
     if (capped) return numberResponse(capped.phoneNumber);
+
+    // Before spending a number: is one already out that says exactly the same thing? Only
+    // ever true for visitors with no click id, so paid traffic still gets its own.
+    const shared = await findShareableLease(snapshot);
+    if (shared) return numberResponse(shared.phoneNumber);
 
     const leased = await leaseNumber(snapshot, sid, vid);
     if (leased) return numberResponse(leased.phoneNumber);
