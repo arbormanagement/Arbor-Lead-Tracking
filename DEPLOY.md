@@ -19,7 +19,6 @@ failed migration aborts the release and leaves the previous version serving traf
 ```bash
 openssl rand -hex 32   # NEXTAUTH_SECRET
 openssl rand -hex 32   # COOKIE_SIGNING_SECRET
-openssl rand -hex 32   # CREDENTIALS_ENCRYPTION_KEY   (rotating this re-keys stored creds)
 openssl rand -hex 32   # CRON_SECRET
 npx tsx scripts/hash-password.ts 'your-admin-password'   # ADMIN_PASSWORD_HASH
 ```
@@ -41,7 +40,7 @@ falls back to `DATABASE_URL`.
    Railway reads `railway.json` automatically. Name the service `web`.
 2. Set **Variables**:
    - `DATABASE_URL`, `DATABASE_URL_UNPOOLED`
-   - `NEXTAUTH_SECRET`, `COOKIE_SIGNING_SECRET`, `CREDENTIALS_ENCRYPTION_KEY`, `CRON_SECRET`
+   - `NEXTAUTH_SECRET`, `COOKIE_SIGNING_SECRET`, `CRON_SECRET`
    - `ADMIN_EMAIL=justin@arbor-mgmt.com`, `ADMIN_PASSWORD_HASH=<hash from step 0>`
    - `APP_BASE_URL` (set after step 3 gives you a domain)
    - `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_API_KEY_SID`, `TWILIO_API_KEY_SECRET`,
@@ -50,8 +49,9 @@ falls back to `DATABASE_URL`.
      inbound SMS. Also settable in-app at **Settings → Routing**. Leave unset and texts
      are still captured in the Inbox, just not relayed anywhere.
    - `FACEBOOK_VERIFY_TOKEN` (any string; reused when subscribing the FB webhook)
-   - **Platform API keys (HCP / Google Ads / Facebook / Deepgram) can be skipped here** and
-     entered later in the app under **Settings → Integrations** (encrypted at rest).
+   - **Platform API keys (HCP / Google Ads / Facebook / Deepgram / Anthropic) must be set
+     HERE.** There is no in-app credential store — Settings → Integrations is read-only
+     status plus a Test button. `lib/credentials/spec.ts` maps every field to its env var.
    - Optional: `HOST=::` — only needed for step 4's private-network option.
 3. **Deploy.** The pre-deploy step applies migrations and seeds defaults; the healthcheck
    at `/api/health` (which pings Postgres) gates the cutover.
@@ -96,13 +96,15 @@ Add to arbor-mgmt.com (root layout `<head>`):
 
 ## 7. Facebook lead-gen webhook (optional, when ready)
 In the Meta app dashboard, subscribe the page to `https://<domain>/api/webhooks/facebook`
-with verify token = `FACEBOOK_VERIFY_TOKEN`, and set the app secret in
-**Settings → Integrations → Facebook → App Secret**.
+with verify token = `FACEBOOK_VERIFY_TOKEN`, and set the app secret as `FACEBOOK_APP_SECRET`
+on the `web` service.
 
 ## 8. First-run verification
 1. `curl https://<domain>/api/health` → `{"ok":true,"db":"up",…}`
 2. Log in at `https://<domain>` with `ADMIN_EMAIL` + your password.
-3. **Settings → Integrations** → paste HCP / Google / FB / Deepgram keys → **Test** each.
+3. **Settings → Integrations** → confirm each platform reads as configured → **Test** each.
+   Test calls the provider, which is the only check that separates a working credential from
+   a merely present one — a token can be set, well-formed and revoked.
 4. **Spend** page → **Run sync now** → confirm `sync_runs` + data populate.
 5. Place a test call to a tracking number → it should appear under **Calls** / **Leads**.
 6. Watch the `cron` logs for the next `reaper` tick (≤5 min) → `✓`.
@@ -202,8 +204,8 @@ earliest lead), attributions and `roi_daily` (recomputed).
 **Doesn't:** `tracking_numbers` (re-register each via **/numbers → Add number → import an
 owned number**), `settings`, `spam_rules`, `manual_spend`, call/web history, and
 `conversion_exports` — which is the record of what was already uploaded to Google Ads, so
-losing it risks double-counting conversions. `integration_credentials` is free to lose if
-the platform keys are set as Railway env vars, since `getPlatformCreds` falls back to env.
+losing it risks double-counting conversions. `integration_credentials` is empty and read by
+nothing (the store was removed 2026-08-12) — credentials live only in Railway env vars.
 
 Don't try to hand-pick a few tables to carry: seeded `sources`/`pools` get **new ULIDs** in
 a fresh database, so every row referencing them by id fails its foreign key, and
