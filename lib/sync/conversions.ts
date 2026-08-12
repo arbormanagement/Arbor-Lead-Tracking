@@ -1,6 +1,6 @@
 import { and, desc, eq, gte, inArray, ne, or, sql } from "drizzle-orm";
 import { db } from "@/lib/db/client";
-import { calls, conversionExports, facebookLeads, hcpEstimates, leads, numberAssignments } from "@/lib/db/schema";
+import { calls, conversionExports, facebookLeads, hcpEstimates, leads, numberAssignments, sources } from "@/lib/db/schema";
 import { getPlatformCreds } from "@/lib/credentials";
 import { ingestEvents, type EventSource, type IngestEvent } from "@/lib/integrations/data-manager";
 import { facebook, type CapiEvent } from "@/lib/integrations/facebook";
@@ -15,9 +15,11 @@ export const MAX_EXPORT_ATTEMPTS = 5;
  * conversions.export — closed-loop feedback. Finds qualified/won leads that came
  * from a paid click (gclid → Google Ads, fbclid → Meta) OR a Meta lead-gen form
  * (leadgen_id → Meta CAPI "Conversion Leads" matching — form leads never have a
- * click id) and reports the conversion (with its dollar value) back to the ad
- * platform so bidding can optimize toward won revenue. Organic/GBP leads have
- * neither identifier and are correctly never uploaded. Idempotent via
+ * click id) OR a Google source where a missing click id is expected rather than
+ * disqualifying (hashed email/phone → Google; see USER_DATA_FALLBACK_SOURCES) and
+ * reports the conversion (with its dollar value) back to the ad platform so
+ * bidding can optimize toward won revenue. Organic/GBP/direct leads still match
+ * none of those and are correctly never uploaded. Idempotent via
  * `conversion_exports` (unique per lead+platform+event); a row only reaches
  * 'sent' once, so retries never double-count. Google additionally dedups on
  * `transactionId` server-side, so even a replayed batch cannot double-count.
@@ -47,6 +49,35 @@ export const MAX_EXPORT_ATTEMPTS = 5;
  */
 type EventKind = "lead" | "qualified" | "scheduled" | "won";
 
+/**
+ * Sources whose leads may export to Google on hashed user identifiers ALONE, with
+ * no click id — Enhanced-Conversions-for-Leads style matching, which the Data
+ * Manager API supports and the retired upload endpoint did not.
+ *
+ * This exists because "no click id ⇒ not from the ad" is false for exactly one
+ * shape of traffic: a STATIC tracking number wired directly to a Google ad. A call
+ * to `+16184145907` (the call-only / call-extension asset on campaign
+ * 23633267649) can ONLY have come from a Google ad — but static numbers hold no
+ * DNI lease (`resolveInboundAttribution` returns `lease: null`), so there is no
+ * gclid to inherit and the click-id gate dropped every one of those ~24 calls a
+ * month. Google counted them natively via its own "Calls from ads" action, but
+ * that action is value-1-per-call, so the won-estimate dollars never arrived —
+ * precisely the revenue signal this job exists to deliver.
+ *
+ * It also rescues paid web leads whose gclid was lost (ad blocker, stripped
+ * referrer): same source, same reasoning.
+ *
+ * Deliberately NOT a blanket "any lead with a phone". Organic, GBP, direct and
+ * referral leads have no click id because they genuinely did not come from an ad;
+ * uploading them would invite Google to credit itself for traffic it never sent.
+ *
+ * `google/lsa` is deliberately absent. Local Services leads have the same static
+ * number problem, but LSA bidding does not run through these conversion actions,
+ * and a hashed phone can match a Search click by the same person — which would
+ * credit Search for an LSA lead. Add it only as a deliberate decision.
+ */
+const USER_DATA_FALLBACK_SOURCES: ReadonlySet<string> = new Set(["google/cpc"]);
+
 /** Stage -> Meta standard event. null = not reported to Meta at all. */
 const META_EVENT: Record<EventKind, CapiEvent["eventName"] | null> = {
   lead: "Lead",
@@ -60,8 +91,9 @@ interface Task {
   platform: "google" | "facebook";
   event: EventKind;
   valueCents: number;
-  identifier: string;
-  identifierType: "gclid" | "gbraid" | "wbraid" | "fbclid" | "leadgen_id";
+  /** null only for `user_data`, where the hashed email/phone below IS the match key. */
+  identifier: string | null;
+  identifierType: "gclid" | "gbraid" | "wbraid" | "fbclid" | "leadgen_id" | "user_data";
   /** When the conversion happened (estimate created / approved), not when the lead came in. */
   convertedAt: Date;
   /** The original click/lead time — Meta needs it to build `fbc`. */
@@ -116,6 +148,8 @@ export async function syncConversions({ sinceDays = 90, limit = 500 }: { sinceDa
         naFbclid: numberAssignments.fbclid,
         phoneE164: leads.phoneE164,
         emailLc: leads.emailLc,
+        // Gates the no-click-id fallback: only genuinely-paid sources qualify.
+        sourceKey: sources.key,
         quoteValueCents: leads.quoteValueCents,
         salesValueCents: leads.salesValueCents,
         occurredAt: leads.occurredAt,
@@ -128,6 +162,7 @@ export async function syncConversions({ sinceDays = 90, limit = 500 }: { sinceDa
       .leftJoin(hcpEstimates, eq(hcpEstimates.id, leads.hcpEstimateId))
       .leftJoin(calls, eq(calls.leadId, leads.id))
       .leftJoin(numberAssignments, eq(numberAssignments.id, calls.numberAssignmentId))
+      .leftJoin(sources, eq(sources.id, leads.sourceId))
       .where(
         and(
           // Was qualified/quoted/won only, which made an estimate a precondition
@@ -154,6 +189,17 @@ export async function syncConversions({ sinceDays = 90, limit = 500 }: { sinceDa
     // ── Expand to (platform, event) tasks ─────────────────────────────────────
     const tasks: Task[] = [];
     const seenTask = new Set<string>(); // the calls join can repeat a lead
+    // A repeat caller has several `calls` rows, so the join emits the lead more
+    // than once and only SOME of those rows carry a pooled-DNI lease. `seenTask`
+    // keeps whichever arrives first, and row order within a lead is not defined —
+    // so deciding the fallback per row could publish a weaker `user_data` match
+    // for a lead that has a real click id sitting on another row. Settle it across
+    // all rows up front: a click id anywhere disqualifies the fallback everywhere.
+    const leadsWithClickId = new Set(
+      rows
+        .filter((r) => r.gclid ?? r.naGclid ?? r.gbraid ?? r.naGbraid ?? r.wbraid ?? r.naWbraid)
+        .map((r) => r.id),
+    );
     for (const l of rows) {
       // Report the conversion at the time it actually happened — the estimate being
       // written (qualified) or approved (won) — falling back to the lead time. An
@@ -212,10 +258,22 @@ export async function syncConversions({ sinceDays = 90, limit = 500 }: { sinceDa
           ["wbraid", l.wbraid ?? l.naWbraid],
         ] as const,
       );
-      if (googleOn && gId) {
+      // No click id, but the source is one where its absence does NOT mean the lead
+      // came from somewhere else (see USER_DATA_FALLBACK_SOURCES). Match on hashed
+      // email/phone instead — worthless without one, so require at least one.
+      const gFallback: Pick<Task, "identifier" | "identifierType"> | null =
+        !gId &&
+        !leadsWithClickId.has(l.id) &&
+        l.sourceKey &&
+        USER_DATA_FALLBACK_SOURCES.has(l.sourceKey) &&
+        (l.phoneE164 || l.emailLc)
+          ? { identifier: null, identifierType: "user_data" }
+          : null;
+      const gMatch = gId ?? gFallback;
+      if (googleOn && gMatch) {
         for (const e of events) {
           if (!googleAction[e.event]) continue; // that action not configured → skip event
-          push({ ...base, platform: "google", ...e, ...gId });
+          push({ ...base, platform: "google", ...e, ...gMatch });
         }
       }
       // Website-click leads match by fbclid; lead-form leads by Meta's leadgen id.
@@ -229,7 +287,7 @@ export async function syncConversions({ sinceDays = 90, limit = 500 }: { sinceDa
       }
     }
 
-    if (!tasks.length) return { candidates: rows.length, sent: 0, failed: 0, note: "no exportable click-ids" };
+    if (!tasks.length) return { candidates: rows.length, sent: 0, failed: 0, note: "no exportable identifiers" };
 
     // ── Skip anything already 'sent'; reserve a pending row for the rest ──────
     const leadIds = [...new Set(tasks.map((t) => t.leadId))];
@@ -316,6 +374,8 @@ export async function syncConversions({ sinceDays = 90, limit = 500 }: { sinceDa
           // Sent ALONGSIDE the click id, which the old upload endpoint refused —
           // it rejected any conversion pairing a click id with user identifiers.
           // Google still matches on the click id first; these only widen it.
+          // On a `user_data` task there is no click id and these ARE the match
+          // key, which is why that task type requires at least one of them.
           emailLc: t.emailLc,
           phoneE164: t.phoneE164,
         }));
@@ -358,8 +418,11 @@ export async function syncConversions({ sinceDays = 90, limit = 500 }: { sinceDa
             eventId: `${t.leadId}:${t.event}`,
             emailHash: hashEmail(t.emailLc),
             phoneHash: hashPhone(t.phoneE164),
-            fbc: t.identifierType === "fbclid" ? `fb.1.${t.occurredAt.getTime()}.${t.identifier}` : undefined,
-            leadgenId: t.identifierType === "leadgen_id" ? t.identifier : undefined,
+            // `identifier` is nullable only for Google's `user_data` tasks, which
+            // never reach this branch — the `&&` / `??` keep that provable rather
+            // than assumed, and stop a null ever stringifying into an `fb.1.…null`.
+            fbc: t.identifierType === "fbclid" && t.identifier ? `fb.1.${t.occurredAt.getTime()}.${t.identifier}` : undefined,
+            leadgenId: t.identifierType === "leadgen_id" ? (t.identifier ?? undefined) : undefined,
             valueDollars: t.valueCents / 100,
           };
         });
