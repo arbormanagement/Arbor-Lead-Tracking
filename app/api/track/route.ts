@@ -121,6 +121,10 @@ export async function POST(req: Request) {
   // "cpc" don't split dashboard groupings.
   const medium = utm.medium?.toLowerCase() ?? cls.medium;
   const location = inferLocation(form?.pageUrl ?? url);
+  // Recorded, never acted on here. /api/dni/assign refuses a crawler a pool number, but
+  // nothing was storing what asked — so 'are bots draining the pool?' was unanswerable
+  // both before and after that gate. The column already existed; it was simply never written.
+  const userAgent = req.headers.get("user-agent");
   const now = new Date();
 
   // 1) Visitor — first-touch frozen on insert; only last_seen/ga bump on conflict.
@@ -129,6 +133,7 @@ export async function POST(req: Request) {
     .values({
       id: vid,
       gaClientId: ga,
+      userAgent,
       ftSource: cls.sourceKey,
       ftMedium: medium,
       ftCampaign: utm.campaign,
@@ -151,6 +156,7 @@ export async function POST(req: Request) {
     .values({
       id: sid,
       visitorId: vid,
+      userAgent,
       source: cls.sourceKey,
       medium,
       campaign: utm.campaign,

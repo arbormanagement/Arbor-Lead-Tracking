@@ -295,6 +295,26 @@ re-argued rather than assumed.
   same 5 for the same traffic without exhausting. `exhausted` in `/api/diagnostics` is the
   signal; if it returns, `MAX_ACTIVE_LEASES_PER_VISITOR = 2` is the next lever (CallRail
   assigns one per session).
+- **Two visitors with IDENTICAL attribution share one number** (`findShareableLease`, checked
+  before leasing). The pool exists to tell sources apart, and `roi_daily` keys on
+  (date, source, campaign, location) — so two `direct` visitors with no click id already land
+  on the same row and separate numbers buy nothing, while consuming capacity a gclid visitor
+  can't do without. **A click id is never shared in either direction**: it identifies one
+  specific ad click, so two visitors behind it is a wrong answer rather than a coarse one.
+  The cost is that a shared caller's lead carries the other session's `landing_page` (`/voice`
+  resolves the newest assignment), so same-landing-page candidates are preferred first. Sharing
+  extends the lease window like a real pageview, or the number could lapse mid-visit and be
+  re-leased to someone else — the one way this could turn coarse into wrong. Comparisons use
+  `IS NOT DISTINCT FROM`, since these columns are usually null and `= null` would match nothing
+  and silently disable the whole thing.
+- **Crawlers are refused a lease** (`lib/bot.ts`, applied in `/api/dni/assign` only). A bot
+  never dials the number but holds one for the full window. GA4 filters known bots from its
+  reporting and `track.js` does not, which is the likely explanation for GA4 showing 3 active
+  users against 5 leases in 13 minutes on 2026-08-12. An absent user-agent counts as a bot: a
+  false positive costs one visitor their attribution, a false negative costs a pool slot for
+  15 minutes and can cost several. `/api/track` is deliberately NOT gated — pageview capture is
+  cheap and unbounded, and filtering there would change what the site records, not what the
+  pool spends.
 - DNI leasing draws only from pools flagged `pools.is_dni`, so a number provisioned for a mailer
   (default pool `reserved`) can't be handed to website visitors before it's marked static.
   `number_assignments_active_idx` is UNIQUE — one active lease per number — and `leaseNumber`
