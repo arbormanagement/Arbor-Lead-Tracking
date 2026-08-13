@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, isNull, ne, sql } from "drizzle-orm";
+import { and, desc, eq, gte, isNull, lt, ne, sql } from "drizzle-orm";
 import { authorizeAdmin, unauthorized } from "@/lib/admin-auth";
 import { credentialStatus } from "@/lib/credentials";
 import { CREDENTIAL_SPECS } from "@/lib/credentials/spec";
@@ -131,11 +131,32 @@ export async function GET(req: Request) {
     )
     .where(and(eq(trackingNumbers.isStatic, false), eq(trackingNumbers.status, "active")));
 
+  // Is the 5-minute reaper actually releasing leases? It writes nothing to
+  // `sync_runs`, so there is no run to inspect — but "did it run" was never the
+  // question. This measures the OUTCOME: leases whose window has elapsed that are
+  // still holding their number.
+  //
+  // At most one unreleased lease can exist per number (number_assignments_active_idx
+  // is unique on tracking_number_id where released_at is null), and only DNI-pool
+  // numbers are ever leased — so while the reaper works this cannot exceed the pool
+  // size, and in practice sits near zero. Anything above that is the reaper failing.
+  //
+  // The point of having it: "DNI pool is exhausted" below has two completely
+  // different causes — real traffic, or leases that stopped being released — and
+  // they were indistinguishable. That matters because the documented response to
+  // exhaustion is to shorten hold time rather than buy numbers, which is exactly
+  // the wrong move if nothing is being released in the first place.
+  const [overdue] = await db
+    .select({ n: sql<number>`count(*)::int` })
+    .from(numberAssignments)
+    .where(and(isNull(numberAssignments.releasedAt), lt(numberAssignments.expiresAt, now)));
+
   const rotating = poolRows.filter((r) => r.isDni === true);
   const pool = {
     size: rotating.length,
     leased: rotating.filter((r) => r.leaseId).length,
     free: rotating.length - rotating.filter((r) => r.leaseId).length,
+    overdueLeases: overdue?.n ?? 0,
     numbers: rotating.map((r) => ({ phoneNumber: r.phoneNumber, pool: r.pool, leased: !!r.leaseId })),
     // Non-empty = numbers you likely expect to rotate that never will.
     excludedFromRotation: poolRows
@@ -271,6 +292,14 @@ export async function GET(req: Request) {
   if (pool.size > 0 && pool.free === 0) {
     warnings.push("DNI pool is exhausted — visitors are being shown the static fallback number");
   }
+  // Stated before any capacity tuning: an unreleased-lease backlog looks exactly
+  // like heavy traffic from the pool's side, and only this tells the two apart.
+  if (pool.overdueLeases > pool.size) {
+    warnings.push(
+      `${pool.overdueLeases} expired lease(s) are still holding a number (pool is ${pool.size}) — ` +
+        `the 5-minute 'reaper' job is not releasing them; do NOT tune hold time or buy numbers until it is running`,
+    );
+  }
   if (pool.size === 0) warnings.push("DNI pool is empty — no number can be leased to a visitor");
   for (const j of jobs) {
     if (j.stuckRunning) warnings.push(`sync job '${j.job}' has been 'running' for over 6h — its claim is blocking later ticks`);
@@ -280,9 +309,18 @@ export async function GET(req: Request) {
     // it. Reading only `status` is exactly the blind spot that let a dead spend
     // provider report success for weeks, so surface per-item failures too.
     const stats = j.lastSuccessStats as Record<string, unknown> | null;
-    for (const key of ["failed", "failedProviders"]) {
+    // Keyed with its own wording: these are counted for different reasons and
+    // "failed item(s)" reads as nonsense for a number that was never attempted.
+    // Numeric keys only — an `errors: string[]` would be persisted and silently
+    // never alerted on, which is why twilio.webhooks.backfill also emits a count.
+    for (const [key, what] of [
+      ["failed", "failed item(s)"],
+      ["failedProviders", "failed provider(s)"],
+      ["errorCount", "item(s) it could not write"],
+      ["skippedNoSid", "active number(s) with no Twilio SID — their texts and voice fallback can never be configured"],
+    ] as const) {
       const n = stats && typeof stats[key] === "number" ? (stats[key] as number) : 0;
-      if (n > 0) warnings.push(`sync job '${j.job}' succeeded but reported ${n} failed item(s) (stats.${key})`);
+      if (n > 0) warnings.push(`sync job '${j.job}' succeeded but reported ${n} ${what} (stats.${key})`);
     }
     // `abandoned` is the quieter case and needs its own check: once an export
     // passes its retry cap it stops being counted in `failed`, so the run goes
