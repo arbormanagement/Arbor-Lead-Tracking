@@ -201,16 +201,43 @@ exactly matches the exporter's 90-day window, so nothing is truncated at the far
 | scheduled | 7714132224 | Estimate Scheduled | BOOK_APPOINTMENT |
 | won | 7695519049 | Estimate Won | CONVERTED_LEAD |
 
-**All four are `includeInConversionsMetric: false` — observation only.** Conversions will
-upload and appear in reports, and Smart Bidding will ignore every one of them. Fixing the
-transport does not by itself change a single bid.
+**✅ DONE — `Lead Created` is live as the biddable signal on `Search | Tree Services`**
+(verified 2026-08-13). The 2026-08-10 decision below has been carried out.
+
+**⚠️ Do NOT read `conversion_action.include_in_conversions_metric` to answer "is this
+bidding?" — it is false on all four and is not the whole story.** That field reflects the
+ACCOUNT-level goal configuration. Bidding is decided by the **conversion goal**
+`(category, origin)`, which a campaign can override, and campaign overrides do not write
+back to the action. Read `campaign_conversion_goal.biddable` for the campaign that spends,
+together with `conversion_action.primary_for_goal`. All four actions are `origin: WEBSITE`.
+
+| goal (category ~ origin) | action | account | campaign 23633267649 | bidding? |
+|---|---|---|---|---|
+| `CONTACT ~ WEBSITE` | Lead Created (`primary_for_goal: true`) | secondary | **biddable** | **YES** |
+| `QUALIFIED_LEAD ~ WEBSITE` | Estimate Created (`primary: true`) | secondary | not biddable | no |
+| `BOOK_APPOINTMENT ~ WEBSITE` | Estimate Scheduled (`primary: false`) | biddable | not biddable | no |
+| `CONVERTED_LEAD ~ WEBSITE` | Estimate Won (`primary: false`) | biddable | not biddable | no |
+
+**The account defaults are the INVERSE of what is wanted, so a new campaign is a trap.**
+A campaign created without its own goal overrides inherits the account's: it will bid on
+Estimate Won and Estimate Scheduled — both far too thin to learn on — and will NOT bid on
+Lead Created. Set campaign goals explicitly on anything new. Same shape as the tracking-
+template trap above, where an account-level default silently governs a new campaign.
+
+**Uploads are confirmed landing** (first end-to-end proof, 2026-08-13 — previously only
+`sent` in `sync_runs`, which proves a valid payload and nothing about attribution). Last
+30 days on campaign 23633267649, via `segments.conversion_action_name` on `campaign`:
+Lead Created 7.39 · Estimate Created 7.22 ($1,400) · Estimate Scheduled 6.00 ($6,300) ·
+**Estimate Won absent (zero)** — the estimates-staleness bug in the watch-outs, which
+froze ~5 in 6 wins at `qualified` so almost nothing ever reached the `won` export stage.
+That row is the check that the fix worked.
 
 **Decision (2026-08-10, Justin):** promote **Lead Created** to the biddable signal; leave
 Won as observation for now. Volume is the reason — 21 won leads against 211 qualified is
 far too thin for Smart Bidding to learn on won revenue, and a value-based strategy fed
 that sparsely optimizes noise.
 
-**Sequencing matters, and is deliberate:** promote only AFTER uploads are confirmed
+**Sequencing mattered, and was deliberate:** promote only AFTER uploads are confirmed
 flowing. Flipping first means the 90-day backfill lands as a single spike into a live
 bidding signal, which reads as a sudden performance change that has nothing to do with the
 ads. Backfill while observation-only, confirm the counts, then promote.
