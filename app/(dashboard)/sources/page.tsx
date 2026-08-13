@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, isNotNull, ne, or, sql } from "drizzle-orm";
+import { and, desc, eq, gte, isNotNull, ne, notInArray, or, sql } from "drizzle-orm";
 import { businessDate } from "@/lib/tz";
 import type { AnyPgColumn } from "drizzle-orm/pg-core";
 import Link from "next/link";
@@ -6,6 +6,7 @@ import { campaignNotExcluded, excludedCampaignIds } from "@/lib/campaigns";
 import { db } from "@/lib/db/client";
 import { leads, roiDaily, sources } from "@/lib/db/schema";
 import { dollars } from "@/lib/format";
+import { QUALIFICATION_REQUIRED } from "@/lib/leads/qualified";
 import { TIMEFRAMES, pickDays, timeframeLabel } from "@/lib/timeframes";
 
 export const dynamic = "force-dynamic";
@@ -22,7 +23,9 @@ export default async function SourcesPage({ searchParams }: { searchParams: Prom
   // out of step with the lead counts beside them.
   const windowStart = new Date(Date.now() - days * 86_400_000);
   const sinceBusinessDate = businessDate(windowStart);
-  const leadOnly = or(ne(leads.type, "call"), eq(leads.isLead, true));
+  // Calls AND texts need a classifier verdict — see QUALIFICATION_REQUIRED. Written
+  // as `type != 'call'`, this counted unclassified and rejected texts as leads.
+  const leadOnly = or(notInArray(leads.type, QUALIFICATION_REQUIRED), eq(leads.isLead, true));
   // Recruiting campaigns are not customer acquisition. roi_daily is built without
   // them; the queries below read `leads` directly, so they filter here.
   const excluded = await excludedCampaignIds();

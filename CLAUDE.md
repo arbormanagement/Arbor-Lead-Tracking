@@ -332,6 +332,25 @@ re-argued rather than assumed.
 - A text is NOT presumed to be a lead. `/api/twilio/sms` leaves `is_lead` null and the
   `classify-messages` cron decides from the body — same shape as calls, where the
   transcription sync decides. Anything that creates a call/text lead must leave that gate closed.
+  **And anything that READS leads must consult it via `QUALIFICATION_REQUIRED`, never by
+  hand.** The predicate was restated as `or(ne(leads.type, "call"), eq(leads.isLead, true))`
+  in four places — the overview, `/sources`, `attribution.ts` and the conversion exporter —
+  and since `type != 'call'` is already true for a text, `is_lead` was never consulted in any
+  of them. Every unclassified AND every classifier-REJECTED text counted as a lead: in the
+  dashboard funnel, in `roi_daily`, and — worst — uploaded to Google as a Lead Created
+  conversion, which cannot be retracted once sent. Only `/leads` was right, because it alone
+  used `isQualifiedLead`. Fixed 2026-08-13; **the counts on those three surfaces step DOWN on
+  that date from the correction, not from demand.** This is exactly the drift
+  `lib/leads/qualified.ts` exists to prevent, so add a surface by importing from it.
+- **A text's DNI lease is copied onto its lead at ingest** (`/api/twilio/sms`), mirroring
+  `/api/twilio/voice`. There is no other route to it: neither `messages` nor `leads` carries
+  a `number_assignment_id`, and `lib/sync/conversions.ts` reaches leases only by joining
+  `calls`. Until 2026-08-13 the SMS route resolved the lease and discarded it, so a paid text
+  landed with a NULL campaign and NULL gclid and exported to Google on a hashed phone alone.
+  Do NOT reach for `conversations.number_assignment_id` instead — that is a FIRST-TOUCH
+  snapshot of the thread, so a returning customer's new text would inherit the click id of a
+  visit months ago. Copy on the INSERT path only: a follow-up text joining a lead already in
+  flight must not rewrite the attribution that earned it.
 - Threading in `/voice` is best-effort (wrapped in try/catch — it must never cost a
   forward). The `thread-backfill` cron is the repair path for calls that missed it, and
   backfilled the pre-inbox history on its first runs.

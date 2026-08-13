@@ -1,9 +1,10 @@
-import { and, desc, eq, gte, ne, or, sql } from "drizzle-orm";
+import { and, desc, eq, gte, notInArray, or, sql } from "drizzle-orm";
 import { businessDate } from "@/lib/tz";
 import { campaignNotExcluded, excludedCampaignIds } from "@/lib/campaigns";
 import { db } from "@/lib/db/client";
 import { leads, roiDaily, sources } from "@/lib/db/schema";
 import { wholeDollars } from "@/lib/format";
+import { QUALIFICATION_REQUIRED } from "@/lib/leads/qualified";
 
 export const dynamic = "force-dynamic";
 
@@ -36,7 +37,10 @@ export default async function OverviewPage() {
       and(
         gte(leads.occurredAt, since),
         eq(leads.isSpam, false),
-        or(ne(leads.type, "call"), eq(leads.isLead, true)),
+        // Calls AND texts need a classifier verdict — see QUALIFICATION_REQUIRED.
+        // Written as `type != 'call'`, this counted unclassified and rejected
+        // texts as leads, so the funnel here disagreed with /leads.
+        or(notInArray(leads.type, QUALIFICATION_REQUIRED), eq(leads.isLead, true)),
         campaignNotExcluded(leads.campaignId, excluded),
       ),
     );

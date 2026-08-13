@@ -1,6 +1,6 @@
 import { and, desc, eq, inArray } from "drizzle-orm";
 import { db } from "@/lib/db/client";
-import { leads, messages, trackingNumbers } from "@/lib/db/schema";
+import { campaigns, leads, messages, numberAssignments, trackingNumbers } from "@/lib/db/schema";
 import { clearSmsOptOut, markSmsOptedOut } from "@/lib/contacts/resolve";
 import { env } from "@/lib/env";
 import { preview, recordThreadActivity, upsertThread } from "@/lib/messaging/thread";
@@ -69,7 +69,7 @@ export async function POST(req: Request) {
     }
 
     const spam = await isHardSpamNumber(fromE164);
-    const { sourceKey, assignmentId } = await resolveInboundAttribution(tn);
+    const { sourceKey, assignmentId, lease } = await resolveInboundAttribution(tn);
     const sourceId = await ensureSourceId(sourceKey);
 
     const thread = await upsertThread(
@@ -120,6 +120,7 @@ export async function POST(req: Request) {
       fromE164,
       body,
       sourceId,
+      lease,
       location: tn.location ?? "unknown",
       spam,
     });
@@ -160,10 +161,11 @@ async function attachToOpenLeadOrCreate(args: {
   fromE164: string;
   body: string;
   sourceId: string | null;
+  lease: typeof numberAssignments.$inferSelect | null;
   location: "edwardsville" | "ofallon" | "unknown";
   spam: boolean;
 }): Promise<string> {
-  const { thread, fromE164, body, sourceId, location, spam } = args;
+  const { thread, fromE164, body, sourceId, lease, location, spam } = args;
 
   const [open] = await db
     .select({ id: leads.id })
@@ -171,8 +173,32 @@ async function attachToOpenLeadOrCreate(args: {
     .where(and(eq(leads.conversationId, thread.conversationId), inArray(leads.status, [...OPEN_STAGES])))
     .orderBy(desc(leads.occurredAt))
     .limit(1);
+  // Deliberately returned untouched: a follow-up text joining a lead already in
+  // flight must NOT rewrite the attribution that earned it — the same rule
+  // `lib/messaging/thread.ts` enforces for threads. The lease below is copied on
+  // the INSERT path only.
   if (open) return open.id;
 
+  // Link to an EXISTING campaign by name only, exactly as `/api/twilio/voice`
+  // does — the lease carries `utm_campaign` text while campaigns are keyed
+  // (platform, external_campaign_id) by the spend sync. Never creates a row.
+  let campaignId: string | null = null;
+  if (lease?.campaign) {
+    const [c] = await db
+      .select({ id: campaigns.id })
+      .from(campaigns)
+      .where(eq(campaigns.name, lease.campaign))
+      .limit(1);
+    campaignId = c?.id ?? null;
+  }
+
+  // Carry the DNI lease's frozen attribution onto the lead, the way the voice
+  // route already does for calls. Without it a text had NO path to a click id at
+  // all: `messages` and `leads` carry no `number_assignment_id`, and the
+  // conversion exporter reaches leases only through `calls`. So a paid text
+  // reached `attributions` and campaign-level roi_daily with a NULL campaign, and
+  // exported to Google matched on a hashed phone when its gclid was sitting right
+  // here — the identical defect the comment in `/api/twilio/voice` describes.
   const [lead] = await db
     .insert(leads)
     .values({
@@ -185,6 +211,16 @@ async function attachToOpenLeadOrCreate(args: {
       sourceId,
       location,
       isSpam: spam,
+      campaignId,
+      medium: lease?.medium ?? null,
+      keyword: lease?.keyword ?? null,
+      gclid: lease?.gclid ?? null,
+      gbraid: lease?.gbraid ?? null,
+      wbraid: lease?.wbraid ?? null,
+      fbclid: lease?.fbclid ?? null,
+      landingPage: lease?.landingPage ?? null,
+      visitorId: lease?.visitorId ?? null,
+      webSessionId: lease?.webSessionId ?? null,
       // Left unclassified on purpose — see the note at the top of this file.
       isLead: spam ? false : null,
       leadReason: spam ? "spam rule: blocked number" : null,

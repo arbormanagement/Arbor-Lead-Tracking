@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gte, inArray, isNull, lte, ne, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNull, lte, notInArray, or, sql } from "drizzle-orm";
 import { campaignNotExcluded, excludedCampaignIds } from "@/lib/campaigns";
 import { db } from "@/lib/db/client";
 import {
@@ -11,6 +11,7 @@ import {
   roiDaily,
   sources,
 } from "@/lib/db/schema";
+import { QUALIFICATION_REQUIRED } from "@/lib/leads/qualified";
 import { getSetting } from "@/lib/settings";
 import { businessDate } from "@/lib/tz";
 import { withSyncRun } from "./run";
@@ -388,7 +389,10 @@ async function rebuildRoiDaily(windowDays: number): Promise<number> {
       and(
         eq(leads.isSpam, false),
         gte(leads.occurredAt, leadScanFrom),
-        or(ne(leads.type, "call"), eq(leads.isLead, true)),
+        // Calls AND texts need a classifier verdict — see QUALIFICATION_REQUIRED.
+        // Hand-written as `type != 'call'`, this counted every unclassified and
+        // every REJECTED text as a lead, so they reached roi_daily as real demand.
+        or(notInArray(leads.type, QUALIFICATION_REQUIRED), eq(leads.isLead, true)),
         campaignNotExcluded(leads.campaignId, excluded),
       ),
     );
