@@ -10,7 +10,7 @@ import { syncLsaLeads } from "@/lib/sync/lsa";
 import { syncConversions } from "@/lib/sync/conversions";
 import { syncFacebookLeads } from "@/lib/sync/facebook-leads";
 import { releaseExpired } from "@/lib/dni/assign";
-import { backfillNumberWebhooks } from "@/lib/twilio/numbers";
+import { syncNumberWebhooks } from "@/lib/sync/twilio-webhooks";
 
 export const runtime = "nodejs";
 
@@ -62,7 +62,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ job: str
         // Self-healing: re-assert every tracking number's Twilio webhooks — voice
         // fallback (outage protection) and inbound SMS — so no number can drift or
         // be missed by a manual path.
-        return Response.json({ ok: true, job, result: await backfillNumberWebhooks() });
+        return Response.json({ ok: true, job, result: await syncNumberWebhooks() });
       // Convenience aggregates so a single daily cron can do the revenue→ROI chain.
       case "revenue": {
         const hcp = await syncHcp();

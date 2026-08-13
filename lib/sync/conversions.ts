@@ -289,6 +289,31 @@ export async function syncConversions({ sinceDays = 90, limit = 500 }: { sinceDa
 
     if (!tasks.length) return { candidates: rows.length, sent: 0, failed: 0, note: "no exportable identifiers" };
 
+    // ── Re-arm rows abandoned by an outage rather than by their own content ───
+    // Going forward a platform-level failure no longer consumes a retry (see
+    // markExport), but rows already sitting past the cap from an earlier outage
+    // would stay abandoned forever with nothing able to release them.
+    //
+    // Matched on the recorded error, deliberately narrowly: these patterns are
+    // ways the TRANSPORT failed, never a verdict Google or Meta returned about a
+    // conversion. A genuinely-rejected click id carries the platform's own
+    // rejection text, matches nothing here, and stays abandoned — so this cannot
+    // reopen the endless-retry loop the cap exists to prevent.
+    const rearmed = await db
+      .update(conversionExports)
+      .set({ attempts: 0, updatedAt: sql`now()` })
+      .where(
+        and(
+          gte(conversionExports.attempts, MAX_EXPORT_ATTEMPTS),
+          ne(conversionExports.status, "sent"),
+          sql`${conversionExports.error} ~* '(oauth|invalid_grant|invalid_rapt|credentials?[ _]|unauthori|timed? ?out|socket|network|ECONN|EAI_AGAIN|fetch failed)'`,
+        ),
+      )
+      .returning({ leadId: conversionExports.leadId });
+    if (rearmed.length) {
+      console.warn(`[conversions] re-armed ${rearmed.length} export(s) abandoned during a platform outage`);
+    }
+
     // ── Skip anything already 'sent'; reserve a pending row for the rest ──────
     const leadIds = [...new Set(tasks.map((t) => t.leadId))];
     const existing = await db
@@ -301,8 +326,14 @@ export async function syncConversions({ sinceDays = 90, limit = 500 }: { sinceDa
     // (expired click, malformed gclid) re-uploads on every run for the full 90-day
     // window — ~144 pointless API calls a day — and keeps `failed > 0` in every
     // sync_runs row, which buries genuinely new failures in constant noise.
+    // `status !== 'sent'` matters: a row that failed four times and landed on the
+    // fifth still carries attempts = 5. Counting it here reported a delivered
+    // conversion as permanently abandoned, which is what put a standing warning on
+    // /api/diagnostics over an export that had actually succeeded.
     const exhausted = new Set(
-      existing.filter((e) => e.attempts >= MAX_EXPORT_ATTEMPTS).map((e) => key(e.leadId, e.platform, e.event)),
+      existing
+        .filter((e) => e.attempts >= MAX_EXPORT_ATTEMPTS && e.status !== "sent")
+        .map((e) => key(e.leadId, e.platform, e.event)),
     );
     const todo = tasks.filter(
       (t) => !sentKeys.has(key(t.leadId, t.platform, t.event)) && !exhausted.has(key(t.leadId, t.platform, t.event)),
@@ -386,8 +417,11 @@ export async function syncConversions({ sinceDays = 90, limit = 500 }: { sinceDa
           r.ok ? sent++ : failed++;
         }
       } catch (err) {
+        // Reaching here means the CALL failed, not a conversion — per-item
+        // rejections come back inside `results` above. So record the error but
+        // leave the retry budget alone (see markExport).
         const msg = err instanceof Error ? err.message : String(err);
-        for (const t of googleTasks) await markExport(t, "error", { ok: false, error: msg });
+        for (const t of googleTasks) await markExport(t, "error", { ok: false, error: msg }, { consumesAttempt: false });
         failed += googleTasks.length;
       }
     }
@@ -432,8 +466,9 @@ export async function syncConversions({ sinceDays = 90, limit = 500 }: { sinceDa
           res.ok ? sent++ : failed++;
         }
       } catch (err) {
+        // As above: a thrown request is the platform failing, not these events.
         const msg = err instanceof Error ? err.message : String(err);
-        for (const t of fbTasks) await markExport(t, "error", { ok: false, error: msg });
+        for (const t of fbTasks) await markExport(t, "error", { ok: false, error: msg }, { consumesAttempt: false });
         failed += fbTasks.length;
       }
     }
@@ -456,12 +491,27 @@ function clickId(
   return null;
 }
 
-async function markExport(t: Task, status: "sent" | "error", r: { ok: boolean; error?: string; raw?: unknown }) {
+/**
+ * @param consumesAttempt  Whether this failure counts against the row's retry
+ *   budget. False when the PLATFORM failed rather than the row — an expired
+ *   credential or a dead socket rejects every task identically and says nothing
+ *   about whether this particular conversion is exportable. Burning the budget on
+ *   those is how a two-day Google OAuth outage permanently abandoned conversions
+ *   that were never wrong (observed 2026-08-13): five ticks, five increments, cap
+ *   reached, never retried again. The cap exists for a click id Google keeps
+ *   rejecting, which is a verdict on the row.
+ */
+async function markExport(
+  t: Task,
+  status: "sent" | "error",
+  r: { ok: boolean; error?: string; raw?: unknown },
+  { consumesAttempt = true }: { consumesAttempt?: boolean } = {},
+) {
   await db
     .update(conversionExports)
     .set({
       status,
-      attempts: sql`${conversionExports.attempts} + 1`,
+      attempts: consumesAttempt ? sql`${conversionExports.attempts} + 1` : sql`${conversionExports.attempts}`,
       response: (r.raw ?? null) as object | null,
       error: r.ok ? null : (r.error ?? "unknown error"),
       sentAt: r.ok ? sql`now()` : sql`${conversionExports.sentAt}`,

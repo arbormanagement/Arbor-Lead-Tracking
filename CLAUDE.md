@@ -201,16 +201,43 @@ exactly matches the exporter's 90-day window, so nothing is truncated at the far
 | scheduled | 7714132224 | Estimate Scheduled | BOOK_APPOINTMENT |
 | won | 7695519049 | Estimate Won | CONVERTED_LEAD |
 
-**All four are `includeInConversionsMetric: false` — observation only.** Conversions will
-upload and appear in reports, and Smart Bidding will ignore every one of them. Fixing the
-transport does not by itself change a single bid.
+**✅ DONE — `Lead Created` is live as the biddable signal on `Search | Tree Services`**
+(verified 2026-08-13). The 2026-08-10 decision below has been carried out.
+
+**⚠️ Do NOT read `conversion_action.include_in_conversions_metric` to answer "is this
+bidding?" — it is false on all four and is not the whole story.** That field reflects the
+ACCOUNT-level goal configuration. Bidding is decided by the **conversion goal**
+`(category, origin)`, which a campaign can override, and campaign overrides do not write
+back to the action. Read `campaign_conversion_goal.biddable` for the campaign that spends,
+together with `conversion_action.primary_for_goal`. All four actions are `origin: WEBSITE`.
+
+| goal (category ~ origin) | action | account | campaign 23633267649 | bidding? |
+|---|---|---|---|---|
+| `CONTACT ~ WEBSITE` | Lead Created (`primary_for_goal: true`) | secondary | **biddable** | **YES** |
+| `QUALIFIED_LEAD ~ WEBSITE` | Estimate Created (`primary: true`) | secondary | not biddable | no |
+| `BOOK_APPOINTMENT ~ WEBSITE` | Estimate Scheduled (`primary: false`) | biddable | not biddable | no |
+| `CONVERTED_LEAD ~ WEBSITE` | Estimate Won (`primary: false`) | biddable | not biddable | no |
+
+**The account defaults are the INVERSE of what is wanted, so a new campaign is a trap.**
+A campaign created without its own goal overrides inherits the account's: it will bid on
+Estimate Won and Estimate Scheduled — both far too thin to learn on — and will NOT bid on
+Lead Created. Set campaign goals explicitly on anything new. Same shape as the tracking-
+template trap above, where an account-level default silently governs a new campaign.
+
+**Uploads are confirmed landing** (first end-to-end proof, 2026-08-13 — previously only
+`sent` in `sync_runs`, which proves a valid payload and nothing about attribution). Last
+30 days on campaign 23633267649, via `segments.conversion_action_name` on `campaign`:
+Lead Created 7.39 · Estimate Created 7.22 ($1,400) · Estimate Scheduled 6.00 ($6,300) ·
+**Estimate Won absent (zero)** — the estimates-staleness bug in the watch-outs, which
+froze ~5 in 6 wins at `qualified` so almost nothing ever reached the `won` export stage.
+That row is the check that the fix worked.
 
 **Decision (2026-08-10, Justin):** promote **Lead Created** to the biddable signal; leave
 Won as observation for now. Volume is the reason — 21 won leads against 211 qualified is
 far too thin for Smart Bidding to learn on won revenue, and a value-based strategy fed
 that sparsely optimizes noise.
 
-**Sequencing matters, and is deliberate:** promote only AFTER uploads are confirmed
+**Sequencing mattered, and was deliberate:** promote only AFTER uploads are confirmed
 flowing. Flipping first means the 90-day backfill lands as a single spike into a live
 bidding signal, which reads as a sudden performance change that has nothing to do with the
 ads. Backfill while observation-only, confirm the counts, then promote.
@@ -266,6 +293,19 @@ re-argued rather than assumed.
   **The inbox is such a surface, deliberately un-excluded:** a recruiting enquiry is still
   someone contacting the business, so it threads and shows in `/inbox` — it just never
   becomes a lead, so it stays out of ROI either way.
+- **An HCP estimate's `updated_at` does NOT move when an option is priced, approved,
+  declined or expired** — all of that lives on `options[]`, which carries its own
+  `updated_at`. Found 2026-08-13: `listEstimates` windowed on the header timestamp, so
+  every estimate was read exactly once, at creation, when it is unpriced
+  (`total_amount: 0`) and undecided (`approval_status: null`), and never again. Approvals
+  were invisible — ~5 in 6 won estimates sat frozen at `qualified`, and the funnel showed
+  a ~6% close rate against a real one near 30%. The fix is a rolling `created_at` re-read
+  (`ESTIMATE_REPULL_DAYS`, 120d) alongside the incremental pass; `estimateTouchedAt()` is
+  the option-aware "when did this really change", and feeds `updated_at_hcp` so
+  `attribution.run` re-derives late approvals. **Nothing about this was visible from
+  inside the app** — the sync reported success, row counts looked healthy, and only
+  comparing a lead against its estimate in HCP showed it. Treat "is this field really the
+  last-modified?" as a thing to verify per endpoint, not assume.
 - Spend sync is self-healing (`lib/sync/spend.ts`): rolling 35-day re-pull (platforms restate) + automatic cold-start backfill reaching to each platform's earliest lead (≤365d — spend with no leads to match is deliberately not fetched), keyed `(platform, external_campaign_id, date)`. No manual backfills.
 - **The ad platforms' UTM templates are part of this app's input contract, and they drifted
   (audited + fixed 2026-08-12).** Google Ads applies the most specific tracking template only —

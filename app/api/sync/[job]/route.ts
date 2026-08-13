@@ -9,7 +9,7 @@ import { syncLsaLeads } from "@/lib/sync/lsa";
 import { syncConversions } from "@/lib/sync/conversions";
 import { syncFacebookLeads } from "@/lib/sync/facebook-leads";
 import { releaseExpired } from "@/lib/dni/assign";
-import { backfillNumberWebhooks } from "@/lib/twilio/numbers";
+import { syncNumberWebhooks } from "@/lib/sync/twilio-webhooks";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -44,7 +44,7 @@ export async function POST(_req: Request, { params }: { params: Promise<{ job: s
       case "twilio-fallback":
         // Re-assert every tracking number's Twilio webhooks: the voice fallback
         // (so calls still connect if the app is unreachable) and the SMS webhook.
-        return Response.json({ ok: true, result: await backfillNumberWebhooks() });
+        return Response.json({ ok: true, result: await syncNumberWebhooks() });
       case "transcribe":
         return Response.json({ ok: true, result: await syncTranscriptions({ limit: 25 }) });
       case "classify-messages":

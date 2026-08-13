@@ -111,9 +111,18 @@ export async function backfillNumberWebhooks() {
   const rows = await db.select().from(trackingNumbers).where(eq(trackingNumbers.status, "active"));
 
   let updated = 0;
+  // An active number with no Twilio SID is unreachable by this job forever: its
+  // smsUrl and voice fallback can never be written, so texts to it go nowhere and
+  // a deploy drops its calls. Counted rather than skipped in silence, because
+  // `numbers: 11, updated: 11` and `numbers: 11, updated: 8` looked equally
+  // healthy from the outside.
+  let skippedNoSid = 0;
   const errors: string[] = [];
   for (const row of rows) {
-    if (!row.twilioSid) continue;
+    if (!row.twilioSid) {
+      skippedNoSid++;
+      continue;
+    }
     try {
       await client.incomingPhoneNumbers(row.twilioSid).update({
         ...voiceFallbackFor(row.forwardDestination ?? defaultForward),
@@ -124,7 +133,9 @@ export async function backfillNumberWebhooks() {
       errors.push(`${row.phoneNumber}: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
-  return { numbers: rows.length, updated, errors };
+  // `errorCount` duplicates errors.length on purpose: /api/diagnostics warns off
+  // NUMERIC stats keys, so the array alone would be persisted and never alerted on.
+  return { numbers: rows.length, updated, skippedNoSid, errorCount: errors.length, errors };
 }
 
 /**
