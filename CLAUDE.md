@@ -266,6 +266,19 @@ re-argued rather than assumed.
   **The inbox is such a surface, deliberately un-excluded:** a recruiting enquiry is still
   someone contacting the business, so it threads and shows in `/inbox` — it just never
   becomes a lead, so it stays out of ROI either way.
+- **An HCP estimate's `updated_at` does NOT move when an option is priced, approved,
+  declined or expired** — all of that lives on `options[]`, which carries its own
+  `updated_at`. Found 2026-08-13: `listEstimates` windowed on the header timestamp, so
+  every estimate was read exactly once, at creation, when it is unpriced
+  (`total_amount: 0`) and undecided (`approval_status: null`), and never again. Approvals
+  were invisible — ~5 in 6 won estimates sat frozen at `qualified`, and the funnel showed
+  a ~6% close rate against a real one near 30%. The fix is a rolling `created_at` re-read
+  (`ESTIMATE_REPULL_DAYS`, 120d) alongside the incremental pass; `estimateTouchedAt()` is
+  the option-aware "when did this really change", and feeds `updated_at_hcp` so
+  `attribution.run` re-derives late approvals. **Nothing about this was visible from
+  inside the app** — the sync reported success, row counts looked healthy, and only
+  comparing a lead against its estimate in HCP showed it. Treat "is this field really the
+  last-modified?" as a thing to verify per endpoint, not assume.
 - Spend sync is self-healing (`lib/sync/spend.ts`): rolling 35-day re-pull (platforms restate) + automatic cold-start backfill reaching to each platform's earliest lead (≤365d — spend with no leads to match is deliberately not fetched), keyed `(platform, external_campaign_id, date)`. No manual backfills.
 - **The ad platforms' UTM templates are part of this app's input contract, and they drifted
   (audited + fixed 2026-08-12).** Google Ads applies the most specific tracking template only —

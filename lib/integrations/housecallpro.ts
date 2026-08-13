@@ -22,6 +22,20 @@ interface HcpConfig {
  *  keeping the pull bounded server-side. */
 const JOBS_MIN_WINDOW_DAYS = 180;
 
+/**
+ * How far back `/estimates` is re-read in full on EVERY run, keyed on `created_at`.
+ * See `listEstimates` for why an `updated_at` window cannot work here.
+ *
+ * Sized off the observed decision window: Arbor's estimates settle (approve,
+ * decline, or expire) within roughly 30 days of creation — the slowest in the
+ * 2026-08-13 sample took 34. 120 days is ~4× that, and matches the 120-day
+ * lookback `attribution.run` already scans, so nothing re-read here lands outside
+ * the window that would re-derive it. At ~500 estimates/month that is ~2,000 rows
+ * (20 pages) per run, comfortably inside the 50-page cap in `paginate` — but the
+ * margin is volume-dependent, so the truncation warning there is what to watch.
+ */
+const ESTIMATE_REPULL_DAYS = 120;
+
 class HousecallProProvider implements RevenueProvider {
   readonly name = "housecallpro:direct";
 
@@ -51,9 +65,14 @@ class HousecallProProvider implements RevenueProvider {
 
   /**
    * Paginate a newest-first list. `stopOlderThanMs` early-stops the moment a page's
-   * last item was updated before the cutoff — so a 30-day sync reads a few pages, not
+   * last item is older than the cutoff — so a 30-day sync reads a few pages, not
    * the whole account history (endpoints without a server-side date filter would
    * otherwise walk to the 100-page cap and time the function out).
+   *
+   * `sortedOn` MUST name the field the request is actually sorted by: the early
+   * stop is only sound because the list is descending on that field. Reading
+   * `updated_at` off a list sorted by `created_at` would stop on the first row
+   * that happens to be old, mid-list, and silently drop the rest.
    */
   private async paginate(
     cfg: HcpConfig,
@@ -61,6 +80,7 @@ class HousecallProProvider implements RevenueProvider {
     listKey: string,
     query: Record<string, string | number> = {},
     stopOlderThanMs?: number,
+    sortedOn: (row: Record<string, unknown>) => Date | null = (r) => parseDate(r.updated_at ?? r.updated_at_iso),
   ): Promise<Array<Record<string, unknown>>> {
     const out: Array<Record<string, unknown>> = [];
     const pageSize = 100;
@@ -76,7 +96,7 @@ class HousecallProProvider implements RevenueProvider {
       if (items.length < pageSize) return out;
       if (stopOlderThanMs != null) {
         const last = items[items.length - 1];
-        const u = parseDate(last?.updated_at ?? last?.updated_at_iso);
+        const u = last ? sortedOn(last) : null;
         if (u && u.getTime() < stopOlderThanMs) return out; // sorted desc → the rest is older
       }
     }
@@ -155,17 +175,66 @@ class HousecallProProvider implements RevenueProvider {
       .map(mapJob);
   }
 
+  /**
+   * Estimates cannot be synced incrementally on `updated_at`, because HCP does not
+   * touch it when the things we actually measure change.
+   *
+   * Verified against the live account 2026-08-13: an estimate is priced, approved,
+   * declined and expired entirely through its `options[]`, and only the OPTION's
+   * `updated_at` moves. Three examples, all approved with a job created, all still
+   * carrying `updated_at == created_at` on the estimate itself:
+   *
+   *   csr … 2026-07-09  header 2026-07-09  option 2026-08-10  approved $2,357.50
+   *   csr … 2026-07-09  header 2026-07-09  option 2026-07-14  approved $1,120.00
+   *   csr … 2026-07-08  header 2026-07-08  option 2026-07-20  approved   $187.50
+   *
+   * An `updated_at` window therefore reads each estimate exactly once — at
+   * creation, when it is unpriced (`total_amount: 0`) and undecided
+   * (`approval_status: null`) — and never again. Every later approval is invisible.
+   * That is not a slow drift: it silently froze ~5 in 6 won estimates at
+   * `qualified`, so the funnel showed a ~6% close rate against a real one near 30%.
+   *
+   * The fix is a rolling re-read keyed on `created_at`, in the same spirit as the
+   * spend sync's 35-day re-pull: an estimate young enough to still be in play is
+   * re-read on every run, so a decision lands within the hour however it was made.
+   * The `updated_at` pass is kept alongside it — it is one page, and it is the only
+   * one that catches a header-level change (reschedule, cancellation) on an
+   * estimate that has aged out of the re-read window.
+   */
   async listEstimates({ sinceDays }: { sinceDays: number }): Promise<HcpEstimateDTO[]> {
     const cfg = await this.config();
     const cutoff = Date.now() - sinceDays * 86_400_000;
-    const rows = await this.paginate(cfg, "/estimates", "estimates", {
-      sort_by: "updated_at",
-      sort_direction: "desc",
-    }, cutoff);
-    return rows
+    // Explicit backfills widen the re-read rather than narrowing it — a caller
+    // asking for 365 days wants 365 days of estimates re-derived, not 120.
+    const repullMs = Date.now() - Math.max(sinceDays, ESTIMATE_REPULL_DAYS) * 86_400_000;
+
+    const [byUpdated, byCreated] = await Promise.all([
+      this.paginate(cfg, "/estimates", "estimates", { sort_by: "updated_at", sort_direction: "desc" }, cutoff),
+      this.paginate(
+        cfg,
+        "/estimates",
+        "estimates",
+        { sort_by: "created_at", sort_direction: "desc" },
+        repullMs,
+        (r) => parseDate(r.created_at),
+      ),
+    ]);
+
+    // The two passes overlap heavily; keep one row per id.
+    const merged = new Map<string, Record<string, unknown>>();
+    for (const r of [...byUpdated, ...byCreated]) merged.set(String(r.id), r);
+
+    return [...merged.values()]
       .filter((e) => {
-        const updated = parseDate(e.updated_at ?? e.updated_at_iso);
-        return !updated || updated.getTime() >= cutoff;
+        const created = parseDate(e.created_at);
+        // Inside the re-read window: always keep, whatever the timestamps say —
+        // this pass exists precisely because they under-report.
+        if (created && created.getTime() >= repullMs) return true;
+        // Older: keep only if something genuinely moved. `estimateTouchedAt`
+        // reads the options too, so a late approval on an aged estimate is not
+        // discarded here just because the header stayed still.
+        const touched = estimateTouchedAt(e);
+        return !touched || touched.getTime() >= cutoff;
       })
       .map(mapEstimate);
   }
@@ -180,6 +249,29 @@ function parseDate(v: unknown): Date | null {
   if (!v || typeof v !== "string") return null;
   const d = new Date(v);
   return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function estimateOptions(e: Record<string, unknown>): Array<Record<string, unknown>> {
+  return Array.isArray(e.options) ? (e.options as Array<Record<string, unknown>>) : [];
+}
+
+/**
+ * When this estimate last actually changed — the newest of the header's own
+ * `updated_at` and every option's.
+ *
+ * The estimate's `updated_at` alone is not that: pricing and approval move only
+ * the option (see `listEstimates`), so an approved estimate routinely reports a
+ * header timestamp equal to its `created_at`. Anything asking "has this changed
+ * since we last looked?" — the aged-estimate filter here, and
+ * `hcp_estimates.updated_at_hcp`, which is what `attribution.run` re-scans on —
+ * has to read the options or it will answer "no" to every approval there is.
+ */
+function estimateTouchedAt(e: Record<string, unknown>): Date | null {
+  const times = [
+    parseDate(e.updated_at ?? e.updated_at_iso),
+    ...estimateOptions(e).map((o) => parseDate(o.updated_at)),
+  ].filter((d): d is Date => d != null);
+  return times.length ? new Date(Math.max(...times.map((d) => d.getTime()))) : null;
 }
 
 function mapCustomer(c: Record<string, unknown>): HcpCustomerDTO {
@@ -231,7 +323,7 @@ const LOST_STATUSES = new Set(["declined", "pro declined", "expired"]);
  */
 function mapEstimate(e: Record<string, unknown>): HcpEstimateDTO {
   const customer = e.customer as Record<string, unknown> | undefined;
-  const options = Array.isArray(e.options) ? (e.options as Array<Record<string, unknown>>) : [];
+  const options = estimateOptions(e);
 
   const approvalOf = (o: Record<string, unknown>) => String(o.approval_status ?? "").trim().toLowerCase();
   const optAmount = (o: Record<string, unknown>) => cents(o.total_amount ?? o.total ?? o.amount);
@@ -243,13 +335,18 @@ function mapEstimate(e: Record<string, unknown>): HcpEstimateDTO {
 
   const approvedOptions = options.filter((o) => APPROVED_STATUSES.has(approvalOf(o)));
   const approvedAmountCents = approvedOptions.reduce((sum, o) => sum + optAmount(o), 0);
-  // When HCP carries a per-option approval timestamp, use the earliest one;
-  // otherwise fall back to the estimate's updated_at — which drifts on ANY edit,
-  // so downstream it is display/conversion-timing only (the attribution window
-  // is clamped to created_at_hcp, never to this).
+  // Approval time, best available. HCP exposes no dedicated approval timestamp on
+  // an option (`approved_at` / `approval_status_updated_at` are not in the payload
+  // — kept here only in case they appear), so the real signal is the option's own
+  // `updated_at`: approval is normally the last thing that happens to an option,
+  // and it is the ONLY field that moves at all when one is approved. The estimate's
+  // `updated_at` stays as a final fallback but is nearly worthless for this — on an
+  // approved estimate it usually still equals `created_at`. Downstream this is
+  // display/conversion-timing only (the attribution window is clamped to
+  // created_at_hcp, never to this).
   const approvedAt =
     approvedOptions
-      .map((o) => parseDate(o.approved_at ?? o.approval_status_updated_at))
+      .map((o) => parseDate(o.approved_at ?? o.approval_status_updated_at ?? o.updated_at))
       .filter((d): d is Date => d != null)
       .sort((a, b) => a.getTime() - b.getTime())[0] ?? null;
   // Quote value = the HIGHEST-value option, not the sum: multiple options are usually
@@ -278,7 +375,11 @@ function mapEstimate(e: Record<string, unknown>): HcpEstimateDTO {
     // scheduling"), so a null here is meaningful, not missing data.
     scheduledStartHcp: parseDate((e.schedule as Record<string, unknown>)?.scheduled_start),
     approvedAtHcp: won ? approvedAt ?? parseDate(e.updated_at ?? e.created_at) : null,
-    updatedAtHcp: parseDate(e.updated_at ?? e.created_at),
+    // Option-aware, so `attribution.run`'s `updated_at_hcp >= lookback` arm actually
+    // fires on a late approval. Reading the header alone left an approved estimate
+    // reporting its creation time, so the one pass that could have re-derived the
+    // lead skipped it.
+    updatedAtHcp: estimateTouchedAt(e) ?? parseDate(e.created_at),
     raw: e,
   };
 }

@@ -58,8 +58,14 @@ export async function syncHcp(
     if (!provider) return { skipped: "HousecallPro credentials not set", customers: 0, jobs: 0, estimates: 0 };
 
     // Incremental window for the two endpoints that walk history (no server date
-    // filter). Explicit `sinceDays` forces a full backfill. Keyed on updated_at, so
-    // an approval to an old estimate resurfaces and flips it to won.
+    // filter). Explicit `sinceDays` forces a full backfill.
+    //
+    // This window is keyed on `updated_at` and is therefore the RIGHT tool for
+    // customers and the WRONG one for estimates on its own: HCP does not move an
+    // estimate's `updated_at` when an option is priced or approved, so a narrow
+    // window here would read every estimate once, at creation, and never see the
+    // approval. `listEstimates` compensates with a rolling `created_at` re-read and
+    // treats this value as a floor — see the comment there before narrowing it.
     const windowDays =
       sinceDays ?? (await incrementalWindowDays("hcp.sync.jobs", { overlapHours: 2, maxDays: MAX_WINDOW_DAYS }));
 
