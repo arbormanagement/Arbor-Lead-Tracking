@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, isNull, sql } from "drizzle-orm";
+import { and, desc, eq, gte, isNull, ne, sql } from "drizzle-orm";
 import { authorizeAdmin, unauthorized } from "@/lib/admin-auth";
 import { credentialStatus } from "@/lib/credentials";
 import { CREDENTIAL_SPECS } from "@/lib/credentials/spec";
@@ -54,41 +54,60 @@ export async function GET(req: Request) {
   // The whole model is fire-and-log, so "when did each job last SUCCEED" is the
   // question that actually matters — a job erroring for three days looks fine in
   // the logs and shows up nowhere else.
-  const runs = await db
-    .select({
+  //
+  // Two DISTINCT ON queries, not one capped scan. This used to read the newest 500
+  // runs and derive both answers from them, which quietly made "has this job ever
+  // succeeded?" a question about ROW COUNT rather than about the job: ~10 jobs
+  // ticking hourly fill 500 rows in about two days, so a DAILY job whose last
+  // success was three days ago fell off the end and was reported as
+  // `lastSuccessAt: null` — rendered to the operator as "has never succeeded".
+  // Observed 2026-08-13 on lsa.sync.leads, which had in fact been importing leads
+  // since 2026-07-06. A health endpoint that cries wolf about the two jobs running
+  // least often is worse than one that says nothing.
+  //
+  // DISTINCT ON returns one row per job whatever the history looks like, so the
+  // output stays small while the lookback becomes unbounded — and both queries ride
+  // the same (job, started_at) ordering.
+  const latestRuns = await db
+    .selectDistinctOn([syncRuns.job], {
       job: syncRuns.job,
       status: syncRuns.status,
       startedAt: syncRuns.startedAt,
       finishedAt: syncRuns.finishedAt,
       error: syncRuns.error,
+    })
+    .from(syncRuns)
+    .orderBy(syncRuns.job, desc(syncRuns.startedAt));
+
+  const latestSuccesses = await db
+    .selectDistinctOn([syncRuns.job], {
+      job: syncRuns.job,
+      startedAt: syncRuns.startedAt,
       stats: syncRuns.stats,
     })
     .from(syncRuns)
-    .where(gte(syncRuns.startedAt, new Date(now.getTime() - 30 * 86_400_000)))
-    .orderBy(desc(syncRuns.startedAt))
-    .limit(500);
+    .where(eq(syncRuns.status, "success"))
+    .orderBy(syncRuns.job, desc(syncRuns.startedAt));
 
-  const byJob = new Map<string, { last: (typeof runs)[number]; lastSuccess?: (typeof runs)[number] }>();
-  for (const r of runs) {
-    const e = byJob.get(r.job);
-    if (!e) byJob.set(r.job, { last: r, lastSuccess: r.status === "success" ? r : undefined });
-    else if (!e.lastSuccess && r.status === "success") e.lastSuccess = r;
-  }
-  const jobs = [...byJob.entries()]
-    .map(([job, e]) => ({
-      job,
-      lastStatus: e.last.status,
-      lastStartedAt: e.last.startedAt,
-      lastError: e.last.status === "error" ? e.last.error : null,
-      lastSuccessAt: e.lastSuccess?.startedAt ?? null,
-      hoursSinceSuccess: e.lastSuccess
-        ? Math.round(((now.getTime() - +e.lastSuccess.startedAt) / 3_600_000) * 10) / 10
-        : null,
-      lastSuccessStats: e.lastSuccess?.stats ?? null,
-      // A job stuck `running` past the reaper's 6h window means a process died
-      // mid-run and the claim is blocking every later tick.
-      stuckRunning: e.last.status === "running" && +e.last.startedAt < now.getTime() - 6 * 3_600_000,
-    }))
+  const successByJob = new Map(latestSuccesses.map((r) => [r.job, r]));
+  const jobs = latestRuns
+    .map((last) => {
+      const lastSuccess = successByJob.get(last.job);
+      return {
+        job: last.job,
+        lastStatus: last.status,
+        lastStartedAt: last.startedAt,
+        lastError: last.status === "error" ? last.error : null,
+        lastSuccessAt: lastSuccess?.startedAt ?? null,
+        hoursSinceSuccess: lastSuccess
+          ? Math.round(((now.getTime() - +lastSuccess.startedAt) / 3_600_000) * 10) / 10
+          : null,
+        lastSuccessStats: lastSuccess?.stats ?? null,
+        // A job stuck `running` past the reaper's 6h window means a process died
+        // mid-run and the claim is blocking every later tick.
+        stuckRunning: last.status === "running" && +last.startedAt < now.getTime() - 6 * 3_600_000,
+      };
+    })
     .sort((a, b) => a.job.localeCompare(b.job));
 
   // ── DNI pool ────────────────────────────────────────────────────────────────
@@ -138,7 +157,12 @@ export async function GET(req: Request) {
       n: sql<number>`count(*)::int`,
     })
     .from(conversionExports)
-    .where(gte(conversionExports.attempts, MAX_EXPORT_ATTEMPTS))
+    // `attempts >= cap` alone is not abandonment — a row that FAILED four times and
+    // then succeeded on the fifth still carries attempts = 5, and was being counted
+    // here as permanently given up on. That put a standing "will never be retried"
+    // warning on the endpoint (and pinned `ok` to false) over a conversion that had
+    // in fact landed. Abandoned means past the cap AND still not sent.
+    .where(and(gte(conversionExports.attempts, MAX_EXPORT_ATTEMPTS), ne(conversionExports.status, "sent")))
     .groupBy(conversionExports.platform, conversionExports.event, conversionExports.attempts, conversionExports.error)
     .orderBy(desc(sql`count(*)`))
     .limit(10);
