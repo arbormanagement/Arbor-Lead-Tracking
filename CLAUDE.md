@@ -118,8 +118,15 @@ things from it that constrain this codebase:
   PR #14 removed `swap.js` **and** `data-shadow` in one deploy). **Shadow mode is over —
   `track.js` now calls `/api/dni/assign` and owns the displayed number.** Verified live:
   session-sticky leases, distinct numbers per visitor, `gclid` frozen onto the lease, and a
-  test call to a leased pool number completing cleanly. Pool = the 5 transferred CallRail
-  pool numbers; the 5 published numbers plus test line `+16184278164` are static.
+  test call to a leased pool number completing cleanly. **Roster as verified 2026-08-13 —
+  6 pool + 5 static, and it has CHANGED since cutover, so re-read it rather than trusting a
+  count quoted anywhere else.** Pool: `+16184278164` (Website 1), `+16182059820` (2),
+  `+16186815764` (3), `+16183504871` (4), `+16183504252` (5), `+16183522730` (6). Static:
+  `+16184145907` (Google Ads call asset, `google/cpc`), `+16183669977` (LSA, `google/lsa`),
+  `+16183682902` (GBP Edwardsville), `+16183504451` (GBP O'Fallon), `+16182053094` (Direct).
+  Website 2–6 are the CallRail transfers (Twilio `date_created` 08-08); **`+16184278164` was
+  the static test line and has since been ADDED to the pool as Website 1** (created 06-29),
+  which is why older notes call it static and count the pool as 5.
 - **⚠️ `TWILIO_AUTH_TOKEN` must stay set on the Railway `web` service.** It was unset from
   the Railway migration until 2026-08-08, and because `/api/twilio/status` and
   `/api/twilio/recording` **fail CLOSED** (`sig === "unresolved"` → 403 in production;
@@ -396,15 +403,24 @@ re-argued rather than assumed.
   the templates that minted them are fixed.
 - **Pool capacity is set by HOLD TIME, not pool size** — `LEASE_MINUTES` ÷ numbers is how many
   visitors an hour the pool can serve, and the lease window is pushed forward on every pageview,
-  so it is idle time after the LAST one. At 30 minutes the 5 numbers served ~7.5 visitors/hour
-  against a measured peak of 9 (GA4, 14 days), so the pool sat exhausted through busy hours and
-  those visitors got the static fallback — which is the site's own published number, so their
-  sessions are indistinguishable from untracked direct traffic. Cut to 15 on 2026-08-12.
+  so it is idle time after the LAST one. **The historical account below was computed when the
+  pool was smaller — it is 6 now (see the roster above), so recheck the arithmetic against the
+  current count before reusing any figure in it.**
+  At 30 minutes the then-5 numbers served ~7.5 visitors/hour against a measured peak of 9
+  (GA4, 14 days), so the pool sat exhausted through busy hours and those visitors got the
+  static fallback — which is the site's own published number, so their sessions are
+  indistinguishable from untracked direct traffic. Cut to 15 on 2026-08-12.
   **Reach for hold time before buying numbers:** CallRail's published rule (pool = peak hourly
-  visitors ÷ 4, min 4) returns 4 for Arbor, so 5 numbers was never the constraint — it ran the
-  same 5 for the same traffic without exhausting. `exhausted` in `/api/diagnostics` is the
-  signal; if it returns, `MAX_ACTIVE_LEASES_PER_VISITOR = 2` is the next lever (CallRail
+  visitors ÷ 4, min 4) returns 4 for Arbor, so pool size was never the constraint — it ran the
+  same numbers for the same traffic without exhausting. `exhausted` in `/api/diagnostics` is
+  the signal; if it returns, `MAX_ACTIVE_LEASES_PER_VISITOR = 2` is the next lever (CallRail
   assigns one per session).
+  **At 6 numbers × 15 minutes the ceiling is ~24 visitors/hour against that same peak of 9 —
+  a much wider margin than the setting was chosen for**, because the pool grew AND the hold
+  time was cut. So `LEASE_MINUTES` is now likely more conservative than it needs to be, and a
+  longer hold buys back session stickiness for a visitor who leaves and returns. Do not raise
+  it on this arithmetic alone: confirm `exhausted` is still absent in `/api/diagnostics` first,
+  since bursty arrivals exhaust a pool that average capacity says is fine.
 - **Two visitors with IDENTICAL attribution share one number** (`findShareableLease`, checked
   before leasing). The pool exists to tell sources apart, and `roi_daily` keys on
   (date, source, campaign, location) — so two `direct` visitors with no click id already land
