@@ -354,6 +354,12 @@ re-argued rather than assumed.
 - Threading in `/voice` is best-effort (wrapped in try/catch — it must never cost a
   forward). The `thread-backfill` cron is the repair path for calls that missed it, and
   backfilled the pre-inbox history on its first runs.
+- **`+16183103486` is Justin's personal number for review outreach — NOT a tracking number.**
+  It sits in the same Twilio account, but its `smsUrl` points at the MCP server and its
+  voice URL at a Twilio demo page. It is deliberately outside this app: its texts never
+  reach `/api/twilio/sms`, never thread, and never become leads. Do not "fix" it to point at
+  the app while auditing webhooks — that would pull personal customer conversations into the
+  Inbox. It is not in `tracking_numbers`, so `backfillNumberWebhooks` already leaves it alone.
 - **Texts only work if the number's Twilio `smsUrl` is set.** `backfillNumberWebhooks`
   (hourly `twilio-fallback` cron) re-asserts it on every active number, which is how the
   ten CallRail-transferred numbers got it. Same Monitor Alerts diagnostic as below applies.
