@@ -24,7 +24,7 @@
  *                          that is what Vercel Cron used, so the ported patterns
  *                          below fire at exactly the same wall-clock times as
  *                          before. Set America/Chicago to reinterpret them as
- *                          Central (this moves the daily spend/lsa jobs from
+ *                          Central (this moves the daily spend jobs from
  *                          ~2:37am to 7:37am local).
  *   CRON_JOBS              optional comma-separated allowlist, for running a
  *                          subset in a second worker.
@@ -56,7 +56,6 @@ const JOBS: Array<{ job: string; schedule: string; timeoutMs?: number }> = [
   { job: "fbleads", schedule: "9,24,39,54 * * * *", timeoutMs: 300_000 },
   { job: "conversions", schedule: "37 * * * *", timeoutMs: 600_000 },
   { job: "spend", schedule: "37 7 * * *", timeoutMs: 900_000 },
-  { job: "lsa", schedule: "47 7 * * *", timeoutMs: 600_000 },
   { job: "twilio-fallback", schedule: "52 * * * *", timeoutMs: 300_000 },
   // Backfills pre-inbox call history on its first runs, then idles at zero rows —
   // staying on as the repair path for the voice webhook's best-effort threading.

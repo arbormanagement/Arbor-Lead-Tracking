@@ -232,6 +232,13 @@
       "when": 1786721478097,
       "tag": "0032_fix_lsa_lead_timestamps",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1786721538097,
+      "tag": "0033_drop_lsa_leads",
+      "breakpoints": true
     }
   ]
 }

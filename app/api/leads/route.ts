@@ -22,7 +22,7 @@ const Query = z.object({
   q: z.string().max(200).optional(),
   // Mirrors leadTypeEnum / leadStatusEnum in lib/db/schema.ts exactly — a value
   // that isn't in the pg enum fails the query rather than matching nothing.
-  type: z.enum(["call", "web_form", "facebook_leadgen", "lsa", "manual"]).optional(),
+  type: z.enum(["call", "web_form", "facebook_leadgen", "lsa", "manual", "sms", "email"]).optional(),
   status: z
     .enum(["new", "working", "qualified", "quoted", "won", "lost", "cancelled", "spam", "duplicate"])
     .optional(),
