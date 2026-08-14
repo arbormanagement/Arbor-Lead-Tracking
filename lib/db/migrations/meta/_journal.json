@@ -197,6 +197,13 @@
       "when": 1786720203088,
       "tag": "0027_merge_duplicate_gbp_source",
       "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1786720566996,
+      "tag": "0028_rename_meta_ads_source",
+      "breakpoints": true
     }
   ]
 }

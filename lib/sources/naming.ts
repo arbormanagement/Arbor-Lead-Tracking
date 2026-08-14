@@ -33,8 +33,8 @@ export const UNMAPPED_SOURCE_KEY = "other";
 const KNOWN: Record<string, string> = {
   "google/cpc": "Google Ads (Search)",
   "google/lsa": "Google Local Services",
-  "facebook/paid": "Facebook / Instagram Ads",
-  "facebook/organic": "Facebook (Organic)",
+  "facebook/paid": "Meta Ads",
+  "facebook/organic": "Meta (Organic)",
   "organic/seo": "Organic Search",
   gbp: "Google Business Profile",
   direct: "Direct",

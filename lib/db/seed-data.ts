@@ -22,7 +22,7 @@ export const SEED_SOURCES: Array<{
 }> = [
   { key: "google/cpc", displayName: "Google Ads (Search)", platform: "google", costModel: "cpc" },
   { key: "google/lsa", displayName: "Google Local Services", platform: "google_lsa", costModel: "cpl" },
-  { key: "facebook/paid", displayName: "Facebook / Instagram Ads", platform: "facebook", costModel: "cpc" },
+  { key: "facebook/paid", displayName: "Meta Ads", platform: "facebook", costModel: "cpc" },
   { key: "organic/seo", displayName: "Organic Search", platform: "other", costModel: "none" },
   { key: "gbp", displayName: "Google Business Profile", platform: "other", costModel: "none" },
   { key: "direct", displayName: "Direct", platform: "other", costModel: "none" },
