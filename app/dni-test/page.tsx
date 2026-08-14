@@ -98,7 +98,7 @@ export default async function DniTestPage({ searchParams }: { searchParams: Prom
       <p className="muted" style={{ fontSize: 12, marginTop: 20, lineHeight: 1.6 }}>
         <strong>How to run it:</strong> pick a source preset above → confirm the number swaps and
         the expected source matches → call the swapped number from your phone → open{" "}
-        <Link href="/leads" style={{ color: "var(--accent)" }}>/leads</Link> and confirm the call landed with that source.
+        <Link href="/inbox" style={{ color: "var(--accent)" }}>/inbox</Link> and confirm the call landed with that source.
         Repeat with a different preset to prove each channel. Note this page runs the real snippet, so each
         visit leases a real number from the pool for 30 minutes. The snippet swaps every{" "}
         <code>tel:</code> link on whatever page it runs on, not just the{" "}

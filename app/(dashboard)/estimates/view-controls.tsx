@@ -15,7 +15,7 @@ export function ViewControls({ groups, days }: { groups: Dim[]; days: number }) 
     if (nextGroups.length) q.set("g", nextGroups.join(","));
     if (nextDays !== 90) q.set("days", String(nextDays));
     const qs = q.toString();
-    router.push(qs ? `/leads?${qs}` : "/leads");
+    router.push(qs ? `/estimates?${qs}` : "/estimates");
   };
 
   const label = (d: Dim) => DIMS.find((x) => x.key === d)!.label;

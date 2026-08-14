@@ -7,10 +7,11 @@ import { usePathname } from "next/navigation";
 // Settings — the sidebar stays the day-to-day working set.
 const NAV: Array<{ href: string; label: string; ic: string; section?: string }> = [
   { href: "/", label: "Overview", ic: "◧" },
-  // Inbox = everything that came in (calls, texts, later email). Leads = the
-  // subset confirmed to be estimate requests.
+  // Inbox = everything that came in (calls, texts, later email). Estimates = the
+  // opportunities, counted from HousecallPro rather than from what we could track,
+  // so repeat business and referrals appear instead of being invisible.
   { href: "/inbox", label: "Inbox", ic: "☎" },
-  { href: "/leads", label: "Leads", ic: "✦" },
+  { href: "/estimates", label: "Estimates", ic: "✦" },
   { href: "/sources", label: "Sources", ic: "◈" },
   // Campaign sits beside source rather than nested under it: it is the level
   // budget actually moves at, so it is a destination, not a drill-down.

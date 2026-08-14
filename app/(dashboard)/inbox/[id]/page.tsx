@@ -18,7 +18,7 @@ import { dateTime, dollars, durationLabel } from "@/lib/format";
 import { markThreadRead } from "@/lib/messaging/thread";
 import { formatPhoneDisplay } from "@/lib/phone";
 import { LeadToggle } from "../../lead-toggle";
-import { stageClass } from "../../leads/stage";
+import { stageClass } from "../../stage";
 import { contactName } from "../contact-name";
 import { ReplyBox } from "./reply-box";
 import { ThreadStateButton } from "./thread-state";
