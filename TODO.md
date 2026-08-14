@@ -104,6 +104,24 @@ export. Needs a debounce: the 5-minute delay is accidentally doing that work, an
 classifying on the first webhook would judge "Hi" alone and lock in the wrong
 answer via the `isNull(is_lead)` guard.
 
+### 6b. The classifier can silently degrade, and nothing reports it
+`classifyCallLead` falls back to the keyword classifier in `lib/transcription/analyze.ts`
+— an 11-phrase list — whenever the Anthropic key is missing or the API throws, and
+returns `method: "ai" | "keyword"` saying which ran. **That field is computed and
+then discarded; nothing persists it.** So a lapsed key or a bad hour at Anthropic
+would keep writing `is_lead` verdicts at quietly worse quality, with no signal
+anywhere — and `is_lead` is the gate that makes **Lead Created** trustworthy as the
+biddable signal.
+
+Measured 08-08→08-13: Lead Created 9.39 → Estimate Created 9.22 (**98%** of exported
+leads got an HCP estimate) → Estimate Scheduled 8.00 (85%). That is good, but it is
+*precision*, and it would read identically if half those verdicts had come from
+keyword matching.
+
+Fix: persist `method` on `leads` (or `calls`), and surface a keyword-fallback count
+in `/api/diagnostics` alongside `failingExports`. Small, and it turns "are we sure
+Lead Created is accurate?" from an inference into a reading.
+
 ### 7. Add `+16183103486` to `spam_rules`
 Justin's personal number, used to test. `isHardSpamNumber` is checked on both the
 voice and SMS webhooks, so a rule there keeps test calls and texts out of leads,
