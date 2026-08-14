@@ -1,4 +1,5 @@
 import { getPlatformCreds } from "@/lib/credentials";
+import { parseWallTime } from "@/lib/tz";
 import { fetchWithRetry } from "./http";
 import type { SpendProvider, SpendRow } from "./types";
 
@@ -156,7 +157,10 @@ class GoogleAdsProvider implements SpendProvider {
     for (const r of results) {
       const l = r.localServicesLead ?? {};
       const cd = l.contactDetails ?? {};
-      const created = l.creationDateTime ? new Date(l.creationDateTime) : null;
+      // NOT `new Date(...)`: the field is a bare "yyyy-MM-dd HH:mm:ss" in the
+      // ACCOUNT's timezone, and Node would read an offset-less string as the
+      // server's local time (UTC on Railway), filing every lead five hours early.
+      const created = l.creationDateTime ? parseWallTime(l.creationDateTime) : null;
       if (created && created.getTime() < cutoff) continue;
       out.push({
         id: String(l.id ?? ""),
