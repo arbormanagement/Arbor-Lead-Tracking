@@ -69,6 +69,25 @@ export const isCancelledEstimate: SQL = and(
 )!;
 
 /**
+ * Every estimate that still exists as work — created, not cancelled, whether or not
+ * it has an appointment yet.
+ *
+ * This is what `/estimates` LISTS. It is deliberately NOT what any rate is computed
+ * from: conversion is won ÷ countable (scheduled), per Justin 2026-08-14, because an
+ * estimate nobody booked a visit for was never a sales opportunity and letting those
+ * into the denominator is most of what turns a 48% close rate into 25%.
+ *
+ * Showing them and counting them are different questions, and conflating the two is
+ * what made the list feel wrong: 34 estimates were created in the last 30 days and
+ * never scheduled — none of them priced — and the page rendered none of them, so work
+ * that exists in HousecallPro was missing from the app entirely.
+ */
+export const isLiveEstimate: SQL = or(
+  isNull(hcpEstimates.status),
+  notInArray(hcpEstimates.status, CANCELLED_STATUSES),
+)!;
+
+/**
  * The date an estimate belongs to for reporting: **the appointment, not the
  * creation**. Close rate windows and cohorts group on this.
  *

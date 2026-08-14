@@ -4,7 +4,7 @@ import type { ReactNode } from "react";
 import { campaignNotExcluded, excludedCampaignIds } from "@/lib/campaigns";
 import { db } from "@/lib/db/client";
 import { campaigns, hcpCustomers, hcpEstimates, leads, sources } from "@/lib/db/schema";
-import { isCountableEstimate } from "@/lib/estimates/countable";
+import { isCountableEstimate, isLiveEstimate } from "@/lib/estimates/countable";
 import { dateTime, dollars } from "@/lib/format";
 import { formatPhoneDisplay } from "@/lib/phone";
 import { pickDays, timeframeLabel } from "@/lib/timeframes";
@@ -43,13 +43,16 @@ export const dynamic = "force-dynamic";
  */
 
 // Estimate outcomes, in pipeline order rather than alphabetical.
-const STAGE_ORDER = ["open", "won", "lost"];
+const STAGE_ORDER = ["unscheduled", "open", "won", "lost"];
 const DATE_DIMS: Dim[] = ["day", "week", "month"];
 
 interface Row {
   id: string;
   outcome: string;
-  scheduledStart: Date;
+  /** False when HCP has no appointment for this estimate yet. */
+  scheduled: boolean;
+  /** The appointment when there is one, otherwise creation — the only date it has. */
+  dateFor: Date;
   name: string | null;
   phone: string | null;
   email: string | null;
@@ -67,6 +70,8 @@ interface Row {
 
 interface Agg {
   count: number;
+  /** Denominator for every rate: SCHEDULED, not cancelled. Never `count`. */
+  scheduledCount: number;
   wonCount: number;
   lostCount: number;
   wonCents: number;
@@ -74,9 +79,10 @@ interface Agg {
 }
 
 function aggregate(rows: Row[]): Agg {
-  const a: Agg = { count: 0, wonCount: 0, lostCount: 0, wonCents: 0, quotedCents: 0 };
+  const a: Agg = { count: 0, scheduledCount: 0, wonCount: 0, lostCount: 0, wonCents: 0, quotedCents: 0 };
   for (const r of rows) {
     a.count++;
+    if (r.scheduled) a.scheduledCount++;
     if (r.outcome === "won") {
       a.wonCount++;
       a.wonCents += r.approved || r.total || 0;
@@ -88,9 +94,15 @@ function aggregate(rows: Row[]): Agg {
   return a;
 }
 
-/** Won ÷ countable, as a whole percent. The headline number the team runs on. */
+/**
+ * Won ÷ SCHEDULED, as a whole percent — the headline number the team runs on.
+ *
+ * Never `a.count`. The list now includes estimates with no appointment, and dividing
+ * by those would drag the rate down with records that were never opportunities —
+ * which is exactly the 25%-vs-48% error this app was built to stop making.
+ */
 function closeRate(a: Agg): string {
-  return a.count ? `${Math.round((a.wonCount / a.count) * 100)}%` : "—";
+  return a.scheduledCount ? `${Math.round((a.wonCount / a.scheduledCount) * 100)}%` : "—";
 }
 
 /** Monday of the appointment's week in BUSINESS time — a stable key that also
@@ -106,14 +118,14 @@ function dimKey(r: Row, dim: Dim): string {
   switch (dim) {
     case "source": return r.sourceName ?? r.sourceKey ?? "Unattributed";
     case "campaign": return r.campaignName ?? "no campaign";
-    case "stage": return r.outcome;
+    case "stage": return r.scheduled ? r.outcome : "unscheduled";
     case "type": return r.leadType ?? "untracked";
     case "location": return r.location ?? "unknown";
     // Business-timezone buckets, so an evening appointment cannot land in
     // tomorrow's group while its own timestamp renders as today.
-    case "day": return businessDate(r.scheduledStart);
-    case "week": return weekKey(r.scheduledStart);
-    case "month": return businessDate(r.scheduledStart).slice(0, 7);
+    case "day": return businessDate(r.dateFor);
+    case "week": return weekKey(r.dateFor);
+    case "month": return businessDate(r.dateFor).slice(0, 7);
   }
 }
 
@@ -195,9 +207,14 @@ export default async function EstimatesPage({
 
   // At most one lead per estimate: matchLeadsToEstimates claims each lead exactly
   // once, so this join cannot fan out and double-count an estimate or its revenue.
+  // The LIST is every live estimate; the RATE below is scheduled-only. Windowed on
+  // whichever date the estimate actually has, so an estimate with no appointment
+  // still appears — it has a creation date and nothing else, and windowing on
+  // `scheduled_start` alone is precisely what hid 34 of them.
+  const dateFor = sql<Date>`coalesce(${hcpEstimates.scheduledStartHcp}, ${hcpEstimates.createdAtHcp})`;
   const scope = and(
-    isCountableEstimate,
-    gte(hcpEstimates.scheduledStartHcp, since),
+    isLiveEstimate,
+    gte(dateFor, since),
     campaignNotExcluded(leads.campaignId, excludedIds),
   );
   const withLead = db
@@ -205,6 +222,7 @@ export default async function EstimatesPage({
       id: hcpEstimates.id,
       outcome: hcpEstimates.outcome,
       scheduledStart: hcpEstimates.scheduledStartHcp,
+      createdAtHcp: hcpEstimates.createdAtHcp,
       approved: hcpEstimates.approvedAmountCents,
       total: hcpEstimates.totalAmountCents,
       // Name comes through the customer JOIN first: this app links to HousecallPro
@@ -233,14 +251,15 @@ export default async function EstimatesPage({
 
   const fetched = await withLead
     .where(scope)
-    .orderBy(desc(hcpEstimates.scheduledStartHcp))
+    .orderBy(desc(dateFor))
     // Grouped views aggregate, so they get the full window; the flat list stays short.
     .limit(groups.length ? 1000 : 200);
 
   const rows: Row[] = fetched.map((r) => ({
     id: r.id,
     outcome: r.outcome,
-    scheduledStart: r.scheduledStart!,
+    scheduled: r.scheduledStart != null,
+    dateFor: (r.scheduledStart ?? r.createdAtHcp)!,
     name: [r.custFirst, r.custLast].filter(Boolean).join(" ") || r.estName,
     phone: r.phone,
     email: r.email,
@@ -262,6 +281,7 @@ export default async function EstimatesPage({
   const [agg] = await db
     .select({
       total: sql<number>`count(*)::int`,
+      scheduled: sql<number>`count(*) filter (where ${hcpEstimates.scheduledStartHcp} is not null)::int`,
       won: sql<number>`count(*) filter (where ${hcpEstimates.outcome} = 'won')::int`,
       attributed: sql<number>`count(*) filter (where ${leads.id} is not null)::int`,
       wonCents: sql<number>`coalesce(sum(coalesce(nullif(${hcpEstimates.approvedAmountCents},0), ${hcpEstimates.totalAmountCents})) filter (where ${hcpEstimates.outcome} = 'won'), 0)::int`,
@@ -271,8 +291,10 @@ export default async function EstimatesPage({
     .where(scope);
 
   const total = agg?.total ?? 0;
+  const scheduled = agg?.scheduled ?? 0;
   const won = agg?.won ?? 0;
-  const rate = total ? `${Math.round((won / total) * 100)}%` : "—";
+  // Off SCHEDULED, never off the listed total — see closeRate().
+  const rate = scheduled ? `${Math.round((won / scheduled) * 100)}%` : "—";
 
   const estimateRow = (r: Row) => {
     const t = r.leadType ? (TYPE_META[r.leadType] ?? { ic: "•", label: r.leadType }) : null;
@@ -286,7 +308,10 @@ export default async function EstimatesPage({
     );
     return (
       <tr key={r.id}>
-        <td className="muted mono nowrap">{dateTime(r.scheduledStart)}</td>
+        <td className="muted mono nowrap" title={r.scheduled ? "Estimate appointment" : "Created — no appointment booked yet"}>
+          {dateTime(r.dateFor)}
+          {!r.scheduled && <span className="muted" style={{ fontSize: 11, marginLeft: 6 }}>created</span>}
+        </td>
         <td className="col-hide-sm">
           {t ? (
             <span className="src"><span style={{ opacity: 0.85 }}>{t.ic}</span>{t.label}</span>
@@ -306,7 +331,13 @@ export default async function EstimatesPage({
             </div>
           )}
         </td>
-        <td><span className={stageClass(r.outcome)}>{r.outcome}</span></td>
+        <td>
+          {r.scheduled ? (
+            <span className={stageClass(r.outcome)}>{r.outcome}</span>
+          ) : (
+            <span className="badge warn" title="Created in HousecallPro but no visit booked — not counted in the close rate">unscheduled</span>
+          )}
+        </td>
         <td className="mono" style={{ textAlign: "right" }}>
           {r.outcome === "won" ? (
             <span style={{ color: "var(--accent)", fontWeight: 700 }}>{dollars(r.approved || r.total || 0)}</span>
@@ -424,14 +455,16 @@ export default async function EstimatesPage({
         <div>
           <h1 className="page-title">Estimates</h1>
           <p className="page-sub">
-            Scheduled and not cancelled · {total} estimates · {won} won · {rate} close rate ·{" "}
+            {total} estimates · {scheduled} scheduled · {won} won · {rate} close rate ·{" "}
             {dollars(agg?.wonCents ?? 0)} · {timeframeLabel(days)}
           </p>
           {total > 0 && (
             <p className="page-sub" style={{ marginTop: 2 }}>
               <span className="muted">
-                {agg?.attributed ?? 0} of {total} traced to a tracked contact — the rest are repeat business, referrals
-                and estimates written in the field, counted here and shown as Unattributed.
+                Close rate is won ÷ <strong>scheduled</strong>
+                {total > scheduled && <> — the {total - scheduled} with no appointment booked are listed but not counted</>}.
+                {" "}{agg?.attributed ?? 0} of {total} traced to a tracked contact; the rest are repeat business,
+                referrals and estimates written in the field, shown as Unattributed.
               </span>
             </p>
           )}
@@ -443,7 +476,7 @@ export default async function EstimatesPage({
 
       {rows.length === 0 ? (
         <div className="empty">
-          No scheduled estimates in this window.{" "}
+          No estimates in this window.{" "}
           <Link href="/inbox" className="link">Check the inbox</Link> for calls and texts that have not become estimates yet.
         </div>
       ) : (
