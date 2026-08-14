@@ -157,16 +157,35 @@ invoices, $372,667 billed, $95,799 outstanding, 74% collection rate.
 Rebuild what `reports.arbor-mgmt.com` provides: estimate/job/invoice pivots, drilldowns,
 AR ageing. `/api/automations` there returns `[]` — unused, nothing to migrate.
 
-### P6 — Re-home the webhook forward
-Reporting forwards HCP webhooks to
-`arbor-website-est-creation.replit.app/api/webhook/review_request`. **Turning reporting
-down breaks the review-request flow silently.** Re-home or retire deliberately.
+### P6 — The webhook slot *(constraint, not a feature)*
 
-Also worth investigating here: reporting has HCP webhook plumbing
-(`estimate.created`, `estimate.sent`, `job.completed`) but **5 events total, all
-2026-03-18, none processed**. Event-driven ingest would remove the polling window
-entirely — but no *approval* event appeared in that sample, and approvals are exactly
-what broke before. Confirm HCP emits one before relying on it.
+**HousecallPro allows exactly ONE webhook subscription per account, and it is already
+taken by another integration** (confirmed by Justin, 2026-08-14). This is a scarce
+shared resource, not something this app can simply subscribe to.
+
+Consequences, in order of importance:
+
+1. **Event-driven ingest is off the table.** Polling is therefore not a stopgap, it is
+   the architecture. The rolling `created_at` re-read in `listEstimates` is load-bearing
+   permanently — which is why `paginate` throws on truncation rather than warning: there
+   is no event stream to catch what a silent gap misses.
+2. **Whoever holds the slot must fan out to everyone else.** That is exactly what
+   reporting's `/api/webhooks/forward-urls` does — one rule, pointing at
+   `arbor-website-est-creation.replit.app/api/webhook/review_request`. Turning reporting
+   down without re-homing that **breaks the review-request flow silently**: no error,
+   just no review requests.
+3. **Taking the slot means inheriting the hub role**, including responsibility for the
+   review-request flow's uptime. Worth doing eventually — it is the only path to
+   real-time HCP data — but it is an operational burden to take on deliberately, not a
+   side effect of a decommission.
+
+Reporting's own webhook table holds **5 events, all 2026-03-18, none processed**
+(`estimate.created`, `estimate.sent`, `job.completed`), consistent with it having held
+the slot briefly and lost it. Do not read that table as evidence of what HCP emits.
+
+Note that no *approval* event appears in that sample, and option approval is precisely
+what broke before — so even with the slot, webhooks may not have solved the original
+bug. Confirm the event catalogue before treating the slot as valuable.
 
 ### P7 — Parallel run, then decommission
 Run both apps and reconcile. Only then turn reporting down. This is the CallRail
@@ -211,7 +230,9 @@ the query layer is the next design conversation.
 
 ## Open questions
 
-1. Does HCP emit an estimate **approval** webhook? Decides whether P6 can remove polling.
+1. ~~Does HCP emit an estimate **approval** webhook?~~ **Closed 2026-08-14** — moot for
+   now. HCP permits one webhook subscription per account and it is already held by
+   another integration, so polling is the architecture (see P6).
 2. Does the reporting DB hold anything beyond customers / estimates / invoices / jobs /
    webhook events? Not yet inspected at schema level.
 3. Historical close rate is **44%** across all 15,234 estimates but ~30% on recent settled
