@@ -1,11 +1,12 @@
-import { and, desc, eq, gte, isNotNull, ne, or, sql } from "drizzle-orm";
+import { and, desc, eq, gte, isNotNull, ne, sql, type SQL } from "drizzle-orm";
 import { businessDate } from "@/lib/tz";
 import type { AnyPgColumn } from "drizzle-orm/pg-core";
 import Link from "next/link";
 import { campaignNotExcluded, excludedCampaignIds } from "@/lib/campaigns";
 import { db } from "@/lib/db/client";
 import { selectedTouchModel, touchModelLabel } from "@/lib/attribution/model";
-import { leads, roiDaily, sources } from "@/lib/db/schema";
+import { hcpEstimates, leads, roiDaily, sources } from "@/lib/db/schema";
+import { isCancelledEstimate } from "@/lib/estimates/countable";
 import { dollars } from "@/lib/format";
 import { TIMEFRAMES, pickDays, timeframeLabel } from "@/lib/timeframes";
 
@@ -23,14 +24,13 @@ export default async function SourcesPage({ searchParams }: { searchParams: Prom
   // out of step with the lead counts beside them.
   const windowStart = new Date(Date.now() - days * 86_400_000);
   const sinceBusinessDate = businessDate(windowStart);
-  const leadOnly = or(ne(leads.type, "call"), eq(leads.isLead, true));
   // Recruiting campaigns are not customer acquisition. roi_daily is built without
   // them; the queries below read `leads` directly, so they filter here.
   const touch = await selectedTouchModel();
   const excluded = await excludedCampaignIds();
   const notRecruiting = campaignNotExcluded(leads.campaignId, excluded);
 
-  // Performance by source (30d).
+  // Performance by source, from the rollup.
   const rows = await db
     .select({
       key: sources.key,
@@ -47,14 +47,31 @@ export default async function SourcesPage({ searchParams }: { searchParams: Prom
     .groupBy(sources.key, sources.displayName)
     .orderBy(desc(sql`coalesce(sum(${roiDaily.revenueCents}),0)`));
 
-  // Cancelled per source — not tracked in roi_daily, so count from leads directly
-  // (same non-spam + lead-only filters the rollup uses).
+  // Cancelled per source. roi_daily holds only countable estimates, so this is the
+  // one figure on the page that must be counted directly — but it counts the SAME
+  // KIND OF THING as the column beside it. It used to count `leads` with status
+  // `cancelled` under the old lead predicate, so "Estimates 60 · Cancelled 4" put
+  // two unrelated populations in one row and neither summed nor compared.
+  //
+  // `isCancelledEstimate` is the exact complement of `isCountableEstimate` within
+  // scheduled estimates, and the join mirrors the rollup's opportunity pass: one
+  // lead per estimate (matchLeadsToEstimates claims each lead once, so this cannot
+  // fan out), attributed through that lead's source.
   const cancelledRows = await db
     .select({ key: sources.key, n: sql<number>`count(*)::int` })
-    .from(leads)
+    .from(hcpEstimates)
+    .leftJoin(leads, and(eq(leads.hcpEstimateId, hcpEstimates.id), eq(leads.isSpam, false)))
     .leftJoin(sources, eq(leads.sourceId, sources.id))
     .where(
-      and(gte(leads.occurredAt, windowStart), eq(leads.isSpam, false), leadOnly, eq(leads.status, "cancelled"), notRecruiting),
+      and(
+        isCancelledEstimate,
+        // Bucketed exactly as the rollup buckets estimates: the contact's day when
+        // we can attribute one, the appointment's day when we cannot. Using
+        // scheduled_start for both would put a cancelled estimate on a different
+        // day from the countable one beside it and quietly break the comparison.
+        gte(sql`coalesce(${leads.occurredAt}, ${hcpEstimates.scheduledStartHcp})`, windowStart),
+        notRecruiting,
+      ),
     )
     .groupBy(sources.key);
   const cancelledByKey = new Map<string | null, number>(cancelledRows.map((c) => [c.key ?? null, c.n]));
@@ -72,26 +89,50 @@ export default async function SourcesPage({ searchParams }: { searchParams: Prom
   );
   const maxRoas = Math.max(1, ...rows.map((r) => (r.spend > 0 ? r.revenue / r.spend : 0)));
 
-  // Breakdown dimensions (90d): landing page + keyword (captured on the lead by
-  // track.js / click-id enrichment) and the caller's self-reported source from
-  // call transcripts — the DNI-invisible channels (referrals, yard signs, trucks).
-  const bdSince = new Date(Date.now() - 90 * 86_400_000);
-  const breakdownOf = (col: AnyPgColumn) =>
+  // Breakdown dimensions: landing page + keyword (captured on the lead by track.js
+  // / click-id enrichment) and the caller's self-reported source from call
+  // transcripts — the DNI-invisible channels (referrals, yard signs, trucks).
+  //
+  // These follow the page's own timeframe now. They were pinned to 90 days while
+  // the table above them obeyed the pills, so changing the timeframe moved half the
+  // page and left the rest — with nothing on screen saying the two disagreed.
+  //
+  // Counting matches the table above too: contacts, not "qualified leads". The old
+  // `leadOnly` predicate (type != 'call' OR is_lead) is the lead-anchored model the
+  // rollup stopped using, so it is gone from this page entirely.
+  const breakdownOf = (col: AnyPgColumn, groupBy: SQL | AnyPgColumn = col) =>
     db
       .select({
-        value: sql<string | null>`${col}`,
-        leads: sql<number>`count(*)::int`,
+        value: sql<string | null>`${groupBy}`,
+        contacts: sql<number>`count(*)::int`,
+        estimates: sql<number>`count(*) filter (where ${leads.hcpEstimateId} is not null)::int`,
         won: sql<number>`count(*) filter (where ${leads.status} = 'won')::int`,
         revenue: sql<number>`coalesce(sum(${leads.salesValueCents}) filter (where ${leads.status} = 'won'), 0)::int`,
       })
       .from(leads)
-      .where(and(gte(leads.occurredAt, bdSince), eq(leads.isSpam, false), leadOnly, isNotNull(col), ne(col, ""), notRecruiting))
-      .groupBy(col)
+      .where(and(gte(leads.occurredAt, windowStart), eq(leads.isSpam, false), isNotNull(col), ne(col, ""), notRecruiting))
+      .groupBy(sql`${groupBy}`)
       .orderBy(desc(sql`count(*)`))
       .limit(8);
 
+  // Landing pages are grouped by PATH, not by the raw stored URL.
+  //
+  // `leads.landing_page` is `location.href` verbatim — scheme, host, query string
+  // and all. Grouping on it split every paid landing page into one row per click:
+  // /services/tree-removal was the second-busiest page on the site and appeared as
+  // five separate rows, each carrying a different gclid. Worse, the renderer
+  // already reduced them to `new URL(v).pathname`, so those five printed as five
+  // identical-looking lines — and with LIMIT 8, the fragments pushed real pages off
+  // the card. In a sample of recent leads, 23 distinct stored values collapse to 9
+  // actual paths.
+  //
+  // Normalising here rather than at render is the point: grouping and display now
+  // use the same value, so they cannot disagree again. The raw URL stays on the
+  // row for forensics — it is where the evidence of UTM template drift lives.
+  const landingPath = sql`coalesce(nullif(regexp_replace(regexp_replace(regexp_replace(lower(${leads.landingPage}), '[?#].*$', ''), '^https?://[^/]+', ''), '/+$', ''), ''), '/')`;
+
   const [byLanding, byKeyword, bySelfReported] = await Promise.all([
-    breakdownOf(leads.landingPage),
+    breakdownOf(leads.landingPage, landingPath),
     breakdownOf(leads.keyword),
     breakdownOf(leads.selfReportedSource),
   ]);
@@ -101,7 +142,7 @@ export default async function SourcesPage({ searchParams }: { searchParams: Prom
       <div className="page-head">
         <div>
           <h1 className="page-title">Sources</h1>
-          <p className="page-sub">Where leads come from and how they perform · {timeframeLabel(days)}</p>
+          <p className="page-sub">Where contacts come from and what they turn into · {timeframeLabel(days)} · {touchModelLabel(touch)}</p>
         </div>
         <div className="controls">
           <span className="muted" style={{ fontSize: 12, fontWeight: 600 }}>◷</span>
@@ -196,8 +237,9 @@ export default async function SourcesPage({ searchParams }: { searchParams: Prom
       {/* Breakdowns: landing pages, keywords, self-reported */}
       <h2 className="page-title" style={{ fontSize: 16, marginBottom: 4 }}>Breakdowns</h2>
       <p className="page-sub" style={{ marginBottom: 16 }}>
-        Last 90 days · landing pages &amp; keywords come from web tracking; “callers say” is the AI-extracted answer to
-        “how did you hear about us” — catches referrals, yard signs, and trucks that number-tracking can&apos;t see.
+        {timeframeLabel(days)} · contacts, and how many of them produced an estimate. Landing pages &amp; keywords come
+        from web tracking; “callers say” is the AI-extracted answer to “how did you hear about us” — it catches the
+        referrals, yard signs and trucks that number-tracking can&apos;t see.
       </p>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 14, marginBottom: 26 }}>
         <BreakdownCard title="◧ Landing pages" rows={byLanding} empty="No landing pages captured yet — populates once track.js is live." />
@@ -214,12 +256,12 @@ function BreakdownCard({
   empty,
 }: {
   title: string;
-  rows: Array<{ value: string | null; leads: number; won: number; revenue: number }>;
+  rows: Array<{ value: string | null; contacts: number; estimates: number; won: number; revenue: number }>;
   empty: string;
 }) {
   return (
     <div className="card">
-      <div className="card-head"><h3>{title}</h3><span className="muted">leads · won · revenue</span></div>
+      <div className="card-head"><h3>{title}</h3><span className="muted">contacts · est · won · revenue</span></div>
       {rows.length === 0 ? (
         <div className="empty" style={{ border: "none", padding: "20px 14px", fontSize: 12.5 }}>{empty}</div>
       ) : (
@@ -230,7 +272,8 @@ function BreakdownCard({
                 <td style={{ maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 12.5 }} title={r.value ?? ""}>
                   {displayValue(r.value)}
                 </td>
-                <td className="mono" style={{ width: 40 }}>{r.leads}</td>
+                <td className="mono" style={{ width: 40 }}>{r.contacts}</td>
+                <td className="mono muted" style={{ width: 34 }}>{r.estimates}</td>
                 <td style={{ width: 46 }}>{r.won > 0 ? <span className="badge win">{r.won}</span> : <span className="muted mono">0</span>}</td>
                 <td className="mono" style={{ textAlign: "right", width: 80 }}>{r.revenue > 0 ? dollars(r.revenue) : <span className="muted">—</span>}</td>
               </tr>
