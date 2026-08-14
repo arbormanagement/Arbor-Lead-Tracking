@@ -189,16 +189,47 @@ in this repo.
 - `/sources` reads the new rollup.
 - Retire `lib/leads/qualified.ts` from ROI; keep for the Inbox toggle.
 
-### P4 — Invoice sync *(new data, no equivalent here today)*
-The one dataset the reporting app has that this one lacks. July 2026 alone: 189
-invoices, $372,667 billed, $95,799 outstanding, 74% collection rate.
+### P4 — Invoice + job sync *(one new dataset, one thin one)*
+**Invoices — nothing here today.** July 2026 alone: 189 invoices, $372,667 billed,
+$95,799 outstanding, 74% collection rate.
 - `lib/integrations/housecallpro.ts` — `listInvoices`; `lib/sync/hcp.ts` — persist.
 - Same trap as estimates: **verify which timestamp actually moves on payment** before
   choosing a sync window. Do not assume `updated_at`.
 
+**Jobs — synced, but too thin to report on.** `hcp_jobs` is a 180-day `scheduled_start`
+window kept for completed/invoiced visibility. Reporting's `jobs` carries fields this app
+does not: `soldBy`, `jobType`, `originalEstimateId`, `assignedEmployees`, `lineItems`,
+`notes`, `completedAt`. `soldBy` is what the salesperson pivot groups on — currently not
+reproducible here at all.
+
+**Worth more than the sum: `originalEstimateId` links job → estimate directly, and
+invoice `jobId` links invoice → job.** With both, the chain is
+
+    invoice → job → estimate → contact → source
+
+which is **cash collected, attributed to the channel that produced it**. This app today
+infers estimate↔contact by phone/email match and stops at won-estimate *value* — money
+quoted, not money received. Neither app does the full chain. This is the strongest
+argument for consolidating rather than porting.
+
 ### P5 — Report surfaces
 Rebuild what `reports.arbor-mgmt.com` provides: estimate/job/invoice pivots, drilldowns,
 AR ageing. `/api/automations` there returns `[]` — unused, nothing to migrate.
+
+**The pivoting is the easy half.** Dimensions `month` / `week` / `quarter` / `outcome` /
+`customer_type` / `days_to_schedule` are date truncs and derived buckets. What actually
+needs porting, verbatim:
+
+- **`service_type` is a classifier, not a grouping** — a regex over line-item names with
+  a nine-phrase exclusion list for administrative rows typed as `labor`
+  (`arborist note|please read|credit card|driveway access|adjacent property|scheduled|
+  total cost|estimate -|no contact`). Hand-tuned against real data; cannot be re-derived.
+- **Discount math** reconstructs pre-discount price as `approved_total / (1 - pct_discount)`.
+  Fiddly, and wrong silently.
+- **Every entity has its own exclusion rule with its own vocabulary** — estimates exclude
+  `pro canceled`/`user canceled` dated on `scheduled_start`; invoices exclude
+  `canceled`/`voided` dated on `created_at`. Read each one; do not generalise from
+  estimates.
 
 ### P6 — The webhook slot *(constraint, not a feature)*
 
@@ -276,9 +307,10 @@ the query layer is the next design conversation.
 1. ~~Does HCP emit an estimate **approval** webhook?~~ **Closed 2026-08-14** — moot for
    now. HCP permits one webhook subscription per account and it is already held by
    another integration, so polling is the architecture (see P6).
-2. Does the reporting DB hold anything beyond customers / estimates / invoices / jobs /
-   webhook events? Repo is now cloned (`arbormanagement/arbor-reporting`) —
-   `shared/schema.ts` is the place to look before P5.
+2. ~~Does the reporting DB hold anything beyond customers / estimates / invoices / jobs /
+   webhook events?~~ **Closed 2026-08-14 — no** (Justin, confirmed against
+   `arbor-reporting/shared/schema.ts`). Remaining tables are app-internal:
+   `automation_rules`, `automation_logs` (both empty), `sync_logs`, `app_settings`.
 3. ~~Historical close rate is 44% but ~30% recently — genuine or artefact?~~
    **Closed 2026-08-14 — artefact of MY denominator, not a real collapse.** Counting
    every HCP record gave ~25% for Feb 2026; the reporting app gives 48.3% for the same
