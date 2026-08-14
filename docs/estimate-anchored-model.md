@@ -112,6 +112,14 @@ the three-predicate divergence structurally impossible rather than patched.
 ~58% of estimates today. Displaying it is the point — it is the number that says how
 much of the business we can actually explain.
 
+**6. Close rate is computed over DECIDED estimates, and maturity is shown.**
+An estimate takes ~30 days to settle, so a close rate over a trailing window always
+understates: the denominator is full of estimates that have not had time to decide. The
+most recent 100 estimates were **86% undecided** — a naive trailing-30-day close rate
+reads ~12% against a settled reality near 24%. Ship that and the dashboard reports a
+crisis every month, forever. Either cohort by creation month and show how settled each
+cohort is, or split the denominator into decided vs open. Do not divide won by all.
+
 ---
 
 ## Phases
@@ -235,7 +243,20 @@ the query layer is the next design conversation.
    another integration, so polling is the architecture (see P6).
 2. Does the reporting DB hold anything beyond customers / estimates / invoices / jobs /
    webhook events? Not yet inspected at schema level.
-3. Historical close rate is **44%** across all 15,234 estimates but ~30% on recent settled
-   cohorts. Genuine change over time, or multi-option approvals inflating older records?
+3. ~~Historical close rate is 44% but ~30% recently — genuine or artefact?~~
+   **Closed 2026-08-14 — genuine, and it is a decline.** 100-estimate samples by cohort:
+
+   | cohort | approved | still open |
+   |---|---|---|
+   | Aug–Sep 2019 | 52% | 10 |
+   | Jun 2023 | 43% | 0 |
+   | May 2025 | 33% | 0 |
+   | Feb 2026 | **24%** | **0** |
+
+   Zero open in every cohort from 2023 on, so these are fully settled — the low recent
+   numbers are not un-decided estimates. The 44% lifetime figure is real but weighted by
+   years that closed roughly twice as well as today. Cause not established (mix shift,
+   competition, price-shopping from paid channels, or a change in how declines are
+   recorded would all fit). Samples are n=100, ±~5pp.
 4. Facebook leads match at 100% — plausible, since every FB enquiry gets an estimate
    booked, but worth a spot check for over-matching.
