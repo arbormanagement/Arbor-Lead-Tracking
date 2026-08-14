@@ -1,16 +1,18 @@
-import { and, asc, desc, eq, gte, inArray, isNull, lte, ne, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lte, ne, or, sql } from "drizzle-orm";
 import { campaignNotExcluded, excludedCampaignIds } from "@/lib/campaigns";
 import { db } from "@/lib/db/client";
 import {
   adSpend,
   attributions,
   campaigns,
+  contacts,
   hcpEstimates,
   leads,
   manualSpend,
   roiDaily,
   sources,
 } from "@/lib/db/schema";
+import { isCountableEstimate } from "@/lib/estimates/countable";
 import { getSetting } from "@/lib/settings";
 import { businessDate } from "@/lib/tz";
 import { withSyncRun } from "./run";
@@ -58,15 +60,11 @@ export async function runAttribution({
 // contact embedded on the estimate (no dependency on a separate customer sync).
 //
 // Two settings shape the match:
-//  · attribution_model — "last_touch" (default) credits the latest qualifying lead
-//    before the estimate; "first_touch" credits the earliest (WhatConverts-style
-//    single-touch models, applied retroactively on each rebuild).
 //  · customer_window_days — repeat business: a won estimate whose contact has NO
 //    unclaimed lead of its own inherits the contact's already-matched lead when it
 //    falls within this many days of it (ServiceTitan "Smart Attribution" style),
 //    so paid channels get credit for the follow-up work they generated. 0 disables.
 async function matchLeadsToEstimates(windowDays: number): Promise<{ qualified: number; won: number }> {
-  const model = await getSetting<string>("attribution_model", "last_touch");
   const customerWindowDays = await getSetting<number>("customer_window_days", 90);
   const lookback = new Date(Date.now() - (windowDays + 30) * 86_400_000);
 
@@ -179,7 +177,12 @@ async function matchLeadsToEstimates(windowDays: number): Promise<{ qualified: n
         ),
       )
       // Last-touch credits the latest lead before the estimate; first-touch the earliest.
-      .orderBy(model === "first_touch" ? asc(leads.occurredAt) : desc(leads.occurredAt))
+      // ALWAYS the latest qualifying lead. This link IS the last-touch answer, and
+      // first-touch is now computed properly in the rollup from the contact's own
+      // history — so the old `attribution_model` setting no longer changes what is
+      // derived here. It selects which model the dashboard DISPLAYS
+      // (lib/attribution/model.ts), and both are always available.
+      .orderBy(desc(leads.occurredAt))
       .limit(5);
 
     const pick = candidates.find((c) => !claimedLeads.has(c.id));
@@ -317,13 +320,16 @@ export const PLATFORM_SOURCE_KEY: Record<string, string> = {
   facebook: "facebook/paid",
 };
 
+type TouchModel = "first" | "last";
+
 interface RoiAcc {
   date: string;
+  touchType: TouchModel;
   sourceId: string | null;
   campaignId: string | null;
   location: "edwardsville" | "ofallon" | "unknown";
-  leadsCount: number;
-  qualifiedCount: number;
+  contactsCount: number;
+  estimatesCount: number;
   callsCount: number;
   formsCount: number;
   wonCount: number;
@@ -348,74 +354,197 @@ async function rebuildRoiDaily(windowDays: number): Promise<number> {
   // skews its CPL/ROAS high. Scan wider than any UTC offset and filter by business
   // date in the loop.
   const leadScanFrom = new Date(since.getTime() - 2 * 86_400_000);
+  // Estimates are scanned on their APPOINTMENT date, but an attributed one buckets
+  // to its contact's day — which can precede the appointment by weeks. Reach back
+  // further so an estimate whose contact falls inside the window is not skipped
+  // just because its visit was booked before the scan started.
+  const estimateScanFrom = new Date(since.getTime() - 120 * 86_400_000);
 
   // Non-customer-acquisition campaigns (recruiting) contribute neither spend nor
   // leads to ROI. Resolved once and applied to both sides of the rollup so a
   // campaign flagged in Settings drops out on the next run, with no cleanup needed.
   const excluded = await excludedCampaignIds();
 
+  // ── First-touch lookup ────────────────────────────────────────────────────
+  // A contact's FIRST-EVER inbound event — the channel that originally acquired
+  // that person, however long ago. This is what makes first-touch real rather than
+  // "the earliest of the recent leads", which is all the old attribution_model
+  // setting could reach.
+  const firstTouchRows = await db
+    .selectDistinctOn([leads.contactId], {
+      contactId: leads.contactId,
+      sourceId: leads.sourceId,
+      campaignId: leads.campaignId,
+      location: leads.location,
+    })
+    .from(leads)
+    .where(and(isNotNull(leads.contactId), eq(leads.isSpam, false)))
+    .orderBy(leads.contactId, asc(leads.occurredAt));
+  const firstTouchByContact = new Map(firstTouchRows.map((r) => [r.contactId!, r]));
+
+  // HCP customer → our contact, so a repeat estimate with NO new inbound contact can
+  // still be traced back to the person and thus to whoever acquired them. This is the
+  // path that makes first-touch work where last-touch correctly has nothing to say.
+  const contactRowsByHcp = await db
+    .select({ id: contacts.id, hcpCustomerId: contacts.hcpCustomerId })
+    .from(contacts)
+    .where(isNotNull(contacts.hcpCustomerId));
+  const contactByHcpCustomer = new Map(contactRowsByHcp.map((c) => [c.hcpCustomerId!, c.id]));
+
   // Source-key → id, so ad spend (which carries platform, not source) can roll up.
   const sourceRows = await db.select({ id: sources.id, key: sources.key }).from(sources);
   const sourceIdByKey = new Map(sourceRows.map((s) => [s.key, s.id]));
 
   const acc = new Map<string, RoiAcc>();
-  const keyOf = (a: { date: string; sourceId: string | null; campaignId: string | null; location: string }) =>
-    `${a.date}|${a.sourceId ?? ""}|${a.campaignId ?? ""}|${a.location}`;
-  const bump = (seed: Omit<RoiAcc, "leadsCount" | "qualifiedCount" | "callsCount" | "formsCount" | "wonCount" | "spendCents" | "revenueCents" | "quoteValueCents">) => {
+  const keyOf = (a: {
+    date: string;
+    touchType: TouchModel;
+    sourceId: string | null;
+    campaignId: string | null;
+    location: string;
+  }) => `${a.date}|${a.touchType}|${a.sourceId ?? ""}|${a.campaignId ?? ""}|${a.location}`;
+  const bump = (seed: Omit<RoiAcc, "contactsCount" | "estimatesCount" | "callsCount" | "formsCount" | "wonCount" | "spendCents" | "revenueCents" | "quoteValueCents">) => {
     const k = keyOf(seed);
     let row = acc.get(k);
     if (!row) {
-      row = { ...seed, leadsCount: 0, qualifiedCount: 0, callsCount: 0, formsCount: 0, wonCount: 0, spendCents: 0, revenueCents: 0, quoteValueCents: 0 };
+      row = { ...seed, contactsCount: 0, estimatesCount: 0, callsCount: 0, formsCount: 0, wonCount: 0, spendCents: 0, revenueCents: 0, quoteValueCents: 0 };
       acc.set(k, row);
     }
     return row;
   };
 
-  // Leads side
-  const leadRows = await db
+  // ── DEMAND: inbound contacts ──────────────────────────────────────────────
+  // Every non-spam contact, whatever channel. `is_lead` is deliberately NOT
+  // consulted: this counts people who got in touch, and an unclassified call from
+  // a real person is still someone getting in touch. Opportunity is a separate
+  // number now (below), measured off estimates, so this no longer has to double as
+  // both — which is what made three rival definitions of "a lead" possible.
+  const contactRows = await db
     .select({
       occurredAt: leads.occurredAt,
       sourceId: leads.sourceId,
       campaignId: leads.campaignId,
       location: leads.location,
       type: leads.type,
-      status: leads.status,
-      sales: leads.salesValueCents,
-      quote: leads.quoteValueCents,
+      contactId: leads.contactId,
     })
     .from(leads)
     .where(
       and(
         eq(leads.isSpam, false),
         gte(leads.occurredAt, leadScanFrom),
-        or(ne(leads.type, "call"), eq(leads.isLead, true)),
         campaignNotExcluded(leads.campaignId, excluded),
       ),
     );
 
-  for (const l of leadRows) {
+  for (const l of contactRows) {
     // Business-timezone day, matching the ad platforms' account-timezone spend
-    // dates — a late-evening CT lead must not land on tomorrow's (UTC) row.
+    // dates — a late-evening CT contact must not land on tomorrow's (UTC) row.
     const date = businessDate(l.occurredAt);
     // Trim the over-wide scan back to the window the delete actually clears, so we
     // never insert a row outside it.
     if (date < sinceDate) continue;
-    const row = bump({
-      date,
-      sourceId: l.sourceId ?? null,
-      campaignId: l.campaignId ?? null,
-      location: (l.location ?? "unknown") as RoiAcc["location"],
-    });
-    row.leadsCount++; // every captured (non-spam) contact
-    if (l.type === "call") row.callsCount++;
-    if (l.type === "web_form") row.formsCount++;
-    // Qualified opportunity = an estimate exists (qualified/quoted/won). Won = approved.
-    if (l.status === "qualified" || l.status === "quoted" || l.status === "won") row.qualifiedCount++;
-    if (l.status === "won") {
-      row.wonCount++;
-      row.revenueCents += l.sales ?? 0;
+    // Last touch for a contact event is the event's own channel. First touch is
+    // whoever acquired that person — for their very first contact the two coincide,
+    // which is exactly right.
+    const ft = l.contactId ? firstTouchByContact.get(l.contactId) : undefined;
+    for (const touchType of ["last", "first"] as const) {
+      const src = touchType === "last" ? l : (ft ?? l);
+      const row = bump({
+        date,
+        touchType,
+        sourceId: src.sourceId ?? null,
+        campaignId: src.campaignId ?? null,
+        location: (src.location ?? "unknown") as RoiAcc["location"],
+      });
+      row.contactsCount++;
+      if (l.type === "call") row.callsCount++;
+      if (l.type === "web_form") row.formsCount++;
     }
-    row.quoteValueCents += l.quote ?? 0;
+  }
+
+  // ── OPPORTUNITY: estimates ────────────────────────────────────────────────
+  // The unit changed here. This used to count leads that happened to have matched
+  // an estimate, which could only ever see the ~42% of estimates traceable to a
+  // tracked contact — the other ~58% (repeat business, referrals, canvassing,
+  // estimates written in the field) were invisible rather than merely unattributed.
+  //
+  // `isCountableEstimate` is the denominator, and it is not negotiable: without it
+  // this counts cancelled and never-scheduled records and reports a ~25% close rate
+  // against a real one near 48%. See lib/estimates/countable.ts.
+  const estimateRows = await db
+    .select({
+      outcome: hcpEstimates.outcome,
+      approved: hcpEstimates.approvedAmountCents,
+      total: hcpEstimates.totalAmountCents,
+      scheduledStart: hcpEstimates.scheduledStartHcp,
+      estLocation: hcpEstimates.location,
+      leadOccurredAt: leads.occurredAt,
+      leadSourceId: leads.sourceId,
+      leadCampaignId: leads.campaignId,
+      leadLocation: leads.location,
+      leadContactId: leads.contactId,
+      hcpCustomerId: hcpEstimates.hcpCustomerId,
+    })
+    .from(hcpEstimates)
+    // At most one lead per estimate — `matchLeadsToEstimates` claims each lead once,
+    // so this cannot fan out and double-count revenue.
+    .leftJoin(leads, and(eq(leads.hcpEstimateId, hcpEstimates.id), eq(leads.isSpam, false)))
+    .where(and(isCountableEstimate, gte(hcpEstimates.scheduledStartHcp, estimateScanFrom)));
+
+  for (const e of estimateRows) {
+    // Attributed → the CONTACT's day and channel, so an estimate lands on the same
+    // row as the spend that produced it even when it was written weeks later.
+    // Unattributed → its own appointment day, with no source. There is no spend to
+    // align with, and dating it anywhere else would be inventing a touch.
+    const attributed = e.leadOccurredAt != null;
+    const date = businessDate(attributed ? e.leadOccurredAt! : e.scheduledStart!);
+    if (date < sinceDate) continue;
+    // A recruiting campaign's estimates are as excluded as its spend and contacts.
+    if (attributed && e.leadCampaignId && excluded.includes(e.leadCampaignId)) continue;
+
+    // FIRST touch: whoever acquired this customer. Reached through the attributed
+    // lead's contact when there is one, and otherwise through the HCP customer —
+    // which is the case that matters. A returning customer's estimate has no new
+    // inbound contact, so last-touch has nothing to credit and says `unattributed`,
+    // correctly. First-touch still knows the channel that won them years ago, which
+    // is what the `customer_window_days` inheritance rule was crudely approximating:
+    // capped at 90 days, won estimates only, and it credited revenue without ever
+    // linking the estimate.
+    const contactId = e.leadContactId ?? (e.hcpCustomerId ? contactByHcpCustomer.get(e.hcpCustomerId) : undefined);
+    const ft = contactId ? firstTouchByContact.get(contactId) : undefined;
+    // Recruiting is excluded under either model.
+    if (ft?.campaignId && excluded.includes(ft.campaignId)) continue;
+
+    // Both models bucket on the SAME date, so the two are directly comparable
+    // period-over-period and only the credited channel differs. The alternative —
+    // dating a first-touch row to the original touch — is a cohort view ("what did
+    // 2024's spend eventually earn?"), which is a genuinely useful but different
+    // report, and one the 365-day rebuild window cannot hold.
+    for (const touchType of ["last", "first"] as const) {
+      const src =
+        touchType === "last"
+          ? attributed
+            ? { sourceId: e.leadSourceId, campaignId: e.leadCampaignId, location: e.leadLocation }
+            : { sourceId: null, campaignId: null, location: e.estLocation }
+          : ft
+            ? { sourceId: ft.sourceId, campaignId: ft.campaignId, location: ft.location }
+            : { sourceId: null, campaignId: null, location: e.estLocation };
+
+      const row = bump({
+        date,
+        touchType,
+        sourceId: src.sourceId ?? null,
+        campaignId: src.campaignId ?? null,
+        location: (src.location ?? "unknown") as RoiAcc["location"],
+      });
+      row.estimatesCount++;
+      row.quoteValueCents += e.total ?? 0;
+      if (e.outcome === "won") {
+        row.wonCount++;
+        row.revenueCents += e.approved ?? 0;
+      }
+    }
   }
 
   // Spend side (platform → source; campaign carries location)
@@ -433,13 +562,19 @@ async function rebuildRoiDaily(windowDays: number): Promise<number> {
 
   for (const s of spendRows) {
     const sourceKey = PLATFORM_SOURCE_KEY[s.platform];
-    const row = bump({
-      date: s.date,
-      sourceId: sourceKey ? sourceIdByKey.get(sourceKey) ?? null : null,
-      campaignId: s.campaignId ?? null,
-      location: (s.location ?? "unknown") as RoiAcc["location"],
-    });
-    row.spendCents += s.spendCents ?? 0;
+    // Spend is written to BOTH models: the money spent does not change with the
+    // attribution model, only who gets credit for what it produced. Every read
+    // filters on touch_type, so this cannot double-count.
+    for (const touchType of ["last", "first"] as const) {
+      const row = bump({
+        date: s.date,
+        touchType,
+        sourceId: sourceKey ? sourceIdByKey.get(sourceKey) ?? null : null,
+        campaignId: s.campaignId ?? null,
+        location: (s.location ?? "unknown") as RoiAcc["location"],
+      });
+      row.spendCents += s.spendCents ?? 0;
+    }
   }
 
   // Manually-entered monthly spend (LSA/GBP/print/…): spread each month's amount
@@ -462,8 +597,10 @@ async function rebuildRoiDaily(windowDays: number): Promise<number> {
       if (remainder > 0) remainder--;
       const dateStr = `${m.month.slice(0, 7)}-${String(d).padStart(2, "0")}`;
       if (dateStr < sinceDate || dateStr > todayDate || dayCents === 0) continue;
-      const row = bump({ date: dateStr, sourceId: m.sourceId, campaignId: null, location: "unknown" });
-      row.spendCents += dayCents;
+      for (const touchType of ["last", "first"] as const) {
+        const row = bump({ date: dateStr, touchType, sourceId: m.sourceId, campaignId: null, location: "unknown" });
+        row.spendCents += dayCents;
+      }
     }
   }
 
@@ -480,24 +617,24 @@ async function rebuildRoiDaily(windowDays: number): Promise<number> {
       await tx.insert(roiDaily).values(
         rows.slice(i, i + INSERT_CHUNK).map((r) => ({
           date: r.date,
+          touchType: r.touchType,
           sourceId: r.sourceId,
           campaignId: r.campaignId,
           location: r.location,
-          leadsCount: r.leadsCount,
-          qualifiedCount: r.qualifiedCount,
+          contactsCount: r.contactsCount,
+          estimatesCount: r.estimatesCount,
           callsCount: r.callsCount,
           formsCount: r.formsCount,
           wonCount: r.wonCount,
           spendCents: r.spendCents,
           revenueCents: r.revenueCents,
           quoteValueCents: r.quoteValueCents,
-          // Cost per *qualified* lead (a real opportunity), not per raw contact.
-          // Spend ÷ CAPTURED leads, matching what the overview and sources pages
-          // both display and label as CPL (and what Ads Manager reports). This was
-          // spend ÷ qualified — a cost-per-*qualified*-lead under the name
-          // `cost_per_lead_cents`, so anyone reading roi_daily directly got a
-          // materially different number from the identically-named figure in the UI.
-          costPerLeadCents: r.leadsCount ? Math.round(r.spendCents / r.leadsCount) : null,
+          // Spend ÷ ESTIMATES. The denominator is deliberately smaller than the old
+          // cost-per-lead: only estimates we can attribute to a channel can have that
+          // channel's spend divided into them, so this reads higher than the figure it
+          // replaces — and honestly, since the old one divided by a looser contact
+          // count that included traffic no spend produced.
+          costPerEstimateCents: r.estimatesCount ? Math.round(r.spendCents / r.estimatesCount) : null,
           costPerAcquisitionCents: r.wonCount ? Math.round(r.spendCents / r.wonCount) : null,
           roiRatio: r.spendCents ? (r.revenueCents / r.spendCents).toFixed(4) : null,
         })),

@@ -1,8 +1,8 @@
-import { and, desc, eq, gte, ne, or, sql } from "drizzle-orm";
+import { and, desc, eq, gte, sql } from "drizzle-orm";
 import { businessDate } from "@/lib/tz";
-import { campaignNotExcluded, excludedCampaignIds } from "@/lib/campaigns";
 import { db } from "@/lib/db/client";
-import { leads, roiDaily, sources } from "@/lib/db/schema";
+import { roiDaily, sources } from "@/lib/db/schema";
+import { selectedTouchModel, touchModelLabel } from "@/lib/attribution/model";
 import { wholeDollars } from "@/lib/format";
 
 export const dynamic = "force-dynamic";
@@ -18,31 +18,31 @@ export default async function OverviewPage() {
   // date — silently trimming or including an extra boundary day, and disagreeing
   // with the funnel beside it (which windows on a timestamp).
   const sinceDate = businessDate(since);
-  // Recruiting campaigns never count as customer acquisition. roi_daily is already
-  // built without them; the funnel reads `leads` directly, so it filters here.
-  const excluded = await excludedCampaignIds();
+  // roi_daily holds BOTH attribution models; every read must pick one or it
+  // double-counts (spend included — it is written to both).
+  const touch = await selectedTouchModel();
+  const inWindow = and(gte(roiDaily.date, sinceDate), eq(roiDaily.touchType, touch));
 
-  // Funnel: captured → qualified (estimate created) → won (approved).
+  // Funnel: contacts (demand) → estimates (opportunity) → won.
+  //
+  // Read from roi_daily rather than from `leads` directly. That table is now the
+  // aggregate of record and already applies the countable-estimate predicate and the
+  // recruiting-campaign exclusion, so the funnel cannot drift from the sources page
+  // the way the old lead-side query did — which is precisely how three different
+  // answers to "how many leads?" came to exist.
   const [f] = await db
     .select({
-      captured: sql<number>`count(*)::int`,
-      calls: sql<number>`count(*) filter (where ${leads.type} = 'call')::int`,
-      forms: sql<number>`count(*) filter (where ${leads.type} = 'web_form')::int`,
-      quoted: sql<number>`count(*) filter (where ${leads.quoteValueCents} > 0)::int`,
-      won: sql<number>`count(*) filter (where ${leads.status} = 'won')::int`,
+      contacts: sql<number>`coalesce(sum(${roiDaily.contactsCount}),0)::int`,
+      calls: sql<number>`coalesce(sum(${roiDaily.callsCount}),0)::int`,
+      forms: sql<number>`coalesce(sum(${roiDaily.formsCount}),0)::int`,
+      estimates: sql<number>`coalesce(sum(${roiDaily.estimatesCount}),0)::int`,
+      won: sql<number>`coalesce(sum(${roiDaily.wonCount}),0)::int`,
     })
-    .from(leads)
-    .where(
-      and(
-        gte(leads.occurredAt, since),
-        eq(leads.isSpam, false),
-        or(ne(leads.type, "call"), eq(leads.isLead, true)),
-        campaignNotExcluded(leads.campaignId, excluded),
-      ),
-    );
+    .from(roiDaily)
+    .where(inWindow);
 
-  const captured = f?.captured ?? 0;
-  const quoted = f?.quoted ?? 0;
+  const contacts = f?.contacts ?? 0;
+  const estimates = f?.estimates ?? 0;
   const won = f?.won ?? 0;
   const pct = (n: number, d: number) => (d > 0 ? Math.round((n / d) * 100) + "%" : "—");
 
@@ -54,15 +54,16 @@ export default async function OverviewPage() {
       revenue: sql<number>`coalesce(sum(${roiDaily.revenueCents}),0)::int`,
     })
     .from(roiDaily)
-    .where(gte(roiDaily.date, sinceDate))
+    .where(inWindow)
     .groupBy(roiDaily.date)
     .orderBy(roiDaily.date);
 
   const spend = daily.reduce((s, d) => s + d.spend, 0);
   const revenue = daily.reduce((s, d) => s + d.revenue, 0);
   const roas = spend > 0 ? (revenue / spend).toFixed(1) + "×" : "—";
-  // Ads-Manager-style CPL: spend ÷ captured leads (not per-quoted).
-  const cpl = captured > 0 && spend > 0 ? wholeDollars(Math.round(spend / captured)) : "—";
+  // Spend ÷ ESTIMATES, not ÷ contacts. Smaller denominator than the old CPL, so a
+  // higher number — and an honest one: contacts include traffic no spend produced.
+  const cpe = estimates > 0 && spend > 0 ? wholeDollars(Math.round(spend / estimates)) : "—";
 
   // Top sources by revenue.
   const top = await db
@@ -74,7 +75,7 @@ export default async function OverviewPage() {
     })
     .from(roiDaily)
     .leftJoin(sources, eq(roiDaily.sourceId, sources.id))
-    .where(gte(roiDaily.date, sinceDate))
+    .where(inWindow)
     .groupBy(sources.key, sources.displayName)
     .orderBy(desc(sql`coalesce(sum(${roiDaily.revenueCents}),0)`))
     .limit(6);
@@ -86,7 +87,7 @@ export default async function OverviewPage() {
       <div className="page-head">
         <div>
           <h1 className="page-title">Overview</h1>
-          <p className="page-sub">Blended performance · last 30 days · Edwardsville + O&apos;Fallon</p>
+          <p className="page-sub">Blended performance · last 30 days · {touchModelLabel(touch)}</p>
         </div>
         <div className="controls">
           <span className="pill">◷ Last 30 days ▾</span>
@@ -97,19 +98,21 @@ export default async function OverviewPage() {
       {/* Funnel */}
       <div className="funnel">
         <div className="stage">
-          <div className="st-label"><span className="st-dot" style={{ background: "var(--muted)" }} />Captured</div>
-          <div className="st-value mono">{captured}</div>
+          <div className="st-label"><span className="st-dot" style={{ background: "var(--muted)" }} />Contacts</div>
+          <div className="st-value mono">{contacts}</div>
           <div className="st-sub">{f?.calls ?? 0} calls · {f?.forms ?? 0} forms</div>
         </div>
         <div className="stage">
-          <div className="st-label"><span className="st-dot" style={{ background: "var(--chart-spend)" }} />Quoted</div>
-          {captured > 0 && <div className="st-conv">{pct(quoted, captured)} of captured</div>}
-          <div className="st-value mono">{quoted}</div>
-          <div className="st-sub">estimate with a price sent</div>
+          <div className="st-label"><span className="st-dot" style={{ background: "var(--chart-spend)" }} />Estimates</div>
+          <div className="st-value mono">{estimates}</div>
+          {/* Deliberately NOT shown as a % of contacts: you book more estimates than
+              you receive tracked contacts (repeat customers, referrals, canvassing),
+              so the ratio would routinely exceed 100% and mean nothing. */}
+          <div className="st-sub">visits booked, not cancelled</div>
         </div>
         <div className="stage">
           <div className="st-label"><span className="st-dot" style={{ background: "var(--accent)" }} />Won</div>
-          {quoted > 0 && <div className="st-conv">{pct(won, quoted)} close rate</div>}
+          {estimates > 0 && <div className="st-conv">{pct(won, estimates)} close rate</div>}
           <div className="st-value mono" style={{ color: "var(--accent)" }}>{won}</div>
           <div className="st-sub">estimate approved · {wholeDollars(revenue)} revenue</div>
         </div>
@@ -120,7 +123,7 @@ export default async function OverviewPage() {
         <div className="card kpi"><div className="label">◐ Ad spend</div><div className="value mono">{wholeDollars(spend)}</div></div>
         <div className="card kpi"><div className="label">◈ Revenue (won est.)</div><div className="value mono">{wholeDollars(revenue)}</div></div>
         <div className="card kpi accent"><div className="label">✦ ROAS</div><div className="value mono pos">{roas}</div></div>
-        <div className="card kpi"><div className="label" title="Spend ÷ captured leads — matches Ads Manager">☎ Cost / lead</div><div className="value mono">{cpl}</div></div>
+        <div className="card kpi"><div className="label" title="Spend ÷ estimates attributed to a paid source">☎ Cost / estimate</div><div className="value mono">{cpe}</div></div>
       </div>
 
       {/* Chart + top sources */}

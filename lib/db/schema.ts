@@ -783,18 +783,39 @@ export const roiDaily = pgTable(
   {
     id: id(),
     date: date("date").notNull(),
+    // Which attribution model this row is computed under. BOTH are written on every
+    // rebuild — 'last' credits the contact immediately before the estimate, 'first'
+    // credits the contact that originally acquired that customer — so switching
+    // models is a filter, not a re-derivation, and the two can be compared directly.
+    //
+    // Every read MUST filter on this. Summing across models double-counts everything,
+    // including spend, which is written identically to both (the money spent does not
+    // change with the model; only who gets credit for what it produced does).
+    touchType: touchTypeEnum("touch_type").notNull().default("last"),
     sourceId: text("source_id").references(() => sources.id),
     campaignId: text("campaign_id").references(() => campaigns.id),
     location: locationEnum("location").default("unknown"),
-    leadsCount: integer("leads_count").notNull().default(0),
-    qualifiedCount: integer("qualified_count").notNull().default(0),
+    // DEMAND — inbound contacts, bucketed on the day they contacted us. Non-spam
+    // only: `is_lead` no longer gates anything here (an unclassified call from a
+    // real person is still demand), which is what stops the three rival "what is a
+    // lead" predicates from ever disagreeing again.
+    contactsCount: integer("contacts_count").notNull().default(0),
+    // OPPORTUNITY — countable HCP estimates (see lib/estimates/countable.ts).
+    // Bucketed on the CONTACT's date when we can attribute one, so estimates line
+    // up with the spend that produced them; on the estimate's own appointment date
+    // when we cannot, where there is no spend to line up with anyway.
+    estimatesCount: integer("estimates_count").notNull().default(0),
     callsCount: integer("calls_count").notNull().default(0),
     formsCount: integer("forms_count").notNull().default(0),
     wonCount: integer("won_count").notNull().default(0),
     spendCents: integer("spend_cents").notNull().default(0),
     revenueCents: integer("revenue_cents").notNull().default(0),
     quoteValueCents: integer("quote_value_cents").notNull().default(0),
-    costPerLeadCents: integer("cost_per_lead_cents"),
+    // Spend ÷ ESTIMATES, not ÷ contacts. Renamed rather than redefined in place:
+    // the old `cost_per_lead_cents` divided by a looser, larger contact count, so
+    // keeping the name would have left every historical reader silently comparing
+    // two different metrics.
+    costPerEstimateCents: integer("cost_per_estimate_cents"),
     costPerAcquisitionCents: integer("cost_per_acquisition_cents"),
     roiRatio: numeric("roi_ratio", { precision: 12, scale: 4 }),
     createdAt: createdAt(),
@@ -811,7 +832,7 @@ export const roiDaily = pgTable(
     // constraint builder exposes NULLS NOT DISTINCT (it creates a unique index
     // underneath either way). The rebuild is delete-then-insert, so nothing
     // targets this in an ON CONFLICT clause.
-    unique("roi_daily_key_uq").on(t.date, t.sourceId, t.campaignId, t.location).nullsNotDistinct(),
+    unique("roi_daily_key_uq").on(t.date, t.touchType, t.sourceId, t.campaignId, t.location).nullsNotDistinct(),
     index("roi_daily_date_idx").on(t.date),
   ],
 );
