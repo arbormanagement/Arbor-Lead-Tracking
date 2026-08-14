@@ -6,14 +6,21 @@ Edwardsville + O'Fallon). WhatConverts-style. Single-tenant. Owner: Justin
 
 ## What this app is
 - **Native call tracking + DNI on Twilio** — we own the numbers, swap/forward/record/transcribe. Goal: replace CallRail.
-- **Inbox + Leads are two different things, deliberately.** The **Inbox** (`/inbox`) is
+- **Inbox + Estimates are two different things, deliberately.** The **Inbox** (`/inbox`) is
   everything that came in on any channel — calls, texts, web forms, Facebook lead forms,
-  later email — whether or not it turned out to be business. **Leads** (`/leads`) is only
-  what has been confirmed to be an estimate request, per the single predicate in
-  `lib/leads/qualified.ts`: not spam, nothing explicitly marked not-a-lead (any type), and
-  for calls/texts an affirmative `is_lead = true` from the classifier or a human. `null`
-  (unclassified) is NOT good enough. Triage — the Lead/Not toggle — lives in the Inbox and
-  on lead detail; the Leads list has no toggle, because every row in it already qualifies.
+  later email — whether or not it turned out to be business. **Estimates** (`/estimates`) is
+  the OPPORTUNITY list, counted from HousecallPro rather than from what we managed to track,
+  per the single predicate in `lib/estimates/countable.ts`: **scheduled, and not cancelled**.
+  - **This replaced a lead-anchored `/leads` page (2026-08-14, P3), and the unit is the
+    point.** That page listed `leads` rows passing `isQualifiedLead`, so it could only ever
+    show opportunities that arrived through a TRACKED CONTACT — and ~41% of estimate
+    customers have no lead on any channel (repeat business, referrals, canvassing, estimates
+    written in the field). Those were absent, not merely unattributed. `/leads` now redirects;
+    `/leads/[id]` still exists as contact detail and estimate rows link to it.
+  - **Conversion is computed off SCHEDULED estimates only** (confirmed by Justin
+    2026-08-14). Estimates created and never scheduled are excluded and are not a working
+    population — there were 34 in the last 30 days, none of them priced. `isQualifiedLead`
+    still exists for Inbox triage (the Lead/Not toggle) but **no metric reads it**.
 - **The inbox is CONTACT-centric, not channel-centric.** One thread per person
   (`conversations`, unique on `contact_id`), holding every channel they've ever used.
   `contacts` + `contact_identifiers` are the identity spine: a form carrying both a phone
@@ -79,7 +86,9 @@ Edwardsville + O'Fallon). WhatConverts-style. Single-tenant. Owner: Justin
 - `lib/db/schema.ts` — full data model (visitors, web_sessions, tracking_numbers, number_assignments, sources, campaigns, ad_spend, hcp_customers, hcp_jobs, leads, conversations, calls, messages, form_submissions, facebook_leads, attributions, roi_daily, …).
 - `app/api/twilio/voice/route.ts` — inbound call: resolve tracking number → assignment → source, spam check, persist call+lead, return forward TwiML. **Must respond <3s** — fallback-forwards on any error so no call is lost.
 - `app/api/twilio/sms/route.ts` — inbound text. Same resolution as `/voice` (shared in `lib/twilio/inbound.ts`) but fails **CLOSED** on an unverifiable signature: dead air loses a customer, an unverified write just lets someone forge leads. Idempotent on `MessageSid`.
-- `lib/leads/qualified.ts` — the one definition of "this is really a lead", used by the Leads list, its counters, and the API so they can't disagree.
+- `lib/estimates/countable.ts` — the ONE definition of an opportunity (`isCountableEstimate`: scheduled, not cancelled), plus `isCancelledEstimate` as its exact complement so "Estimates" and "Cancelled" on `/sources` cannot drift. Copied from `arbor-reporting`, not invented: the same wins give a 25% close rate without it and 48% with it.
+- `lib/leads/qualified.ts` — Inbox triage only. No metric reads it any more (P2/P3); it survives so the Lead/Not toggle keeps working.
+- `lib/landing-page.ts` — `landingPathSql`, so `/sources` and `/pages` cannot disagree about what a page is. SQL rather than TS on purpose: grouping and display must use the same value, and normalising only at render is exactly how they came apart.
 - `lib/contacts/resolve.ts` — identity resolution (phone/email → one person).
 - `lib/contacts/link-hcp.ts` — **this app stores no customer data; it links to HousecallPro.** `contacts.hcp_customer_id` is matched on the same normalized phone/email key the ROI pipeline already uses, so a thread and its revenue agree on who the customer is by construction. Names are read through the join, never copied — a fix in HCP shows up immediately. Linking runs both ways: inline when a contact is first resolved, and as a sweep after each HCP sync (for the stranger who becomes a customer later). A match also **adopts the HCP record's other identifiers**, so someone who only ever texted is still recognized when they first email.
 - `lib/messaging/thread.ts` — threading. Attribution snapshotted at thread creation only fills gaps afterwards, so a rotated DNI lease can't rewrite the source that earned the original call. `last_endpoint_key` is the deliberate exception — it must track the newest inbound endpoint because that's the reply-to.
@@ -106,7 +115,11 @@ unions them into one timeline. There is no per-channel inbox table.
   component drags node-postgres into the browser bundle and fails the build.
 
 ## Phases
-1. Call tracking on **static** numbers (current scaffold). 2. HCP revenue + spend sync + ROI. 3. `track.js` web/form. 4. Pooled DNI. 5. FB leadgen + LSA + Deepgram transcription + spam. 6. CallRail decommission.
+1. Call tracking on **static** numbers (current scaffold). 2. HCP revenue + spend sync + ROI. 3. `track.js` web/form. 4. Pooled DNI. 5. FB leadgen + Deepgram transcription + spam. 6. CallRail decommission.
+
+**Surfaces (all estimate-anchored as of 2026-08-14):** `/` overview · `/inbox` threads ·
+`/estimates` opportunities · `/sources` channels · `/roi` campaigns · `/pages` landing-page
+CRO. `/leads`, `/calls`, `/numbers`, `/spend` are redirects to their new homes.
 
 **Phase 6 lives in the `arbor-general` repo** — `callrail-migration/` (plan, number
 inventory, transfer mechanics) plus a summary in that repo's CLAUDE.md. It is vendor and
@@ -282,7 +295,7 @@ re-argued rather than assumed.
   ten CallRail-transferred numbers got it. Same Monitor Alerts diagnostic as below applies.
 - Not every campaign is customer acquisition. Recruiting/brand campaigns are flagged
   `campaigns.excluded` (Settings → Campaigns) and are kept out of every ROI number —
-  `roi_daily`, the overview funnel, the sources page, the `/leads` list — while their spend stays
+  `roi_daily`, the overview funnel, the sources page, `/estimates`, `/roi` — while their spend stays
   on record. **Exclusion is applied when READING, never by refusing to record**: dropping the
   `ad_spend` rows makes the loss permanent, since the re-pull only reaches back 35 days.
   The Facebook ingest also drops submissions from an excluded campaign, so applicants never
@@ -293,6 +306,41 @@ re-argued rather than assumed.
   **The inbox is such a surface, deliberately un-excluded:** a recruiting enquiry is still
   someone contacting the business, so it threads and shows in `/inbox` — it just never
   becomes a lead, so it stays out of ROI either way.
+- **A Google Ads `DATE_TIME` field is a bare "yyyy-MM-dd HH:mm:ss" in the ACCOUNT'S
+  timezone, with no offset.** `new Date()` on an offset-less string reads it as the SERVER's
+  local time — UTC on Railway — so every value lands 5 hours early in summer, 6 in winter.
+  Use `parseWallTime` (`lib/tz.ts`). Found 2026-08-14 because a Local Services lead and the
+  call it produced showed as two contacts five hours apart; they match to the MINUTE once
+  the offset is undone, which is what identified the cause rather than leaving it a guess.
+  Display was the visible half — the load-bearing half is that `occurred_at` is what
+  `roi_daily` buckets on, so anything between midnight and ~5am CT was counted on the
+  previous business day. Verified the account reports `America/Chicago` rather than assuming.
+- **Identity collapsed to ONE phone number in three places, and that was the single biggest
+  source of false "unattributed" (fixed 2026-08-14).** `hcp_estimates.customer_phone_e164`
+  and `hcp_customers.phone_e164` are both `mobile ?? home ?? work`, and matching was exact
+  equality against them — but people ring from whichever handset they are holding. Of eleven
+  estimates whose customer had a second number, THREE had real calls only on the number the
+  app was ignoring. `hcp_customers.phones_e164` (text[], GIN) now holds every normalized
+  number, `link-hcp` matches on overlap and adopts all of them, and `matchLeadsToEstimates`
+  resolves the customer to a CONTACT and matches on `contact_id` with phone/email as the
+  fallback. **Any new match key should go through the contact spine, not a column.**
+- **The LSA leads pull is gone (2026-08-14) and should not come back without new evidence.**
+  Every reason for it failed against the data: since the CallRail cutover the tracking line
+  records LSA phone calls *more* completely than Google bills them (24 vs 19 over the first
+  six days) and carries a transcript so they can be classified, which an API row never could;
+  `MESSAGE` has produced nothing since 2024 and `BOOKING` nothing since 2026-04-05. **LSA cost
+  is unaffected** — it comes from the campaign report (`advertising_channel_type =
+  LOCAL_SERVICES`), never from that pull. `google/lsa` is still a source and `+16183669977`
+  still its number, so calls attribute exactly as before. The 157 pre-cutover rows were
+  deleted at Justin's direction; that history is to be re-imported from CallRail, and until
+  it is, **Local Services shows near-zero attributed revenue for July/early August**.
+- **~41% of estimate customers have no lead on ANY channel** (measured 2026-08-14 over 80
+  recent estimates). That is mostly real — referrals, repeat business, walk-ups — not a
+  tracking failure, and no amount of attribution engineering reaches it. `self_reported_source`
+  is the only instrument that does; it is now captured from web and Meta forms as well as call
+  transcripts, deliberately before the website has the field. Note also that under LAST touch a
+  repeat customer is unattributed BY DESIGN; both models are stored, so switching to first
+  touch is a display filter and the drop in Unattributed is the repeat-business share.
 - **An HCP estimate's `updated_at` does NOT move when an option is priced, approved,
   declined or expired** — all of that lives on `options[]`, which carries its own
   `updated_at`. Found 2026-08-13: `listEstimates` windowed on the header timestamp, so
