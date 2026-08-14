@@ -22,10 +22,15 @@
 --
 -- Matching is on a squashed key so every spelling folds in, not just the one known
 -- row — the whole point is that the spelling varied.
+--
+-- The EXISTS guard makes this a no-op on a database with no canonical `gbp` row
+-- rather than a silent data loss: without it the survivor subquery below resolves to
+-- NULL, and every UPDATE would blank the source it was supposed to repoint.
 CREATE TEMP TABLE _dupe_gbp ON COMMIT DROP AS
   SELECT id FROM "sources"
   WHERE key <> 'gbp'
-    AND regexp_replace(lower(key), '[^a-z0-9]', '', 'g') LIKE '%googlemybusiness%';--> statement-breakpoint
+    AND regexp_replace(lower(key), '[^a-z0-9]', '', 'g') LIKE '%googlemybusiness%'
+    AND EXISTS (SELECT 1 FROM "sources" WHERE key = 'gbp');--> statement-breakpoint
 
 UPDATE "leads"         SET "source_id"        = (SELECT id FROM "sources" WHERE key='gbp') WHERE "source_id"        IN (SELECT id FROM _dupe_gbp);--> statement-breakpoint
 UPDATE "attributions"  SET "source_id"        = (SELECT id FROM "sources" WHERE key='gbp') WHERE "source_id"        IN (SELECT id FROM _dupe_gbp);--> statement-breakpoint
