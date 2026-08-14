@@ -1,4 +1,4 @@
-import { getSession } from "@/lib/auth";
+import { authorizeAdmin, unauthorized } from "@/lib/admin-auth";
 import { syncSpend } from "@/lib/sync/spend";
 import { syncHcp } from "@/lib/sync/hcp";
 import { runAttribution } from "@/lib/sync/attribution";
@@ -17,11 +17,17 @@ export const maxDuration = 300;
 /**
  * Admin-triggered sync: POST /api/sync/spend or /api/sync/hcp. Lets us run a
  * sync on demand from the dashboard, independent of the cron worker's schedule.
- * Gated to an authenticated admin session.
+ * Gated to an admin session cookie or the machine token (see authorizeAdmin).
  */
 export async function POST(_req: Request, { params }: { params: Promise<{ job: string }> }) {
-  const session = await getSession();
-  if (!session) return Response.json({ error: "unauthorized" }, { status: 401 });
+  // Session cookie OR `Authorization: Bearer $ADMIN_API_TOKEN`, matching
+  // /api/diagnostics and /api/numbers/pool. Session-only meant a deliberate
+  // backfill (`?days=N`) could only be started from a browser, while the very
+  // same work was already reachable headlessly through /api/cron with
+  // CRON_SECRET — so this widens no capability that did not already exist, it
+  // just makes the windowed variant reachable the same way.
+  const auth = await authorizeAdmin(_req);
+  if (!auth.ok) return unauthorized();
 
   const { job } = await params;
   // Optional window override: ?days=N forces an explicit window on the jobs that
