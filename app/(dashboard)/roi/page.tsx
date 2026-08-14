@@ -6,6 +6,7 @@ import { campaigns, roiDaily, sources } from "@/lib/db/schema";
 import { dollars } from "@/lib/format";
 import { TIMEFRAMES, pickDays, timeframeLabel } from "@/lib/timeframes";
 import { businessDate } from "@/lib/tz";
+import { CoverageNotice } from "../coverage-notice";
 
 export const dynamic = "force-dynamic";
 
@@ -113,6 +114,8 @@ export default async function CampaignsPage({ searchParams }: { searchParams: Pr
           ))}
         </div>
       </div>
+
+      <CoverageNotice days={days} />
 
       {paidRows.length === 0 ? (
         <div className="empty" style={{ marginBottom: 26 }}>
