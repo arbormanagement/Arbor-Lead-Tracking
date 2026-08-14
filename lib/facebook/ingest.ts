@@ -66,6 +66,7 @@ export async function ingestFacebookLead(detail: FbLeadDetail): Promise<IngestRe
         phoneE164: normalizePhone(c.phone),
         emailLc: normalizeEmail(c.email),
         message: c.message,
+        selfReportedSource: c.selfReportedSource,
         sourceId,
         medium: "paid",
         campaignId,
@@ -126,6 +127,11 @@ function mapFbFields(fieldData: Array<{ name: string; values: string[] }>) {
     email: get(["email"]),
     phone: get(["phone", "telefono", "mobile"]),
     message: get(["message", "comment", "detail", "describe", "project"]),
+    // Meta lead forms can carry a custom "how did you hear about us" question, and
+    // it was being discarded the same way the web form's was. Matching is substring
+    // here (Meta's own field naming), so the needles stay specific enough that a
+    // hidden tracking field cannot pass as the customer's own answer.
+    selfReportedSource: get(["hear_about", "hear about", "heard_about", "heard about", "how_did_you_find", "referral_source", "referred_by"]),
   };
 }
 
