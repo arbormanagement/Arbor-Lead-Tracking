@@ -1,4 +1,4 @@
-import { and, isNotNull, isNull, notInArray, or, type SQL } from "drizzle-orm";
+import { and, inArray, isNotNull, isNull, notInArray, or, type SQL } from "drizzle-orm";
 import { hcpEstimates } from "@/lib/db/schema";
 
 /**
@@ -46,6 +46,26 @@ export const isCountableEstimate: SQL = and(
   // `status IS NULL OR status NOT IN (...)` — spelled out because SQL NULL is not
   // false, so a bare NOT IN would silently drop every estimate with no work_status.
   or(isNull(hcpEstimates.status), notInArray(hcpEstimates.status, CANCELLED_STATUSES)),
+)!;
+
+/**
+ * The exact complement of `isCountableEstimate` within scheduled estimates: an
+ * appointment that was booked and then called off.
+ *
+ * It exists so "Cancelled" can never drift from "Estimates". Those two columns sit
+ * next to each other on /sources, and until now Cancelled counted *leads* with
+ * status `cancelled` under the old lead predicate while Estimates counted countable
+ * HCP estimates — two different populations presented as parts of one row, so the
+ * pair could not be added up or compared.
+ *
+ * Deliberately still requires a scheduled start. A never-scheduled estimate is
+ * excluded from the countable set too, and it is not a cancellation — nobody
+ * called anything off. Cancelled + countable therefore partitions exactly the
+ * estimates that had an appointment on the calendar.
+ */
+export const isCancelledEstimate: SQL = and(
+  isNotNull(hcpEstimates.scheduledStartHcp),
+  inArray(hcpEstimates.status, CANCELLED_STATUSES),
 )!;
 
 /**
