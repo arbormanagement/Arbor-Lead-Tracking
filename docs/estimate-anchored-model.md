@@ -108,9 +108,34 @@ single easiest thing to get wrong in the whole plan.
 It stays as the Inbox triage toggle, where it is useful. No metric reads it. That makes
 the three-predicate divergence structurally impossible rather than patched.
 
-**5. "Unattributed" is a first-class bucket, not a gap.**
-~58% of estimates today. Displaying it is the point — it is the number that says how
-much of the business we can actually explain.
+**5. "Unattributed" is a first-class bucket, not a gap — and is NOT filled from
+HCP's `lead_source`.**
+~58% of estimates today. Displaying it is the point: it is the number that says how much
+of the business we can actually explain.
+
+The tempting shortcut is HCP's own `lead_source`. **Do not take it** (Justin, confirmed
+2026-08-14 — "wildly inaccurate"). It records how a record was *typed into HCP*, not
+where the customer came from: the dominant values are `Online Booking` and `Website`, so
+a Google-ad click that lands on the site and books online is filed as `Online Booking`.
+The data agrees three ways — the vocabulary changed between 2024
+(`Online Booking`/`Google`/`Referral`) and 2026 (`Website`/`Facebook`/`Online Booking`),
+so a trend on it shows Google vanishing purely from relabelling; coverage swings from
+~60% recently to ~22% in 2024; and `customer.lead_source` is a second, mostly-null field
+carrying different values again (`HMI`) that disagrees with the estimate's.
+
+Stored as `lead_source_raw` and never allowed to populate `source_id`. Kept only so the
+next person does not rediscover the field and wire it up.
+
+**A wrong attribution is worse than a missing one** — it bills spend to a channel that
+did not earn it, while looking like data.
+
+What actually moves the number: identifier coverage (both phone and email match at ~55%,
+phone-only at 28–43%), and beyond that nothing technical. A large share is structurally
+unattributable — repeat customers, referrals, canvassing, estimates written in the field.
+The only real answer for that population is first-party: asking "how did you hear about
+us?" at booking and recording it somewhere we control. That is an operational change, and
+it only works if captured consistently — which is precisely what went wrong with HCP's
+field.
 
 **6. Cancelled estimates are EXCLUDED from the close-rate denominator.**
 This is the rule the business already operates on, and it is not optional. Feb 2026,
