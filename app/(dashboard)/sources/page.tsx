@@ -4,6 +4,7 @@ import type { AnyPgColumn } from "drizzle-orm/pg-core";
 import Link from "next/link";
 import { campaignNotExcluded, excludedCampaignIds } from "@/lib/campaigns";
 import { db } from "@/lib/db/client";
+import { selectedTouchModel, touchModelLabel } from "@/lib/attribution/model";
 import { leads, roiDaily, sources } from "@/lib/db/schema";
 import { dollars } from "@/lib/format";
 import { TIMEFRAMES, pickDays, timeframeLabel } from "@/lib/timeframes";
@@ -25,6 +26,7 @@ export default async function SourcesPage({ searchParams }: { searchParams: Prom
   const leadOnly = or(ne(leads.type, "call"), eq(leads.isLead, true));
   // Recruiting campaigns are not customer acquisition. roi_daily is built without
   // them; the queries below read `leads` directly, so they filter here.
+  const touch = await selectedTouchModel();
   const excluded = await excludedCampaignIds();
   const notRecruiting = campaignNotExcluded(leads.campaignId, excluded);
 
@@ -41,7 +43,7 @@ export default async function SourcesPage({ searchParams }: { searchParams: Prom
     })
     .from(roiDaily)
     .leftJoin(sources, eq(roiDaily.sourceId, sources.id))
-    .where(gte(roiDaily.date, sinceBusinessDate))
+    .where(and(gte(roiDaily.date, sinceBusinessDate), eq(roiDaily.touchType, touch)))
     .groupBy(sources.key, sources.displayName)
     .orderBy(desc(sql`coalesce(sum(${roiDaily.revenueCents}),0)`));
 

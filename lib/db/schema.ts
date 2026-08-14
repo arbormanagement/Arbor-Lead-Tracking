@@ -783,6 +783,15 @@ export const roiDaily = pgTable(
   {
     id: id(),
     date: date("date").notNull(),
+    // Which attribution model this row is computed under. BOTH are written on every
+    // rebuild — 'last' credits the contact immediately before the estimate, 'first'
+    // credits the contact that originally acquired that customer — so switching
+    // models is a filter, not a re-derivation, and the two can be compared directly.
+    //
+    // Every read MUST filter on this. Summing across models double-counts everything,
+    // including spend, which is written identically to both (the money spent does not
+    // change with the model; only who gets credit for what it produced does).
+    touchType: touchTypeEnum("touch_type").notNull().default("last"),
     sourceId: text("source_id").references(() => sources.id),
     campaignId: text("campaign_id").references(() => campaigns.id),
     location: locationEnum("location").default("unknown"),
@@ -823,7 +832,7 @@ export const roiDaily = pgTable(
     // constraint builder exposes NULLS NOT DISTINCT (it creates a unique index
     // underneath either way). The rebuild is delete-then-insert, so nothing
     // targets this in an ON CONFLICT clause.
-    unique("roi_daily_key_uq").on(t.date, t.sourceId, t.campaignId, t.location).nullsNotDistinct(),
+    unique("roi_daily_key_uq").on(t.date, t.touchType, t.sourceId, t.campaignId, t.location).nullsNotDistinct(),
     index("roi_daily_date_idx").on(t.date),
   ],
 );

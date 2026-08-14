@@ -1,7 +1,8 @@
-import { desc, eq, gte, sql } from "drizzle-orm";
+import { and, desc, eq, gte, sql } from "drizzle-orm";
 import { businessDate } from "@/lib/tz";
 import { db } from "@/lib/db/client";
 import { roiDaily, sources } from "@/lib/db/schema";
+import { selectedTouchModel, touchModelLabel } from "@/lib/attribution/model";
 import { wholeDollars } from "@/lib/format";
 
 export const dynamic = "force-dynamic";
@@ -17,6 +18,10 @@ export default async function OverviewPage() {
   // date — silently trimming or including an extra boundary day, and disagreeing
   // with the funnel beside it (which windows on a timestamp).
   const sinceDate = businessDate(since);
+  // roi_daily holds BOTH attribution models; every read must pick one or it
+  // double-counts (spend included — it is written to both).
+  const touch = await selectedTouchModel();
+  const inWindow = and(gte(roiDaily.date, sinceDate), eq(roiDaily.touchType, touch));
 
   // Funnel: contacts (demand) → estimates (opportunity) → won.
   //
@@ -34,7 +39,7 @@ export default async function OverviewPage() {
       won: sql<number>`coalesce(sum(${roiDaily.wonCount}),0)::int`,
     })
     .from(roiDaily)
-    .where(gte(roiDaily.date, sinceDate));
+    .where(inWindow);
 
   const contacts = f?.contacts ?? 0;
   const estimates = f?.estimates ?? 0;
@@ -49,7 +54,7 @@ export default async function OverviewPage() {
       revenue: sql<number>`coalesce(sum(${roiDaily.revenueCents}),0)::int`,
     })
     .from(roiDaily)
-    .where(gte(roiDaily.date, sinceDate))
+    .where(inWindow)
     .groupBy(roiDaily.date)
     .orderBy(roiDaily.date);
 
@@ -70,7 +75,7 @@ export default async function OverviewPage() {
     })
     .from(roiDaily)
     .leftJoin(sources, eq(roiDaily.sourceId, sources.id))
-    .where(gte(roiDaily.date, sinceDate))
+    .where(inWindow)
     .groupBy(sources.key, sources.displayName)
     .orderBy(desc(sql`coalesce(sum(${roiDaily.revenueCents}),0)`))
     .limit(6);
@@ -82,7 +87,7 @@ export default async function OverviewPage() {
       <div className="page-head">
         <div>
           <h1 className="page-title">Overview</h1>
-          <p className="page-sub">Blended performance · last 30 days · Edwardsville + O&apos;Fallon</p>
+          <p className="page-sub">Blended performance · last 30 days · {touchModelLabel(touch)}</p>
         </div>
         <div className="controls">
           <span className="pill">◷ Last 30 days ▾</span>

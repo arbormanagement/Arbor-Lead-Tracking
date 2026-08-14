@@ -183,6 +183,13 @@
       "when": 1786715920853,
       "tag": "0025_roi_daily_estimate_anchored",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1786718427555,
+      "tag": "0026_roi_daily_touch_type",
+      "breakpoints": true
     }
   ]
 }

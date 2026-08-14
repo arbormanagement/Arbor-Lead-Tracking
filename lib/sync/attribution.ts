@@ -1,10 +1,11 @@
-import { and, asc, desc, eq, gte, inArray, isNull, lte, ne, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lte, ne, or, sql } from "drizzle-orm";
 import { campaignNotExcluded, excludedCampaignIds } from "@/lib/campaigns";
 import { db } from "@/lib/db/client";
 import {
   adSpend,
   attributions,
   campaigns,
+  contacts,
   hcpEstimates,
   leads,
   manualSpend,
@@ -59,15 +60,11 @@ export async function runAttribution({
 // contact embedded on the estimate (no dependency on a separate customer sync).
 //
 // Two settings shape the match:
-//  · attribution_model — "last_touch" (default) credits the latest qualifying lead
-//    before the estimate; "first_touch" credits the earliest (WhatConverts-style
-//    single-touch models, applied retroactively on each rebuild).
 //  · customer_window_days — repeat business: a won estimate whose contact has NO
 //    unclaimed lead of its own inherits the contact's already-matched lead when it
 //    falls within this many days of it (ServiceTitan "Smart Attribution" style),
 //    so paid channels get credit for the follow-up work they generated. 0 disables.
 async function matchLeadsToEstimates(windowDays: number): Promise<{ qualified: number; won: number }> {
-  const model = await getSetting<string>("attribution_model", "last_touch");
   const customerWindowDays = await getSetting<number>("customer_window_days", 90);
   const lookback = new Date(Date.now() - (windowDays + 30) * 86_400_000);
 
@@ -180,7 +177,12 @@ async function matchLeadsToEstimates(windowDays: number): Promise<{ qualified: n
         ),
       )
       // Last-touch credits the latest lead before the estimate; first-touch the earliest.
-      .orderBy(model === "first_touch" ? asc(leads.occurredAt) : desc(leads.occurredAt))
+      // ALWAYS the latest qualifying lead. This link IS the last-touch answer, and
+      // first-touch is now computed properly in the rollup from the contact's own
+      // history — so the old `attribution_model` setting no longer changes what is
+      // derived here. It selects which model the dashboard DISPLAYS
+      // (lib/attribution/model.ts), and both are always available.
+      .orderBy(desc(leads.occurredAt))
       .limit(5);
 
     const pick = candidates.find((c) => !claimedLeads.has(c.id));
@@ -318,8 +320,11 @@ export const PLATFORM_SOURCE_KEY: Record<string, string> = {
   facebook: "facebook/paid",
 };
 
+type TouchModel = "first" | "last";
+
 interface RoiAcc {
   date: string;
+  touchType: TouchModel;
   sourceId: string | null;
   campaignId: string | null;
   location: "edwardsville" | "ofallon" | "unknown";
@@ -360,13 +365,44 @@ async function rebuildRoiDaily(windowDays: number): Promise<number> {
   // campaign flagged in Settings drops out on the next run, with no cleanup needed.
   const excluded = await excludedCampaignIds();
 
+  // ── First-touch lookup ────────────────────────────────────────────────────
+  // A contact's FIRST-EVER inbound event — the channel that originally acquired
+  // that person, however long ago. This is what makes first-touch real rather than
+  // "the earliest of the recent leads", which is all the old attribution_model
+  // setting could reach.
+  const firstTouchRows = await db
+    .selectDistinctOn([leads.contactId], {
+      contactId: leads.contactId,
+      sourceId: leads.sourceId,
+      campaignId: leads.campaignId,
+      location: leads.location,
+    })
+    .from(leads)
+    .where(and(isNotNull(leads.contactId), eq(leads.isSpam, false)))
+    .orderBy(leads.contactId, asc(leads.occurredAt));
+  const firstTouchByContact = new Map(firstTouchRows.map((r) => [r.contactId!, r]));
+
+  // HCP customer → our contact, so a repeat estimate with NO new inbound contact can
+  // still be traced back to the person and thus to whoever acquired them. This is the
+  // path that makes first-touch work where last-touch correctly has nothing to say.
+  const contactRowsByHcp = await db
+    .select({ id: contacts.id, hcpCustomerId: contacts.hcpCustomerId })
+    .from(contacts)
+    .where(isNotNull(contacts.hcpCustomerId));
+  const contactByHcpCustomer = new Map(contactRowsByHcp.map((c) => [c.hcpCustomerId!, c.id]));
+
   // Source-key → id, so ad spend (which carries platform, not source) can roll up.
   const sourceRows = await db.select({ id: sources.id, key: sources.key }).from(sources);
   const sourceIdByKey = new Map(sourceRows.map((s) => [s.key, s.id]));
 
   const acc = new Map<string, RoiAcc>();
-  const keyOf = (a: { date: string; sourceId: string | null; campaignId: string | null; location: string }) =>
-    `${a.date}|${a.sourceId ?? ""}|${a.campaignId ?? ""}|${a.location}`;
+  const keyOf = (a: {
+    date: string;
+    touchType: TouchModel;
+    sourceId: string | null;
+    campaignId: string | null;
+    location: string;
+  }) => `${a.date}|${a.touchType}|${a.sourceId ?? ""}|${a.campaignId ?? ""}|${a.location}`;
   const bump = (seed: Omit<RoiAcc, "contactsCount" | "estimatesCount" | "callsCount" | "formsCount" | "wonCount" | "spendCents" | "revenueCents" | "quoteValueCents">) => {
     const k = keyOf(seed);
     let row = acc.get(k);
@@ -390,6 +426,7 @@ async function rebuildRoiDaily(windowDays: number): Promise<number> {
       campaignId: leads.campaignId,
       location: leads.location,
       type: leads.type,
+      contactId: leads.contactId,
     })
     .from(leads)
     .where(
@@ -407,15 +444,23 @@ async function rebuildRoiDaily(windowDays: number): Promise<number> {
     // Trim the over-wide scan back to the window the delete actually clears, so we
     // never insert a row outside it.
     if (date < sinceDate) continue;
-    const row = bump({
-      date,
-      sourceId: l.sourceId ?? null,
-      campaignId: l.campaignId ?? null,
-      location: (l.location ?? "unknown") as RoiAcc["location"],
-    });
-    row.contactsCount++;
-    if (l.type === "call") row.callsCount++;
-    if (l.type === "web_form") row.formsCount++;
+    // Last touch for a contact event is the event's own channel. First touch is
+    // whoever acquired that person — for their very first contact the two coincide,
+    // which is exactly right.
+    const ft = l.contactId ? firstTouchByContact.get(l.contactId) : undefined;
+    for (const touchType of ["last", "first"] as const) {
+      const src = touchType === "last" ? l : (ft ?? l);
+      const row = bump({
+        date,
+        touchType,
+        sourceId: src.sourceId ?? null,
+        campaignId: src.campaignId ?? null,
+        location: (src.location ?? "unknown") as RoiAcc["location"],
+      });
+      row.contactsCount++;
+      if (l.type === "call") row.callsCount++;
+      if (l.type === "web_form") row.formsCount++;
+    }
   }
 
   // ── OPPORTUNITY: estimates ────────────────────────────────────────────────
@@ -438,6 +483,8 @@ async function rebuildRoiDaily(windowDays: number): Promise<number> {
       leadSourceId: leads.sourceId,
       leadCampaignId: leads.campaignId,
       leadLocation: leads.location,
+      leadContactId: leads.contactId,
+      hcpCustomerId: hcpEstimates.hcpCustomerId,
     })
     .from(hcpEstimates)
     // At most one lead per estimate — `matchLeadsToEstimates` claims each lead once,
@@ -456,17 +503,47 @@ async function rebuildRoiDaily(windowDays: number): Promise<number> {
     // A recruiting campaign's estimates are as excluded as its spend and contacts.
     if (attributed && e.leadCampaignId && excluded.includes(e.leadCampaignId)) continue;
 
-    const row = bump({
-      date,
-      sourceId: attributed ? e.leadSourceId ?? null : null,
-      campaignId: attributed ? e.leadCampaignId ?? null : null,
-      location: ((attributed ? e.leadLocation : e.estLocation) ?? "unknown") as RoiAcc["location"],
-    });
-    row.estimatesCount++;
-    row.quoteValueCents += e.total ?? 0;
-    if (e.outcome === "won") {
-      row.wonCount++;
-      row.revenueCents += e.approved ?? 0;
+    // FIRST touch: whoever acquired this customer. Reached through the attributed
+    // lead's contact when there is one, and otherwise through the HCP customer —
+    // which is the case that matters. A returning customer's estimate has no new
+    // inbound contact, so last-touch has nothing to credit and says `unattributed`,
+    // correctly. First-touch still knows the channel that won them years ago, which
+    // is what the `customer_window_days` inheritance rule was crudely approximating:
+    // capped at 90 days, won estimates only, and it credited revenue without ever
+    // linking the estimate.
+    const contactId = e.leadContactId ?? (e.hcpCustomerId ? contactByHcpCustomer.get(e.hcpCustomerId) : undefined);
+    const ft = contactId ? firstTouchByContact.get(contactId) : undefined;
+    // Recruiting is excluded under either model.
+    if (ft?.campaignId && excluded.includes(ft.campaignId)) continue;
+
+    // Both models bucket on the SAME date, so the two are directly comparable
+    // period-over-period and only the credited channel differs. The alternative —
+    // dating a first-touch row to the original touch — is a cohort view ("what did
+    // 2024's spend eventually earn?"), which is a genuinely useful but different
+    // report, and one the 365-day rebuild window cannot hold.
+    for (const touchType of ["last", "first"] as const) {
+      const src =
+        touchType === "last"
+          ? attributed
+            ? { sourceId: e.leadSourceId, campaignId: e.leadCampaignId, location: e.leadLocation }
+            : { sourceId: null, campaignId: null, location: e.estLocation }
+          : ft
+            ? { sourceId: ft.sourceId, campaignId: ft.campaignId, location: ft.location }
+            : { sourceId: null, campaignId: null, location: e.estLocation };
+
+      const row = bump({
+        date,
+        touchType,
+        sourceId: src.sourceId ?? null,
+        campaignId: src.campaignId ?? null,
+        location: (src.location ?? "unknown") as RoiAcc["location"],
+      });
+      row.estimatesCount++;
+      row.quoteValueCents += e.total ?? 0;
+      if (e.outcome === "won") {
+        row.wonCount++;
+        row.revenueCents += e.approved ?? 0;
+      }
     }
   }
 
@@ -485,13 +562,19 @@ async function rebuildRoiDaily(windowDays: number): Promise<number> {
 
   for (const s of spendRows) {
     const sourceKey = PLATFORM_SOURCE_KEY[s.platform];
-    const row = bump({
-      date: s.date,
-      sourceId: sourceKey ? sourceIdByKey.get(sourceKey) ?? null : null,
-      campaignId: s.campaignId ?? null,
-      location: (s.location ?? "unknown") as RoiAcc["location"],
-    });
-    row.spendCents += s.spendCents ?? 0;
+    // Spend is written to BOTH models: the money spent does not change with the
+    // attribution model, only who gets credit for what it produced. Every read
+    // filters on touch_type, so this cannot double-count.
+    for (const touchType of ["last", "first"] as const) {
+      const row = bump({
+        date: s.date,
+        touchType,
+        sourceId: sourceKey ? sourceIdByKey.get(sourceKey) ?? null : null,
+        campaignId: s.campaignId ?? null,
+        location: (s.location ?? "unknown") as RoiAcc["location"],
+      });
+      row.spendCents += s.spendCents ?? 0;
+    }
   }
 
   // Manually-entered monthly spend (LSA/GBP/print/…): spread each month's amount
@@ -514,8 +597,10 @@ async function rebuildRoiDaily(windowDays: number): Promise<number> {
       if (remainder > 0) remainder--;
       const dateStr = `${m.month.slice(0, 7)}-${String(d).padStart(2, "0")}`;
       if (dateStr < sinceDate || dateStr > todayDate || dayCents === 0) continue;
-      const row = bump({ date: dateStr, sourceId: m.sourceId, campaignId: null, location: "unknown" });
-      row.spendCents += dayCents;
+      for (const touchType of ["last", "first"] as const) {
+        const row = bump({ date: dateStr, touchType, sourceId: m.sourceId, campaignId: null, location: "unknown" });
+        row.spendCents += dayCents;
+      }
     }
   }
 
@@ -532,6 +617,7 @@ async function rebuildRoiDaily(windowDays: number): Promise<number> {
       await tx.insert(roiDaily).values(
         rows.slice(i, i + INSERT_CHUNK).map((r) => ({
           date: r.date,
+          touchType: r.touchType,
           sourceId: r.sourceId,
           campaignId: r.campaignId,
           location: r.location,
