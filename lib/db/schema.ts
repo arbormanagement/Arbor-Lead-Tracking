@@ -390,6 +390,24 @@ export const hcpEstimates = pgTable(
     // the funnel, which is why this is its own column rather than derived.
     scheduledStartHcp: timestamp("scheduled_start_hcp", { withTimezone: true }),
     approvedAtHcp: timestamp("approved_at_hcp", { withTimezone: true }),
+    // The options array, modelled rather than left buried in `raw`. Every stage,
+    // amount and approval this app reports on is derived from it, and the reporting
+    // pivots we are absorbing group and filter on it directly — digging through
+    // `raw->'options'` for that is both slower and easy to get subtly wrong.
+    options: jsonb("options"),
+    // HousecallPro's OWN channel field, as the office recorded it: "Website",
+    // "Facebook", "Online Booking". Coarse — no campaign, no click id — and set on
+    // roughly 55-68% of estimates. Kept because it is the only signal available for
+    // the ~58% of estimates this app cannot attribute from tracking at all, where
+    // "came from the website" beats "unknown".
+    leadSource: text("lead_source"),
+    // Flattened line items across every option. NULL until the P5 hydration job
+    // exists — HCP's /estimates LIST payload carries options but NOT their line
+    // items, so filling this costs one API call per option (~23k calls for the
+    // account) and cannot ride along with the estimate sync. The `service_type`
+    // classifier and the discount maths both depend on it, so the column lands now
+    // to keep that a backfill rather than a second migration.
+    lineItems: jsonb("line_items"),
     // HCP's own updated_at — lets attribution re-derive leads whose estimate
     // changed long after creation (late approval, cancellation, price edit).
     updatedAtHcp: timestamp("updated_at_hcp", { withTimezone: true }),

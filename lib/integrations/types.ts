@@ -67,6 +67,10 @@ export interface HcpEstimateDTO {
   totalAmountCents: number;
   /** Value of the approved option(s) — the ROI revenue figure when won. */
   approvedAmountCents: number;
+  /** The options array as HCP returns it — stages, amounts and approvals all live here. */
+  options?: unknown;
+  /** HCP's own channel field ("Website", "Facebook", "Online Booking"); often null. */
+  leadSource?: string | null;
   address?: unknown;
   createdAtHcp?: Date | null;
   /** When the estimate VISIT is booked (HCP schedule.scheduled_start). Null until

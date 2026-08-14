@@ -169,6 +169,13 @@
       "when": 1786296955117,
       "tag": "0023_dni_pool_gate",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1786711746831,
+      "tag": "0024_estimates_first_class",
+      "breakpoints": true
     }
   ]
 }
