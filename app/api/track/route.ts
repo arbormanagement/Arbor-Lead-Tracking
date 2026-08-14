@@ -10,6 +10,7 @@ import { isAllowedOrigin } from "@/lib/origin";
 import { preview, recordThreadActivity, upsertThread } from "@/lib/messaging/thread";
 import { normalizeEmail, normalizePhone } from "@/lib/phone";
 import { clientIp, rateLimit } from "@/lib/rate-limit";
+import { findOpenLead } from "@/lib/leads/open";
 
 export const runtime = "nodejs";
 
@@ -260,7 +261,17 @@ export async function POST(req: Request) {
       console.error("[track] threading failed (form still recorded)", err);
     }
 
-    const [lead] = await db
+    // One open enquiry per person. The dedupe key above catches a literal re-post;
+    // it cannot catch a resubmission with a changed field, which is how one visitor
+    // became two leads eighteen seconds apart. This is the same rule texts follow —
+    // join the lead already in flight rather than minting a second — and it also
+    // covers the cross-channel case, where a Meta lead form is followed a minute
+    // later by the website form. The SUBMISSION is still recorded either way.
+    const openLeadId = await findOpenLead(thread?.conversationId);
+
+    const [lead] = openLeadId
+      ? []
+      : await db
       .insert(leads)
       .values({
         externalId: dedupeKey,
@@ -293,12 +304,14 @@ export async function POST(req: Request) {
       .onConflictDoNothing()
       .returning({ id: leads.id });
 
-    // Lost the dedupe race (or a genuine re-post): the lead and its submission row
-    // already exist, so adding another form_submissions row would leave the
-    // original lead with two — and would re-announce the same form in the thread.
-    if (lead) {
+    // Recorded against whichever lead this belongs to — the one just created, or
+    // the one already open. A lost dedupe race yields neither, and that is correct:
+    // the submission row already exists, so writing a second would leave one lead
+    // with two and re-announce the same form in the thread.
+    const leadId = lead?.id ?? openLeadId;
+    if (leadId) {
       await db.insert(formSubmissions).values({
-        leadId: lead.id,
+        leadId,
         conversationId: thread?.conversationId ?? null,
         webSessionId: sid,
         formId: form.formId,

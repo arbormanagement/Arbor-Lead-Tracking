@@ -458,6 +458,12 @@ async function rebuildRoiDaily(windowDays: number): Promise<number> {
     .where(
       and(
         eq(leads.isSpam, false),
+        // A duplicate is not a second person getting in touch. Web forms minted one
+        // lead per submission until `findOpenLead` landed, so one visitor
+        // resubmitting counted twice here — the only figure it ever inflated, since
+        // opportunity is measured off estimates. Flagged by 0035 and by nothing else
+        // before it: this column existed and was never written.
+        eq(leads.isDuplicate, false),
         gte(leads.occurredAt, leadScanFrom),
         campaignNotExcluded(leads.campaignId, excluded),
       ),
