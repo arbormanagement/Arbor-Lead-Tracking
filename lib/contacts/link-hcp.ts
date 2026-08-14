@@ -28,13 +28,17 @@ export async function linkContactToHcpCustomer(contactId: string): Promise<strin
   const phones = ids.filter((i) => i.kind === "phone").map((i) => i.value);
   const emails = ids.filter((i) => i.kind === "email").map((i) => i.value);
   const predicates = [
-    phones.length ? sql`${hcpCustomers.phoneE164} in ${phones}` : null,
+    // Against the customer's WHOLE phone set, not just the primary. `phone_e164`
+    // is mobile-first, so a household that always rings from the landline matched
+    // nothing here and stayed unlinked — which then made their estimates
+    // unattributable, because the estimate reaches the contact through this link.
+    phones.length ? sql`${hcpCustomers.phonesE164} && ${phones}` : null,
     emails.length ? sql`${hcpCustomers.emailLc} in ${emails}` : null,
   ].filter(Boolean) as ReturnType<typeof sql>[];
   if (predicates.length === 0) return null;
 
   const [customer] = await db
-    .select({ id: hcpCustomers.id, phone: hcpCustomers.phoneE164, email: hcpCustomers.emailLc })
+    .select({ id: hcpCustomers.id, phones: hcpCustomers.phonesE164, email: hcpCustomers.emailLc })
     .from(hcpCustomers)
     .where(predicates.length === 1 ? predicates[0] : or(...predicates))
     // Oldest wins, so a duplicate in HCP resolves to the original record.
@@ -47,7 +51,7 @@ export async function linkContactToHcpCustomer(contactId: string): Promise<strin
     .set({ hcpCustomerId: customer.id, updatedAt: new Date() })
     .where(eq(contacts.id, contactId));
 
-  await adoptHcpIdentifiers([{ contactId, phone: customer.phone, email: customer.email }]);
+  await adoptHcpIdentifiers([{ contactId, phones: customer.phones, email: customer.email }]);
   return customer.id;
 }
 
@@ -64,10 +68,12 @@ export async function linkContactToHcpCustomer(contactId: string): Promise<strin
  * quietly reassigned.
  */
 async function adoptHcpIdentifiers(
-  rows: Array<{ contactId: string; phone: string | null; email: string | null }>,
+  rows: Array<{ contactId: string; phones: string[] | null; email: string | null }>,
 ) {
   const values = rows.flatMap((r) => [
-    ...(r.phone ? [{ contactId: r.contactId, kind: "phone" as const, value: r.phone }] : []),
+    // Every number, so the next call from any handset in the household lands on
+    // the thread we already have rather than opening a second one.
+    ...(r.phones ?? []).map((p) => ({ contactId: r.contactId, kind: "phone" as const, value: p })),
     ...(r.email ? [{ contactId: r.contactId, kind: "email" as const, value: r.email }] : []),
   ]);
   if (values.length === 0) return;
@@ -94,7 +100,7 @@ export async function linkContactsToHcpCustomers(): Promise<{ linked: number }> 
     .innerJoin(
       hcpCustomers,
       or(
-        and(eq(contactIdentifiers.kind, "phone"), eq(hcpCustomers.phoneE164, contactIdentifiers.value)),
+        and(eq(contactIdentifiers.kind, "phone"), sql`${hcpCustomers.phonesE164} @> array[${contactIdentifiers.value}]`),
         and(eq(contactIdentifiers.kind, "email"), eq(hcpCustomers.emailLc, contactIdentifiers.value)),
       ),
     )
@@ -112,7 +118,7 @@ export async function linkContactsToHcpCustomers(): Promise<{ linked: number }> 
     const enriched = await db
       .select({
         contactId: contacts.id,
-        phone: hcpCustomers.phoneE164,
+        phones: hcpCustomers.phonesE164,
         email: hcpCustomers.emailLc,
       })
       .from(contacts)

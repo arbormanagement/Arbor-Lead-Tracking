@@ -30,6 +30,8 @@ export interface HcpCustomerDTO {
   email?: string | null;
   phone?: string | null;
   mobile?: string | null;
+  /** Every number on the record (mobile, home, work), unnormalized, in that order. */
+  phones?: string[];
   addresses?: unknown;
   raw?: unknown;
 }

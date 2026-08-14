@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lte, ne, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lte, ne, or, sql, type SQL } from "drizzle-orm";
 import { campaignNotExcluded, excludedCampaignIds } from "@/lib/campaigns";
 import { db } from "@/lib/db/client";
 import {
@@ -123,6 +123,25 @@ async function matchLeadsToEstimates(windowDays: number): Promise<{ qualified: n
     .where(scannedEstimates)
     .orderBy(desc(hcpEstimates.won), desc(hcpEstimates.createdAtHcp));
 
+  // The identity spine, indexed by HCP customer. `contacts` + `contact_identifiers`
+  // already unify every number and address a person has ever used, and
+  // `contacts.hcp_customer_id` ties that person to their HCP record — so this is
+  // the app's own answer to "who is this", and the estimate match had not been
+  // using it.
+  //
+  // Matching purely on `hcp_estimates.customer_phone_e164` meant matching on ONE
+  // number (mobile ?? home ?? work) by exact equality. Measured against production:
+  // of eleven estimates whose customer had a second number, three had real calls
+  // only on the number the app was ignoring, so those estimates read as
+  // unattributed with the evidence sitting in the same database.
+  const contactByHcpCustomerForMatch = new Map<string, string>();
+  for (const c of await db
+    .select({ id: contacts.id, hcpCustomerId: contacts.hcpCustomerId })
+    .from(contacts)
+    .where(isNotNull(contacts.hcpCustomerId))) {
+    if (c.hcpCustomerId) contactByHcpCustomerForMatch.set(c.hcpCustomerId, c.id);
+  }
+
   const claimedLeads = new Set<string>();
   // Contact key → the first claimed lead for that contact, for the repeat-business
   // inheritance pass (customer_window_days).
@@ -131,7 +150,9 @@ async function matchLeadsToEstimates(windowDays: number): Promise<{ qualified: n
   let won = 0;
 
   for (const est of estRows) {
-    if (!est.custPhone && !est.custEmail) continue;
+    // A contact-linked estimate is matchable even with no phone or email of its
+    // own, so this can no longer skip on those two alone.
+    if (!est.custPhone && !est.custEmail && !est.custId) continue;
     // The lead must precede the estimate being WRITTEN, so the window is anchored
     // to created_at_hcp even for won estimates — approved_at_hcp can derive from
     // HCP's updated_at, which drifts on ANY edit, and anchoring there would let a
@@ -144,12 +165,17 @@ async function matchLeadsToEstimates(windowDays: number): Promise<{ qualified: n
     ) as string[];
 
     const windowStart = new Date(estDate.getTime() - windowDays * 86_400_000);
-    const contactMatch =
-      est.custPhone && est.custEmail
-        ? or(eq(leads.phoneE164, est.custPhone), eq(leads.emailLc, est.custEmail))
-        : est.custPhone
-          ? eq(leads.phoneE164, est.custPhone)
-          : eq(leads.emailLc, est.custEmail!);
+    // Identity, widest first: the contact this estimate's customer resolves to,
+    // then the estimate's own phone/email as the fallback for a customer the
+    // contact spine has not linked yet. The spine arm is what recovers a caller
+    // who used a different one of their own numbers.
+    const contactId = est.custId ? contactByHcpCustomerForMatch.get(est.custId) : undefined;
+    const identityArms = [
+      contactId ? eq(leads.contactId, contactId) : null,
+      est.custPhone ? eq(leads.phoneE164, est.custPhone) : null,
+      est.custEmail ? eq(leads.emailLc, est.custEmail) : null,
+    ].filter(Boolean) as SQL[];
+    const contactMatch = identityArms.length === 1 ? identityArms[0] : or(...identityArms)!;
 
     const candidates = await db
       .select({ id: leads.id, occurredAt: leads.occurredAt })

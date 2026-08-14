@@ -314,6 +314,10 @@ function mapCustomer(c: Record<string, unknown>): HcpCustomerDTO {
     email: (c.email as string) ?? null,
     phone: (c.home_number as string) ?? (c.work_number as string) ?? null,
     mobile: (c.mobile_number as string) ?? null,
+    // All of them, not just the winner of the ?? chain — see hcp_customers.phones_e164.
+    phones: [c.mobile_number, c.home_number, c.work_number].filter(
+      (v): v is string => typeof v === "string" && v.trim() !== "",
+    ),
     addresses: c.addresses ?? null,
     raw: c,
   };

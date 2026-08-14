@@ -321,7 +321,19 @@ export const hcpCustomers = pgTable(
     emailLc: text("email_lc"), // normalized for matching
     phone: text("phone"),
     mobile: text("mobile"),
-    phoneE164: text("phone_e164"), // normalized for matching
+    phoneE164: text("phone_e164"), // normalized for matching — the PRIMARY only
+    // EVERY normalized number this customer has, deduped. `phone_e164` is
+    // `mobile ?? home ?? work`, which is one number for a person who may have
+    // three — and people call from whichever handset they are holding. That single
+    // value was the reason an estimate could sit unattributed while two real calls
+    // from the same household were on file: the calls came in on the home number
+    // and every match key in the app held the mobile.
+    //
+    // An array rather than more columns because the question is always "is this one
+    // of theirs?", never "which slot is it in", and a GIN index answers that
+    // directly. Kept alongside `phone_e164` rather than replacing it so existing
+    // reads keep working; new matching should use this.
+    phonesE164: text("phones_e164").array(),
     addresses: jsonb("addresses"),
     raw: jsonb("raw"),
     syncedAt: timestamp("synced_at", { withTimezone: true }).notNull().defaultNow(),
@@ -332,6 +344,9 @@ export const hcpCustomers = pgTable(
     uniqueIndex("hcp_customers_hcp_id_uq").on(t.hcpCustomerId),
     index("hcp_customers_phone_idx").on(t.phoneE164),
     index("hcp_customers_email_idx").on(t.emailLc),
+    // GIN, because every query against this asks "does the array CONTAIN this
+    // number" — a btree cannot answer that.
+    index("hcp_customers_phones_idx").using("gin", t.phonesE164),
   ],
 );
 

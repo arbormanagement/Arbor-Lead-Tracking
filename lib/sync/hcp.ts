@@ -92,6 +92,9 @@ export async function syncHcp(
             phone: c.phone,
             mobile: c.mobile,
             phoneE164: normalizePhone(c.mobile ?? c.phone),
+            // Deduped after normalizing, since HCP records often repeat the same
+            // number across two fields.
+            phonesE164: [...new Set((c.phones ?? [c.mobile, c.phone]).map(normalizePhone).filter(Boolean))] as string[],
             addresses: c.addresses,
             raw: c.raw,
             syncedAt: new Date(),
@@ -107,6 +110,7 @@ export async function syncHcp(
             phone: sql`excluded.phone`,
             mobile: sql`excluded.mobile`,
             phoneE164: sql`excluded.phone_e164`,
+            phonesE164: sql`excluded.phones_e164`,
             addresses: sql`excluded.addresses`,
             raw: sql`excluded.raw`,
             syncedAt: sql`now()`,
