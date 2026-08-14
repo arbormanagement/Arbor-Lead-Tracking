@@ -2,7 +2,7 @@ import { and, desc, eq, ilike, isNotNull, not, or, type SQL } from "drizzle-orm"
 import { z } from "zod";
 import { authorizeAdmin, unauthorized } from "@/lib/admin-auth";
 import { db } from "@/lib/db/client";
-import { leads, sources } from "@/lib/db/schema";
+import { campaigns, leads, sources } from "@/lib/db/schema";
 
 export const runtime = "nodejs";
 
@@ -80,7 +80,14 @@ export async function GET(req: Request) {
       phoneE164: leads.phoneE164,
       emailLc: leads.emailLc,
       sourceKey: sources.key,
+      // Campaign belongs beside source here. Every other attribution field the
+      // lead carries is already returned, and its absence meant the one question
+      // this route exists to answer — "did that lead land with the attribution we
+      // expect?" — could not be asked about campaign at all, on any surface: the
+      // campaigns page is browser-session only.
+      campaignName: campaigns.name,
       medium: leads.medium,
+      keyword: leads.keyword,
       gclid: leads.gclid,
       gbraid: leads.gbraid,
       wbraid: leads.wbraid,
@@ -94,6 +101,7 @@ export async function GET(req: Request) {
     })
     .from(leads)
     .leftJoin(sources, eq(sources.id, leads.sourceId))
+    .leftJoin(campaigns, eq(campaigns.id, leads.campaignId))
     .where(where.length ? and(...where) : undefined)
     .orderBy(desc(leads.occurredAt))
     .limit(p.limit);
