@@ -1,6 +1,7 @@
 import { and, desc, eq, inArray } from "drizzle-orm";
 import { db } from "@/lib/db/client";
-import { leads, messages, trackingNumbers } from "@/lib/db/schema";
+import { leads, messages, numberAssignments, trackingNumbers } from "@/lib/db/schema";
+import { resolveCampaignIdByName } from "@/lib/campaigns";
 import { clearSmsOptOut, markSmsOptedOut } from "@/lib/contacts/resolve";
 import { env } from "@/lib/env";
 import { preview, recordThreadActivity, upsertThread } from "@/lib/messaging/thread";
@@ -69,7 +70,7 @@ export async function POST(req: Request) {
     }
 
     const spam = await isHardSpamNumber(fromE164);
-    const { sourceKey, assignmentId } = await resolveInboundAttribution(tn);
+    const { sourceKey, assignmentId, lease } = await resolveInboundAttribution(tn);
     const sourceId = await ensureSourceId(sourceKey);
 
     const thread = await upsertThread(
@@ -122,6 +123,7 @@ export async function POST(req: Request) {
       sourceId,
       location: tn.location ?? "unknown",
       spam,
+      lease,
     });
 
     await db.update(messages).set({ leadId }).where(eq(messages.id, inserted.id));
@@ -162,8 +164,9 @@ async function attachToOpenLeadOrCreate(args: {
   sourceId: string | null;
   location: "edwardsville" | "ofallon" | "unknown";
   spam: boolean;
+  lease: typeof numberAssignments.$inferSelect | null;
 }): Promise<string> {
-  const { thread, fromE164, body, sourceId, location, spam } = args;
+  const { thread, fromE164, body, sourceId, location, spam, lease } = args;
 
   const [open] = await db
     .select({ id: leads.id })
@@ -172,6 +175,15 @@ async function attachToOpenLeadOrCreate(args: {
     .orderBy(desc(leads.occurredAt))
     .limit(1);
   if (open) return open.id;
+
+  // Everything the DNI lease froze at assign time belongs on the lead, exactly as
+  // it does for a call — this path resolved the lease and then discarded all but
+  // its source, so a text from a tracked ad click reached `attributions` and
+  // campaign-level `roi_daily` with a null campaign and no click id, and had
+  // nothing to send to the offline-conversion upload. Attribution is written only
+  // on a NEW lead: a follow-up text joins the lead already in flight and must not
+  // rewrite the source that earned it, which is the same rule threading follows.
+  const campaignId = await resolveCampaignIdByName(lease?.campaign);
 
   const [lead] = await db
     .insert(leads)
@@ -185,6 +197,16 @@ async function attachToOpenLeadOrCreate(args: {
       sourceId,
       location,
       isSpam: spam,
+      campaignId,
+      medium: lease?.medium ?? null,
+      keyword: lease?.keyword ?? null,
+      gclid: lease?.gclid ?? null,
+      gbraid: lease?.gbraid ?? null,
+      wbraid: lease?.wbraid ?? null,
+      fbclid: lease?.fbclid ?? null,
+      landingPage: lease?.landingPage ?? null,
+      visitorId: lease?.visitorId ?? null,
+      webSessionId: lease?.webSessionId ?? null,
       // Left unclassified on purpose — see the note at the top of this file.
       isLead: spam ? false : null,
       leadReason: spam ? "spam rule: blocked number" : null,
