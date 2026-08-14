@@ -1,3 +1,5 @@
+import { UNMAPPED_SOURCE_KEY, slugifySourceValue } from "@/lib/sources/naming";
+
 export interface TouchParams {
   gclid?: string | null;
   gbraid?: string | null;
@@ -83,7 +85,12 @@ export function classifySource(p: TouchParams): Classification {
     ) {
       return { sourceKey: "gbp", medium: "organic" };
     }
-    return { sourceKey: `${src ?? "other"}/${med ?? "referral"}`, medium: med ?? "referral" };
+    // Anything not matched above is UNMAPPED, not a new channel. Minting
+    // `${src}/${med}` from raw UTM text is what filled /sources with rows nobody
+    // runs: a third party can tag a link to your site however they like, and the
+    // ROI page would grow a channel for it. The raw values survive on
+    // `web_sessions`, so an `other` row can always be opened up.
+    return { sourceKey: UNMAPPED_SOURCE_KEY, medium: med ?? "referral" };
   }
 
   if (p.referrer) {
@@ -97,7 +104,11 @@ export function classifySource(p: TouchParams): Classification {
     if (host && self && host === self) return { sourceKey: "direct", medium: "none" };
     if (host && isFacebookHost(p.referrer)) return { sourceKey: "facebook/organic", medium: "social" };
     if (host && isSearchHost(host)) return { sourceKey: "organic/seo", medium: "organic" };
-    if (host) return { sourceKey: `${host}/referral`, medium: "referral" };
+    // A referring HOST is evidence of a real, identifiable place — unlike a UTM
+    // value, nobody can forge where the browser actually came from — so these keep
+    // minting their own source. Slugified so nextdoor.com and Nextdoor.com cannot
+    // become two rows.
+    if (host) return { sourceKey: `${slugifySourceValue(host)}/referral`, medium: "referral" };
   }
 
   return { sourceKey: "direct", medium: "none" };

@@ -1,4 +1,6 @@
+import { eq } from "drizzle-orm";
 import * as schema from "./schema";
+import { displayNameFor } from "@/lib/sources/naming";
 import type { Db } from "./client";
 
 /**
@@ -20,11 +22,13 @@ export const SEED_SOURCES: Array<{
 }> = [
   { key: "google/cpc", displayName: "Google Ads (Search)", platform: "google", costModel: "cpc" },
   { key: "google/lsa", displayName: "Google Local Services", platform: "google_lsa", costModel: "cpl" },
-  { key: "facebook/paid", displayName: "Facebook / Instagram Ads", platform: "facebook", costModel: "cpc" },
+  { key: "facebook/paid", displayName: "Meta Ads", platform: "facebook", costModel: "cpc" },
   { key: "organic/seo", displayName: "Organic Search", platform: "other", costModel: "none" },
   { key: "gbp", displayName: "Google Business Profile", platform: "other", costModel: "none" },
   { key: "direct", displayName: "Direct", platform: "other", costModel: "none" },
   { key: "referral", displayName: "Referral", platform: "other", costModel: "none" },
+  // Catch-all for traffic we do not recognise. See lib/sources/naming.ts.
+  { key: "other", displayName: "Other / Unmapped", platform: "other", costModel: "none" },
 ];
 
 // `isDni` = website DNI draws rotating numbers from this pool; the rest are
@@ -61,6 +65,22 @@ export async function seedDefaults(db: Db, onRow?: (label: string) => void) {
       .onConflictDoNothing({ target: schema.sources.key });
     onRow?.(`source ${s.key}`);
   }
+  // Repair sources created before there was one place that named them: six call
+  // sites used `displayName: key`, so anything outside this seed list rendered as a
+  // raw slug on /sources. Idempotent, and only touches rows still carrying the
+  // giveaway (name === key), so a name edited in the app is never overwritten.
+  const slugNamed = await db
+    .select({ key: schema.sources.key })
+    .from(schema.sources)
+    .where(eq(schema.sources.displayName, schema.sources.key));
+  for (const row of slugNamed) {
+    await db
+      .update(schema.sources)
+      .set({ displayName: displayNameFor(row.key) })
+      .where(eq(schema.sources.key, row.key));
+    onRow?.(`renamed source ${row.key}`);
+  }
+
   for (const p of SEED_POOLS) {
     await db
       .insert(schema.pools)

@@ -321,7 +321,12 @@ re-argued rather than assumed.
 - Both Google Business Profiles link to the site as `utm_source=google+my+business` — which
   arrives as `"google my business"`, since `+` decodes to a space. `classifySource` therefore
   compares utm values **squashed** to letters and digits, so a spelling change in a tag can't
-  mint a parallel source. It also maps `utm_source=adwords` to `google/cpc` on the source
+  mint a parallel source. **They are NOT otherwise identical, and an earlier reading of this
+  note that assumed so was wrong (corrected 2026-08-14 against the live GBP API):** each
+  profile tags its own link `utm_campaign=edwardsville` / `ofallon`, and each has its own
+  tracking number ((618) 368-2902 / (618) 350-4451, both labelled on `tracking_numbers`). So
+  GBP *is* separable per profile — calls via the number, web clicks via `utm_campaign`, both
+  landing on `leads.location`, which `roi_daily` already keys on. It also maps `utm_source=adwords` to `google/cpc` on the source
   alone: the mediums beside it are prose, and those URLs stay bookmarked and cached long after
   the templates that minted them are fixed.
 - **Pool capacity is set by HOLD TIME, not pool size** — `LEASE_MINUTES` ÷ numbers is how many

@@ -1,3 +1,4 @@
+import { displayNameFor } from "@/lib/sources/naming";
 import { and, desc, eq, gt, isNull, or } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { numberAssignments, sources, spamRules, trackingNumbers } from "@/lib/db/schema";
@@ -74,7 +75,7 @@ export async function ensureSourceId(sourceKey: string | null): Promise<string |
   if (!src) {
     await db
       .insert(sources)
-      .values({ key: sourceKey, displayName: sourceKey })
+      .values({ key: sourceKey, displayName: displayNameFor(sourceKey) })
       .onConflictDoNothing({ target: sources.key });
     [src] = await db.select({ id: sources.id }).from(sources).where(eq(sources.key, sourceKey)).limit(1);
   }

@@ -1,3 +1,4 @@
+import { displayNameFor } from "@/lib/sources/naming";
 import { and, eq } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { campaigns, facebookLeads, leads, sources } from "@/lib/db/schema";
@@ -129,7 +130,7 @@ function mapFbFields(fieldData: Array<{ name: string; values: string[] }>) {
 }
 
 async function getOrCreateSource(key: string): Promise<string | null> {
-  await db.insert(sources).values({ key, displayName: key, platform: "facebook" }).onConflictDoNothing({ target: sources.key });
+  await db.insert(sources).values({ key, displayName: displayNameFor(key), platform: "facebook" }).onConflictDoNothing({ target: sources.key });
   const [s] = await db.select({ id: sources.id }).from(sources).where(eq(sources.key, key)).limit(1);
   return s?.id ?? null;
 }

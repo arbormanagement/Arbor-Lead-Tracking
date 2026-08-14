@@ -1,3 +1,4 @@
+import { displayNameFor } from "@/lib/sources/naming";
 import { createHash } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { z } from "zod";
@@ -120,7 +121,7 @@ export async function POST(req: Request) {
   // classify lowercases its output; normalize raw UTM the same way so "CPC" and
   // "cpc" don't split dashboard groupings.
   const medium = utm.medium?.toLowerCase() ?? cls.medium;
-  const location = inferLocation(form?.pageUrl ?? url);
+  const location = inferLocation(form?.pageUrl ?? url, utm.campaign);
   // Recorded, never acted on here. /api/dni/assign refuses a crawler a pool number, but
   // nothing was storing what asked — so 'are bots draining the pool?' was unanswerable
   // both before and after that gate. The column already existed; it was simply never written.
@@ -330,16 +331,32 @@ function tooManyRequests(retryAfterSec: number) {
 /** Upsert a source row by key so every lead/session rolls up to a named source. */
 async function getOrCreateSource(key: string): Promise<string | null> {
   if (!key) return null;
-  await db.insert(sources).values({ key, displayName: key }).onConflictDoNothing({ target: sources.key });
+  await db.insert(sources).values({ key, displayName: displayNameFor(key) }).onConflictDoNothing({ target: sources.key });
   const [s] = await db.select({ id: sources.id }).from(sources).where(eq(sources.key, key)).limit(1);
   return s?.id ?? null;
 }
 
-function inferLocation(url?: string): "edwardsville" | "ofallon" | "unknown" {
-  const u = (url ?? "").toLowerCase();
-  if (u.includes("edwardsville")) return "edwardsville";
-  if (u.includes("ofallon") || u.includes("o-fallon") || u.includes("o'fallon")) return "ofallon";
-  return "unknown";
+/**
+ * Which branch a touch belongs to.
+ *
+ * `utm_campaign` is checked FIRST and is not an afterthought: the two Google
+ * Business Profiles each tag their website link explicitly
+ * (`utm_campaign=edwardsville` / `ofallon`) while BOTH point at the homepage — so
+ * the page URL carries no location at all and every GBP web click was landing as
+ * `unknown`. The matching calls already split correctly, because each profile has
+ * its own tracking number and `/voice` takes the location from the number, so the
+ * two halves of GBP disagreed for no reason other than where this function looked.
+ *
+ * Reading the campaign also picks up location-named ad campaigns for free, which is
+ * the same signal by a different route.
+ */
+function inferLocation(url?: string, utmCampaign?: string | null): "edwardsville" | "ofallon" | "unknown" {
+  const match = (v: string): "edwardsville" | "ofallon" | null => {
+    if (v.includes("edwardsville")) return "edwardsville";
+    if (v.includes("ofallon") || v.includes("o-fallon") || v.includes("o'fallon")) return "ofallon";
+    return null;
+  };
+  return match((utmCampaign ?? "").toLowerCase()) ?? match((url ?? "").toLowerCase()) ?? "unknown";
 }
 
 /** Field names that should never be stored, whatever their value. */
