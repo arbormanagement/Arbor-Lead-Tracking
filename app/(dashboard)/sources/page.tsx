@@ -2,6 +2,7 @@ import { and, desc, eq, gte, isNotNull, ne, sql, type SQL } from "drizzle-orm";
 import { businessDate } from "@/lib/tz";
 import type { AnyPgColumn } from "drizzle-orm/pg-core";
 import Link from "next/link";
+import { Fragment } from "react";
 import { campaignNotExcluded, excludedCampaignIds } from "@/lib/campaigns";
 import { db } from "@/lib/db/client";
 import { selectedTouchModel, touchModelLabel } from "@/lib/attribution/model";
@@ -48,6 +49,47 @@ export default async function SourcesPage({ searchParams }: { searchParams: Prom
     .where(and(gte(roiDaily.date, sinceBusinessDate), eq(roiDaily.touchType, touch)))
     .groupBy(sources.key, sources.displayName)
     .orderBy(desc(sql`coalesce(sum(${roiDaily.revenueCents}),0)`));
+
+  // The same rollup, split by location. `roi_daily` has keyed on location since it
+  // was built, so this is a read of data already stored — not a new measurement.
+  //
+  // It matters most for Google Business Profile, which is really TWO profiles:
+  // each tags its own website link (`utm_campaign=edwardsville` / `ofallon`) and
+  // has its own tracking number, so calls and clicks both land on the right one.
+  // Rolled up to a single GBP row, "which profile is working?" was unanswerable
+  // even though the answer was in the table.
+  const locationRows = await db
+    .select({
+      key: sources.key,
+      location: roiDaily.location,
+      contacts: sql<number>`coalesce(sum(${roiDaily.contactsCount}),0)::int`,
+      estimates: sql<number>`coalesce(sum(${roiDaily.estimatesCount}),0)::int`,
+      won: sql<number>`coalesce(sum(${roiDaily.wonCount}),0)::int`,
+      spend: sql<number>`coalesce(sum(${roiDaily.spendCents}),0)::int`,
+      revenue: sql<number>`coalesce(sum(${roiDaily.revenueCents}),0)::int`,
+    })
+    .from(roiDaily)
+    .leftJoin(sources, eq(roiDaily.sourceId, sources.id))
+    .where(and(gte(roiDaily.date, sinceBusinessDate), eq(roiDaily.touchType, touch)))
+    .groupBy(sources.key, roiDaily.location)
+    .orderBy(desc(sql`coalesce(sum(${roiDaily.revenueCents}),0)`));
+
+  // Sub-rows only where they say something. A source whose traffic is entirely one
+  // location (or entirely unknown) would just repeat its own row underneath itself.
+  const byKeyLocation = new Map<string | null, typeof locationRows>();
+  for (const r of locationRows) {
+    if (!r.contacts && !r.estimates && !r.spend && !r.revenue) continue;
+    const list = byKeyLocation.get(r.key ?? null);
+    if (list) list.push(r);
+    else byKeyLocation.set(r.key ?? null, [r]);
+  }
+  for (const [k, list] of byKeyLocation) if (list.length < 2) byKeyLocation.delete(k);
+
+  const LOCATION_LABEL: Record<string, string> = {
+    edwardsville: "Edwardsville",
+    ofallon: "O'Fallon",
+    unknown: "Location unknown",
+  };
 
   // Cancelled per source. roi_daily holds only countable estimates, so this is the
   // one figure on the page that must be counted directly — but it counts the SAME
@@ -131,7 +173,15 @@ export default async function SourcesPage({ searchParams }: { searchParams: Prom
       <div className="page-head">
         <div>
           <h1 className="page-title">Sources</h1>
-          <p className="page-sub">Where contacts come from and what they turn into · {timeframeLabel(days)} · {touchModelLabel(touch)}</p>
+          <p className="page-sub">
+            Where contacts come from and what they turn into · {timeframeLabel(days)} · {touchModelLabel(touch)}
+          </p>
+          <p className="page-sub" style={{ marginTop: 2, fontSize: 12 }}>
+            <span className="muted">
+              Sources serving more than one location expand underneath — Google Business Profile is two profiles, one
+              per branch, each with its own link tag and tracking number.
+            </span>
+          </p>
         </div>
         <div className="controls">
           <span className="muted" style={{ fontSize: 12, fontWeight: 600 }}>◷</span>
@@ -190,8 +240,10 @@ export default async function SourcesPage({ searchParams }: { searchParams: Prom
                       ? "no rev yet"
                       : "—";
               const winning = r.spend > 0 && r.revenue > 0;
+              const subs = byKeyLocation.get(r.key ?? null) ?? [];
               return (
-                <tr key={r.key ?? `u${i}`}>
+                <Fragment key={r.key ?? `u${i}`}>
+                <tr>
                   <td><span className="src"><span className="dot" style={{ background: SRC_HUES[i % SRC_HUES.length] }} />{r.name ?? r.key ?? "Unattributed"}</span></td>
                   <td className="mono">{r.contacts}</td>
                   <td className="mono">{r.estimates}</td>
@@ -207,6 +259,30 @@ export default async function SourcesPage({ searchParams }: { searchParams: Prom
                     </div>
                   </td>
                 </tr>
+                {/* Location sub-rows, server-rendered rather than a click-to-expand:
+                    there are at most three and the whole point is to see them beside
+                    each other. No Cancelled or ROAS here — cancelled is counted per
+                    source only, and a location's ROAS divides a location's revenue by
+                    the WHOLE source's spend, since ad platforms do not report spend
+                    per location. Showing a number that wrong would be worse than
+                    showing none. */}
+                {subs.map((sub) => (
+                  <tr key={`${r.key}/${sub.location}`} style={{ fontSize: 12.5 }}>
+                    <td style={{ paddingLeft: 34 }}>
+                      <span style={{ color: "var(--faint)", marginRight: 7 }}>↳</span>
+                      <span className="muted">{LOCATION_LABEL[sub.location ?? "unknown"] ?? sub.location}</span>
+                    </td>
+                    <td className="mono muted">{sub.contacts}</td>
+                    <td className="mono muted">{sub.estimates}</td>
+                    <td className="mono muted">{sub.won}</td>
+                    <td className="mono muted">—</td>
+                    <td className="mono muted">—</td>
+                    <td className="mono muted">{sub.revenue > 0 ? dollars(sub.revenue) : "—"}</td>
+                    <td className="mono muted">—</td>
+                    <td className="mono muted">—</td>
+                  </tr>
+                ))}
+                </Fragment>
               );
             })}
             <tr style={{ fontWeight: 700 }}>
