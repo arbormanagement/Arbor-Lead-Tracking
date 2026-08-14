@@ -31,10 +31,29 @@ const JOBS_MIN_WINDOW_DAYS = 180;
  * 2026-08-13 sample took 34. 120 days is ~4× that, and matches the 120-day
  * lookback `attribution.run` already scans, so nothing re-read here lands outside
  * the window that would re-derive it. At ~500 estimates/month that is ~2,000 rows
- * (20 pages) per run, comfortably inside the 50-page cap in `paginate` — but the
- * margin is volume-dependent, so the truncation warning there is what to watch.
+ * (20 pages) per run, against a ceiling of `pageCeilingFor(120)` = 60 — and if
+ * volume ever outgrows that, `paginate` fails the run rather than truncating it.
  */
 const ESTIMATE_REPULL_DAYS = 120;
+
+/** Page ceiling for a routine pull. 50 pages x 100 = 5,000 rows. */
+const DEFAULT_MAX_PAGES = 50;
+
+/**
+ * Page ceiling sized from the window being asked for, so a deliberate deep
+ * backfill is not throttled by a bound written for hourly runs, while an hourly
+ * run keeps a tight one.
+ *
+ * The fixed 50-page ceiling was fine until the first real backfill: the account
+ * holds ~15,200 estimates (153 pages), so any request for the full history would
+ * have stopped at 5,000 rows. Sized off ~17 estimates/day at current volume
+ * (~0.17 pages/day), `windowDays / 2` leaves roughly 3x headroom for growth and
+ * for denser endpoints, and pagination stops naturally when the data runs out —
+ * the ceiling only ever fires when something is genuinely wrong.
+ */
+function pageCeilingFor(windowDays: number): number {
+  return Math.min(2000, Math.max(DEFAULT_MAX_PAGES, Math.ceil(windowDays / 2)));
+}
 
 class HousecallProProvider implements RevenueProvider {
   readonly name = "housecallpro:direct";
@@ -81,12 +100,12 @@ class HousecallProProvider implements RevenueProvider {
     query: Record<string, string | number> = {},
     stopOlderThanMs?: number,
     sortedOn: (row: Record<string, unknown>) => Date | null = (r) => parseDate(r.updated_at ?? r.updated_at_iso),
+    maxPages: number = DEFAULT_MAX_PAGES,
   ): Promise<Array<Record<string, unknown>>> {
     const out: Array<Record<string, unknown>> = [];
     const pageSize = 100;
-    const MAX_PAGES = 50;
     let page = 1;
-    for (; page <= MAX_PAGES; page++) {
+    for (; page <= maxPages; page++) {
       const body = await this.get<Record<string, unknown>>(cfg, path, { ...query, page, page_size: pageSize });
       const items =
         (body[listKey] as Array<Record<string, unknown>>) ??
@@ -101,15 +120,18 @@ class HousecallProProvider implements RevenueProvider {
       }
     }
     // Fell out of the loop with a full last page: there is more data we did not
-    // fetch. Silence here reads as "complete" — the sync records success and its
-    // watermark advances past records it never saw, so they are only ever
-    // recovered if HCP happens to touch their updated_at again. A 365-day
-    // cold-start is the realistic way to hit this.
-    console.warn(
-      `[hcp] ${path}: hit the ${MAX_PAGES}-page cap (${out.length} rows) — results are TRUNCATED, ` +
-        `narrow the window or raise MAX_PAGES`,
+    // fetch. This THROWS rather than returning a partial list, because silence
+    // here reads as "complete" — the sync records success and its watermark
+    // advances past records it never saw, so they are only ever recovered if HCP
+    // happens to touch their updated_at again. A warning was not enough: it went
+    // to container stdout while `sync_runs` said success and the row counts
+    // looked plausible. Failing the run puts it in `sync_runs.error` and on
+    // /api/diagnostics, and the next tick retries — a loud failure is strictly
+    // better than a quiet hole in the history.
+    throw new Error(
+      `HCP ${path}: hit the ${maxPages}-page cap at ${out.length} rows — results would be TRUNCATED. ` +
+        `Narrow the window, or raise the ceiling (see pageCeilingFor).`,
     );
-    return out;
   }
 
   async listCustomers({ sinceDays }: { sinceDays: number }): Promise<HcpCustomerDTO[]> {
@@ -118,7 +140,7 @@ class HousecallProProvider implements RevenueProvider {
     const rows = await this.paginate(cfg, "/customers", "customers", {
       sort_by: "updated_at",
       sort_direction: "desc",
-    }, cutoff);
+    }, cutoff, undefined, pageCeilingFor(sinceDays));
     return rows
       .filter((c) => {
         const updated = parseDate(c.updated_at ?? c.updated_at_iso);
@@ -150,7 +172,7 @@ class HousecallProProvider implements RevenueProvider {
       sort_by: "updated_at",
       sort_direction: "desc",
       scheduled_start_min: min,
-    }, cutoff);
+    }, cutoff, undefined, pageCeilingFor(windowDays));
 
     // One-time shape probe. The field names above are assumptions about HCP's
     // payload, and the cost of a wrong assumption here is a silently unbounded
@@ -208,8 +230,17 @@ class HousecallProProvider implements RevenueProvider {
     // asking for 365 days wants 365 days of estimates re-derived, not 120.
     const repullMs = Date.now() - Math.max(sinceDays, ESTIMATE_REPULL_DAYS) * 86_400_000;
 
+    const ceiling = pageCeilingFor(Math.max(sinceDays, ESTIMATE_REPULL_DAYS));
     const [byUpdated, byCreated] = await Promise.all([
-      this.paginate(cfg, "/estimates", "estimates", { sort_by: "updated_at", sort_direction: "desc" }, cutoff),
+      this.paginate(
+        cfg,
+        "/estimates",
+        "estimates",
+        { sort_by: "updated_at", sort_direction: "desc" },
+        cutoff,
+        undefined,
+        ceiling,
+      ),
       this.paginate(
         cfg,
         "/estimates",
@@ -217,6 +248,7 @@ class HousecallProProvider implements RevenueProvider {
         { sort_by: "created_at", sort_direction: "desc" },
         repullMs,
         (r) => parseDate(r.created_at),
+        ceiling,
       ),
     ]);
 
