@@ -16,6 +16,9 @@ const NAV: Array<{ href: string; label: string; ic: string; section?: string }> 
   // Campaign sits beside source rather than nested under it: it is the level
   // budget actually moves at, so it is a destination, not a drill-down.
   { href: "/roi", label: "Campaigns", ic: "◉" },
+  // Pages is CRO, not attribution — a rate, with no spend column. It sits after the
+  // money pages because it answers a different question about the same traffic.
+  { href: "/pages", label: "Pages", ic: "▤" },
   { href: "/settings", label: "Settings", ic: "⚙", section: "Admin" },
 ];
 

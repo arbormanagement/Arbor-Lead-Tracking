@@ -7,6 +7,7 @@ import { db } from "@/lib/db/client";
 import { selectedTouchModel, touchModelLabel } from "@/lib/attribution/model";
 import { hcpEstimates, leads, roiDaily, sources } from "@/lib/db/schema";
 import { isCancelledEstimate } from "@/lib/estimates/countable";
+import { landingPathSql } from "@/lib/landing-page";
 import { dollars } from "@/lib/format";
 import { TIMEFRAMES, pickDays, timeframeLabel } from "@/lib/timeframes";
 
@@ -115,21 +116,8 @@ export default async function SourcesPage({ searchParams }: { searchParams: Prom
       .orderBy(desc(sql`count(*)`))
       .limit(8);
 
-  // Landing pages are grouped by PATH, not by the raw stored URL.
-  //
-  // `leads.landing_page` is `location.href` verbatim — scheme, host, query string
-  // and all. Grouping on it split every paid landing page into one row per click:
-  // /services/tree-removal was the second-busiest page on the site and appeared as
-  // five separate rows, each carrying a different gclid. Worse, the renderer
-  // already reduced them to `new URL(v).pathname`, so those five printed as five
-  // identical-looking lines — and with LIMIT 8, the fragments pushed real pages off
-  // the card. In a sample of recent leads, 23 distinct stored values collapse to 9
-  // actual paths.
-  //
-  // Normalising here rather than at render is the point: grouping and display now
-  // use the same value, so they cannot disagree again. The raw URL stays on the
-  // row for forensics — it is where the evidence of UTM template drift lives.
-  const landingPath = sql`coalesce(nullif(regexp_replace(regexp_replace(regexp_replace(lower(${leads.landingPage}), '[?#].*$', ''), '^https?://[^/]+', ''), '/+$', ''), ''), '/')`;
+  // Landing pages group by PATH, not the raw stored URL — see lib/landing-page.ts.
+  const landingPath = landingPathSql(leads.landingPage);
 
   const [byLanding, byKeyword, bySelfReported] = await Promise.all([
     breakdownOf(leads.landingPage, landingPath),
