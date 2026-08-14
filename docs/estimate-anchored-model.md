@@ -121,19 +121,37 @@ counted both ways:
 | every HCP record | ~114 | 29 | 25% |
 | reporting app | 60 | 29 | **48.3%** |
 
-Identical numerator; the denominator is the whole difference. ~45 of those 114 records
-are `pro canceled` / `user canceled` — including thirteen created within forty minutes
-on Feb 11, which is a bulk cleanup, not thirteen customers declining. Counting those as
-lost opportunities produces a number that is not a close rate.
+Identical numerator; the denominator is the whole difference.
 
-**The reporting app applies this filter AT INGEST**, which is why it holds 10,697
-estimates against HCP's 15,234, and why its `conversion_rate` is a plain
-`won / estimate_count` with no visible exclusion. Rebuild the pivot faithfully against
-the complete 15,234-row history now backfilled here and you get 25% while looking
-correct. **The exclusion must be an explicit, documented predicate in this app**, not a
-property of how the sync happened to be written.
+**Copy this predicate rather than re-deriving it** — verified against
+`arbor-reporting/server/storage.ts`, `getEstimatePivotMulti`:
 
-Still true and still worth handling: an estimate takes ~30 days to settle, so a trailing
+```sql
+WHERE e.scheduled_start IS NOT NULL                    -- never booked = never sold
+  AND (e.status IS NULL OR e.status NOT IN ('pro canceled', 'user canceled'))
+  AND e.scheduled_start >= :from AND e.scheduled_start < :to
+GROUP BY date_trunc('month', e.scheduled_start)
+
+conversion_rate = count(*) FILTER (WHERE outcome = 'won') * 100.0 / count(*)
+```
+
+Three exclusions, and the third is the one easiest to miss: the window and the grouping
+are on **`scheduled_start`, the appointment date — not `created_at`**. "Feb 2026" means
+estimates *visited* in February, not created in February. A cohort built on `created_at`
+is not the same population and will not reconcile.
+
+Read as a business metric this is plainly right: *of the estimate visits we actually went
+out on, what share closed*. Cancelled appointments never happened, unbooked estimates
+were never sold, and dating by the visit puts the number in the month the selling
+happened.
+
+The filter runs at **query time**; the reporting DB holds the unfiltered rows.
+
+`deriveOutcome` there is logically identical to `mapEstimate` in
+`lib/integrations/housecallpro.ts` — same won/lost/open rules, same status vocabulary —
+so both systems already agree on the numerator. Only the denominator has to be adopted.
+
+Still worth handling separately: an estimate takes ~30 days to settle, so a trailing
 window under-reports — the most recent 100 estimates were 86% undecided. Show cohort
 maturity alongside the rate.
 
@@ -259,12 +277,14 @@ the query layer is the next design conversation.
    now. HCP permits one webhook subscription per account and it is already held by
    another integration, so polling is the architecture (see P6).
 2. Does the reporting DB hold anything beyond customers / estimates / invoices / jobs /
-   webhook events? Not yet inspected at schema level.
+   webhook events? Repo is now cloned (`arbormanagement/arbor-reporting`) —
+   `shared/schema.ts` is the place to look before P5.
 3. ~~Historical close rate is 44% but ~30% recently — genuine or artefact?~~
    **Closed 2026-08-14 — artefact of MY denominator, not a real collapse.** Counting
-   every HCP record, including bulk-cancelled ones, gave ~25% for Feb 2026. The
-   reporting app gives 48.3% for the same month off the same 29 wins. See decision 6 —
-   cancelled estimates are excluded, and that is correct.
+   every HCP record gave ~25% for Feb 2026; the reporting app gives 48.3% for the same
+   month off the same 29 wins. Its denominator excludes cancelled AND unscheduled
+   estimates and is dated by appointment rather than creation — see decision 6 for the
+   exact predicate, read from the reporting app's source rather than inferred.
 
    The business's own trend, from the reporting app:
 
