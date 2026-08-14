@@ -41,6 +41,9 @@ Edwardsville + O'Fallon). WhatConverts-style. Single-tenant. Owner: Justin
 - **Read path is DIRECT to each platform API** (decision 2026-06-26): a background sync needs clean typed data + reliability, so we don't route it through the LLM-oriented MCP gateway. All spend/revenue access is behind `lib/integrations` (`SpendProvider`/`RevenueProvider`) so any provider can be swapped — including back to an MCP-backed impl. The MCP client (`lib/mcp/client.ts`) is retained as an optional per-platform fallback.
 - Direct providers: `lib/integrations/housecallpro.ts` (API key), `google-ads.ts` (OAuth refresh → GAQL searchStream), `facebook.ts` (Graph insights). Sync jobs in `lib/sync/{spend,hcp}.ts`, recorded in `sync_runs`; admin trigger `POST /api/sync/{spend|hcp}`, scheduled by the `cron` worker (`scripts/cron.ts`) hitting `GET /api/cron/{job}`.
 
+**Open, deliberately-deferred work lives in `TODO.md`** — this file is what the system
+does and why; that one is what is not done yet. Check it before starting anything.
+
 ## Stack & conventions
 - Next.js App Router on **Railway** · Postgres (Neon or Railway) · Drizzle ORM (`casing: snake_case`).
 - Two Railway services off one repo: `web` (`railway.json`) and `cron` (`railway.cron.json`,
