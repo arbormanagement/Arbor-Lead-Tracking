@@ -1,3 +1,4 @@
+import { displayNameFor } from "@/lib/sources/naming";
 import { and, eq } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { leads, sources } from "@/lib/db/schema";
@@ -62,7 +63,7 @@ export async function syncLsaLeads({ sinceDays = 30 }: { sinceDays?: number } = 
 }
 
 async function getOrCreateSource(key: string): Promise<string | null> {
-  await db.insert(sources).values({ key, displayName: key, platform: "google_lsa" }).onConflictDoNothing({ target: sources.key });
+  await db.insert(sources).values({ key, displayName: displayNameFor(key), platform: "google_lsa" }).onConflictDoNothing({ target: sources.key });
   const [s] = await db.select({ id: sources.id }).from(sources).where(eq(sources.key, key)).limit(1);
   return s?.id ?? null;
 }

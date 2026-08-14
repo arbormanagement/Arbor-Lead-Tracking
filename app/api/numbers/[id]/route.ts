@@ -1,3 +1,4 @@
+import { displayNameFor } from "@/lib/sources/naming";
 import { eq } from "drizzle-orm";
 import { z } from "zod";
 import { authorizeAdmin, unauthorized } from "@/lib/admin-auth";
@@ -93,7 +94,7 @@ export async function DELETE(_req: Request, { params }: { params: Promise<{ id: 
 
 async function resolveSource(key: string): Promise<string | null> {
   if (!key) return null;
-  await db.insert(sources).values({ key, displayName: key }).onConflictDoNothing({ target: sources.key });
+  await db.insert(sources).values({ key, displayName: displayNameFor(key) }).onConflictDoNothing({ target: sources.key });
   const [s] = await db.select({ id: sources.id }).from(sources).where(eq(sources.key, key)).limit(1);
   return s?.id ?? null;
 }

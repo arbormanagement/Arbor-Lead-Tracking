@@ -1,3 +1,4 @@
+import { displayNameFor } from "@/lib/sources/naming";
 import { createHash } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { z } from "zod";
@@ -330,7 +331,7 @@ function tooManyRequests(retryAfterSec: number) {
 /** Upsert a source row by key so every lead/session rolls up to a named source. */
 async function getOrCreateSource(key: string): Promise<string | null> {
   if (!key) return null;
-  await db.insert(sources).values({ key, displayName: key }).onConflictDoNothing({ target: sources.key });
+  await db.insert(sources).values({ key, displayName: displayNameFor(key) }).onConflictDoNothing({ target: sources.key });
   const [s] = await db.select({ id: sources.id }).from(sources).where(eq(sources.key, key)).limit(1);
   return s?.id ?? null;
 }
