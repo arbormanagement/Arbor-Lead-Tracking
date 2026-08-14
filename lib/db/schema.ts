@@ -390,6 +390,38 @@ export const hcpEstimates = pgTable(
     // the funnel, which is why this is its own column rather than derived.
     scheduledStartHcp: timestamp("scheduled_start_hcp", { withTimezone: true }),
     approvedAtHcp: timestamp("approved_at_hcp", { withTimezone: true }),
+    // The options array, modelled rather than left buried in `raw`. Every stage,
+    // amount and approval this app reports on is derived from it, and the reporting
+    // pivots we are absorbing group and filter on it directly — digging through
+    // `raw->'options'` for that is both slower and easy to get subtly wrong.
+    options: jsonb("options"),
+    // HCP's `lead_source`, stored verbatim and **NOT usable as attribution**. Never
+    // let this populate `source_id` or reach an ROI surface.
+    //
+    // It records how the record was TYPED INTO HCP, not where the customer came
+    // from: the dominant values are "Online Booking" and "Website", so someone who
+    // clicks a Google ad, lands on the site and books online is filed as "Online
+    // Booking" — which says nothing about Google. Confirmed inaccurate by Justin
+    // 2026-08-14, and the data agrees three ways: the vocabulary CHANGED over time
+    // (2024 estimates use Online Booking / Google / Referral; 2026 use Website /
+    // Facebook / Online Booking, so a time series shows Google vanishing purely from
+    // relabelling), coverage swings from ~60% recently to ~22% in 2024, and
+    // `customer.lead_source` is a second, mostly-null field carrying different values
+    // again ("HMI").
+    //
+    // Kept because it costs nothing and its absence is a trap: without it the next
+    // person finds `lead_source` in the HCP payload and wires it up. A wrong source is
+    // worse than no source — it bills spend to a channel that did not earn it, while
+    // looking like data. The honest answer for an unattributable estimate is the
+    // `unattributed` bucket.
+    leadSourceRaw: text("lead_source_raw"),
+    // Flattened line items across every option. NULL until the P5 hydration job
+    // exists — HCP's /estimates LIST payload carries options but NOT their line
+    // items, so filling this costs one API call per option (~23k calls for the
+    // account) and cannot ride along with the estimate sync. The `service_type`
+    // classifier and the discount maths both depend on it, so the column lands now
+    // to keep that a backfill rather than a second migration.
+    lineItems: jsonb("line_items"),
     // HCP's own updated_at — lets attribution re-derive leads whose estimate
     // changed long after creation (late approval, cancellation, price edit).
     updatedAtHcp: timestamp("updated_at_hcp", { withTimezone: true }),
