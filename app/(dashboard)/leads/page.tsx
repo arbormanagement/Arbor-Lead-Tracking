@@ -29,6 +29,7 @@ interface Row {
   email: string | null;
   sourceId: string | null;
   sourceKey: string | null;
+  sourceName: string | null;
   campaignName: string | null;
   selfReportedSource: string | null;
   location: string | null;
@@ -72,7 +73,7 @@ function weekKey(d: Date): string {
 
 function dimKey(r: Row, dim: Dim): string {
   switch (dim) {
-    case "source": return r.sourceKey ?? "unattributed";
+    case "source": return r.sourceName ?? r.sourceKey ?? "Unattributed";
     case "campaign": return r.campaignName ?? "no campaign";
     case "stage": return r.status;
     case "type": return r.type;
@@ -175,6 +176,7 @@ export default async function InboxPage({
       email: leads.emailLc,
       sourceId: leads.sourceId,
       sourceKey: sources.key,
+      sourceName: sources.displayName,
       campaignName: campaigns.name,
       selfReportedSource: leads.selfReportedSource,
       location: leads.location,
@@ -224,7 +226,7 @@ export default async function InboxPage({
           </Link>
         </td>
         <td className="muted col-hide-sm">
-          {r.sourceKey ?? "—"}
+          {r.sourceName ?? r.sourceKey ?? "—"}
           {r.selfReportedSource && (
             <div style={{ fontSize: 11, marginTop: 2 }} title="Caller's own answer to 'how did you hear about us'">
               says: {r.selfReportedSource}
