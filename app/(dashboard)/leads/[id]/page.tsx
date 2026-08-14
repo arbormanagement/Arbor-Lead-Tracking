@@ -19,7 +19,7 @@ import {
 import { dateTime, dollars, durationLabel } from "@/lib/format";
 import { formatPhoneDisplay } from "@/lib/phone";
 import { LeadToggle } from "../../lead-toggle";
-import { stageClass, TYPE_META } from "../stage";
+import { stageClass, TYPE_META } from "../../stage";
 
 export const dynamic = "force-dynamic";
 

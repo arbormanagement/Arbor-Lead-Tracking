@@ -17,7 +17,7 @@ const ROW_LIMIT = 200;
 
 /**
  * The inbox: one row per person, newest activity first — every way they've
- * reached us folded into a single thread. `/leads` is the filtered view of the
+ * reached us folded into a single thread. `/estimates` is the opportunity view of the
  * same underlying activity, showing only what turned out to be an estimate request.
  */
 export default async function InboxPage({
@@ -75,7 +75,7 @@ export default async function InboxPage({
             Every way customers reach us, one thread per person · {threads.length} conversation
             {threads.length === 1 ? "" : "s"} in {timeframeLabel(days)}
             {unread > 0 ? ` · ${unread} unread` : ""} ·{" "}
-            <Link href="/leads" className="link">Leads</Link> is the estimate-request subset
+            <Link href="/estimates" className="link">Estimates</Link> is the opportunity view
           </p>
         </div>
         <div className="controls">

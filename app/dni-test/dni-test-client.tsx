@@ -91,7 +91,7 @@ export function DniTestClient() {
           </a>
           <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
             Call this from your phone → it should ring the forward destination, then appear in{" "}
-            <Link href="/leads" style={{ color: "var(--accent)" }}>/leads</Link> and{" "}
+            <Link href="/inbox" style={{ color: "var(--accent)" }}>/inbox</Link> and{" "}
             <Link href="/calls" style={{ color: "var(--accent)" }}>/calls</Link>.
           </div>
         </div>
