@@ -11,6 +11,7 @@ import {
   roiDaily,
   sources,
 } from "@/lib/db/schema";
+import { isCountableEstimate } from "@/lib/estimates/countable";
 import { getSetting } from "@/lib/settings";
 import { businessDate } from "@/lib/tz";
 import { withSyncRun } from "./run";
@@ -322,8 +323,8 @@ interface RoiAcc {
   sourceId: string | null;
   campaignId: string | null;
   location: "edwardsville" | "ofallon" | "unknown";
-  leadsCount: number;
-  qualifiedCount: number;
+  contactsCount: number;
+  estimatesCount: number;
   callsCount: number;
   formsCount: number;
   wonCount: number;
@@ -348,6 +349,11 @@ async function rebuildRoiDaily(windowDays: number): Promise<number> {
   // skews its CPL/ROAS high. Scan wider than any UTC offset and filter by business
   // date in the loop.
   const leadScanFrom = new Date(since.getTime() - 2 * 86_400_000);
+  // Estimates are scanned on their APPOINTMENT date, but an attributed one buckets
+  // to its contact's day — which can precede the appointment by weeks. Reach back
+  // further so an estimate whose contact falls inside the window is not skipped
+  // just because its visit was booked before the scan started.
+  const estimateScanFrom = new Date(since.getTime() - 120 * 86_400_000);
 
   // Non-customer-acquisition campaigns (recruiting) contribute neither spend nor
   // leads to ROI. Resolved once and applied to both sides of the rollup so a
@@ -361,41 +367,42 @@ async function rebuildRoiDaily(windowDays: number): Promise<number> {
   const acc = new Map<string, RoiAcc>();
   const keyOf = (a: { date: string; sourceId: string | null; campaignId: string | null; location: string }) =>
     `${a.date}|${a.sourceId ?? ""}|${a.campaignId ?? ""}|${a.location}`;
-  const bump = (seed: Omit<RoiAcc, "leadsCount" | "qualifiedCount" | "callsCount" | "formsCount" | "wonCount" | "spendCents" | "revenueCents" | "quoteValueCents">) => {
+  const bump = (seed: Omit<RoiAcc, "contactsCount" | "estimatesCount" | "callsCount" | "formsCount" | "wonCount" | "spendCents" | "revenueCents" | "quoteValueCents">) => {
     const k = keyOf(seed);
     let row = acc.get(k);
     if (!row) {
-      row = { ...seed, leadsCount: 0, qualifiedCount: 0, callsCount: 0, formsCount: 0, wonCount: 0, spendCents: 0, revenueCents: 0, quoteValueCents: 0 };
+      row = { ...seed, contactsCount: 0, estimatesCount: 0, callsCount: 0, formsCount: 0, wonCount: 0, spendCents: 0, revenueCents: 0, quoteValueCents: 0 };
       acc.set(k, row);
     }
     return row;
   };
 
-  // Leads side
-  const leadRows = await db
+  // ── DEMAND: inbound contacts ──────────────────────────────────────────────
+  // Every non-spam contact, whatever channel. `is_lead` is deliberately NOT
+  // consulted: this counts people who got in touch, and an unclassified call from
+  // a real person is still someone getting in touch. Opportunity is a separate
+  // number now (below), measured off estimates, so this no longer has to double as
+  // both — which is what made three rival definitions of "a lead" possible.
+  const contactRows = await db
     .select({
       occurredAt: leads.occurredAt,
       sourceId: leads.sourceId,
       campaignId: leads.campaignId,
       location: leads.location,
       type: leads.type,
-      status: leads.status,
-      sales: leads.salesValueCents,
-      quote: leads.quoteValueCents,
     })
     .from(leads)
     .where(
       and(
         eq(leads.isSpam, false),
         gte(leads.occurredAt, leadScanFrom),
-        or(ne(leads.type, "call"), eq(leads.isLead, true)),
         campaignNotExcluded(leads.campaignId, excluded),
       ),
     );
 
-  for (const l of leadRows) {
+  for (const l of contactRows) {
     // Business-timezone day, matching the ad platforms' account-timezone spend
-    // dates — a late-evening CT lead must not land on tomorrow's (UTC) row.
+    // dates — a late-evening CT contact must not land on tomorrow's (UTC) row.
     const date = businessDate(l.occurredAt);
     // Trim the over-wide scan back to the window the delete actually clears, so we
     // never insert a row outside it.
@@ -406,16 +413,61 @@ async function rebuildRoiDaily(windowDays: number): Promise<number> {
       campaignId: l.campaignId ?? null,
       location: (l.location ?? "unknown") as RoiAcc["location"],
     });
-    row.leadsCount++; // every captured (non-spam) contact
+    row.contactsCount++;
     if (l.type === "call") row.callsCount++;
     if (l.type === "web_form") row.formsCount++;
-    // Qualified opportunity = an estimate exists (qualified/quoted/won). Won = approved.
-    if (l.status === "qualified" || l.status === "quoted" || l.status === "won") row.qualifiedCount++;
-    if (l.status === "won") {
+  }
+
+  // ── OPPORTUNITY: estimates ────────────────────────────────────────────────
+  // The unit changed here. This used to count leads that happened to have matched
+  // an estimate, which could only ever see the ~42% of estimates traceable to a
+  // tracked contact — the other ~58% (repeat business, referrals, canvassing,
+  // estimates written in the field) were invisible rather than merely unattributed.
+  //
+  // `isCountableEstimate` is the denominator, and it is not negotiable: without it
+  // this counts cancelled and never-scheduled records and reports a ~25% close rate
+  // against a real one near 48%. See lib/estimates/countable.ts.
+  const estimateRows = await db
+    .select({
+      outcome: hcpEstimates.outcome,
+      approved: hcpEstimates.approvedAmountCents,
+      total: hcpEstimates.totalAmountCents,
+      scheduledStart: hcpEstimates.scheduledStartHcp,
+      estLocation: hcpEstimates.location,
+      leadOccurredAt: leads.occurredAt,
+      leadSourceId: leads.sourceId,
+      leadCampaignId: leads.campaignId,
+      leadLocation: leads.location,
+    })
+    .from(hcpEstimates)
+    // At most one lead per estimate — `matchLeadsToEstimates` claims each lead once,
+    // so this cannot fan out and double-count revenue.
+    .leftJoin(leads, and(eq(leads.hcpEstimateId, hcpEstimates.id), eq(leads.isSpam, false)))
+    .where(and(isCountableEstimate, gte(hcpEstimates.scheduledStartHcp, estimateScanFrom)));
+
+  for (const e of estimateRows) {
+    // Attributed → the CONTACT's day and channel, so an estimate lands on the same
+    // row as the spend that produced it even when it was written weeks later.
+    // Unattributed → its own appointment day, with no source. There is no spend to
+    // align with, and dating it anywhere else would be inventing a touch.
+    const attributed = e.leadOccurredAt != null;
+    const date = businessDate(attributed ? e.leadOccurredAt! : e.scheduledStart!);
+    if (date < sinceDate) continue;
+    // A recruiting campaign's estimates are as excluded as its spend and contacts.
+    if (attributed && e.leadCampaignId && excluded.includes(e.leadCampaignId)) continue;
+
+    const row = bump({
+      date,
+      sourceId: attributed ? e.leadSourceId ?? null : null,
+      campaignId: attributed ? e.leadCampaignId ?? null : null,
+      location: ((attributed ? e.leadLocation : e.estLocation) ?? "unknown") as RoiAcc["location"],
+    });
+    row.estimatesCount++;
+    row.quoteValueCents += e.total ?? 0;
+    if (e.outcome === "won") {
       row.wonCount++;
-      row.revenueCents += l.sales ?? 0;
+      row.revenueCents += e.approved ?? 0;
     }
-    row.quoteValueCents += l.quote ?? 0;
   }
 
   // Spend side (platform → source; campaign carries location)
@@ -483,21 +535,20 @@ async function rebuildRoiDaily(windowDays: number): Promise<number> {
           sourceId: r.sourceId,
           campaignId: r.campaignId,
           location: r.location,
-          leadsCount: r.leadsCount,
-          qualifiedCount: r.qualifiedCount,
+          contactsCount: r.contactsCount,
+          estimatesCount: r.estimatesCount,
           callsCount: r.callsCount,
           formsCount: r.formsCount,
           wonCount: r.wonCount,
           spendCents: r.spendCents,
           revenueCents: r.revenueCents,
           quoteValueCents: r.quoteValueCents,
-          // Cost per *qualified* lead (a real opportunity), not per raw contact.
-          // Spend ÷ CAPTURED leads, matching what the overview and sources pages
-          // both display and label as CPL (and what Ads Manager reports). This was
-          // spend ÷ qualified — a cost-per-*qualified*-lead under the name
-          // `cost_per_lead_cents`, so anyone reading roi_daily directly got a
-          // materially different number from the identically-named figure in the UI.
-          costPerLeadCents: r.leadsCount ? Math.round(r.spendCents / r.leadsCount) : null,
+          // Spend ÷ ESTIMATES. The denominator is deliberately smaller than the old
+          // cost-per-lead: only estimates we can attribute to a channel can have that
+          // channel's spend divided into them, so this reads higher than the figure it
+          // replaces — and honestly, since the old one divided by a looser contact
+          // count that included traffic no spend produced.
+          costPerEstimateCents: r.estimatesCount ? Math.round(r.spendCents / r.estimatesCount) : null,
           costPerAcquisitionCents: r.wonCount ? Math.round(r.spendCents / r.wonCount) : null,
           roiRatio: r.spendCents ? (r.revenueCents / r.spendCents).toFixed(4) : null,
         })),

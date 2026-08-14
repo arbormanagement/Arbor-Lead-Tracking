@@ -33,8 +33,8 @@ export default async function SourcesPage({ searchParams }: { searchParams: Prom
     .select({
       key: sources.key,
       name: sources.displayName,
-      leads: sql<number>`coalesce(sum(${roiDaily.leadsCount}),0)::int`,
-      qualified: sql<number>`coalesce(sum(${roiDaily.qualifiedCount}),0)::int`,
+      contacts: sql<number>`coalesce(sum(${roiDaily.contactsCount}),0)::int`,
+      estimates: sql<number>`coalesce(sum(${roiDaily.estimatesCount}),0)::int`,
       won: sql<number>`coalesce(sum(${roiDaily.wonCount}),0)::int`,
       spend: sql<number>`coalesce(sum(${roiDaily.spendCents}),0)::int`,
       revenue: sql<number>`coalesce(sum(${roiDaily.revenueCents}),0)::int`,
@@ -59,14 +59,14 @@ export default async function SourcesPage({ searchParams }: { searchParams: Prom
 
   const totals = rows.reduce(
     (a, r) => ({
-      leads: a.leads + r.leads,
-      qualified: a.qualified + r.qualified,
+      contacts: a.contacts + r.contacts,
+      estimates: a.estimates + r.estimates,
       won: a.won + r.won,
       cancelled: a.cancelled + (cancelledByKey.get(r.key ?? null) ?? 0),
       spend: a.spend + r.spend,
       revenue: a.revenue + r.revenue,
     }),
-    { leads: 0, qualified: 0, won: 0, cancelled: 0, spend: 0, revenue: 0 },
+    { contacts: 0, estimates: 0, won: 0, cancelled: 0, spend: 0, revenue: 0 },
   );
   const maxRoas = Math.max(1, ...rows.map((r) => (r.spend > 0 ? r.revenue / r.spend : 0)));
 
@@ -127,20 +127,24 @@ export default async function SourcesPage({ searchParams }: { searchParams: Prom
           <thead>
             <tr>
               <th>Source</th>
-              <th title="Every tracked lead">Leads</th>
-              <th title="An estimate was created in HousecallPro">Qualified</th>
+              <th title="People who contacted us — any channel, spam excluded">Contacts</th>
+              <th title="Estimate visits booked and not cancelled">Estimates</th>
               <th title="Estimate approved">Won</th>
               <th title="Estimate or job cancelled">Cancelled</th>
               <th>Spend</th>
               <th title="Value of won estimates">Revenue</th>
-              <th title="Cost per lead: spend ÷ captured leads — matches Ads Manager">CPL</th>
+              <th title="Cost per estimate: spend ÷ estimates attributed to this source">CPE</th>
               <th style={{ width: 150 }}>ROAS</th>
             </tr>
           </thead>
           <tbody>
             {rows.map((r, i) => {
               const cancelled = cancelledByKey.get(r.key ?? null) ?? 0;
-              const cpl = r.leads && r.spend ? dollars(Math.round(r.spend / r.leads)) : "—";
+              // Spend ÷ ESTIMATES attributed to this source. Only estimates we can tie to a
+              // channel can have that channel's spend divided into them, so this is a
+              // smaller denominator — and a higher, honester number — than the old
+              // spend ÷ contacts.
+              const cpe = r.estimates && r.spend ? dollars(Math.round(r.spend / r.estimates)) : "—";
               const roasNum = r.spend ? r.revenue / r.spend : 0;
               // Spend with no revenue yet is a wait-state, not a 0.0× verdict.
               const roas =
@@ -155,13 +159,13 @@ export default async function SourcesPage({ searchParams }: { searchParams: Prom
               return (
                 <tr key={r.key ?? `u${i}`}>
                   <td><span className="src"><span className="dot" style={{ background: SRC_HUES[i % SRC_HUES.length] }} />{r.name ?? r.key ?? "Unattributed"}</span></td>
-                  <td className="mono">{r.leads}</td>
-                  <td className="mono">{r.qualified}</td>
+                  <td className="mono">{r.contacts}</td>
+                  <td className="mono">{r.estimates}</td>
                   <td>{r.won > 0 ? <span className="badge win">{r.won}</span> : <span className="muted mono">0</span>}</td>
                   <td className="mono muted">{cancelled}</td>
                   <td className="mono muted">{dollars(r.spend)}</td>
                   <td className="mono">{r.revenue > 0 ? dollars(r.revenue) : <span className="muted">—</span>}</td>
-                  <td className="mono muted">{cpl}</td>
+                  <td className="mono muted">{cpe}</td>
                   <td>
                     <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                       <span className={winning ? "mono" : ""} style={{ color: winning ? "var(--accent)" : "var(--muted)", fontWeight: winning ? 700 : 500, fontSize: winning ? undefined : 12, minWidth: 42 }}>{roas}</span>
@@ -173,13 +177,13 @@ export default async function SourcesPage({ searchParams }: { searchParams: Prom
             })}
             <tr style={{ fontWeight: 700 }}>
               <td>Total</td>
-              <td className="mono">{totals.leads}</td>
-              <td className="mono">{totals.qualified}</td>
+              <td className="mono">{totals.contacts}</td>
+              <td className="mono">{totals.estimates}</td>
               <td className="mono">{totals.won}</td>
               <td className="mono muted">{totals.cancelled}</td>
               <td className="mono muted">{dollars(totals.spend)}</td>
               <td className="mono">{dollars(totals.revenue)}</td>
-              <td className="mono muted">{totals.leads && totals.spend ? dollars(Math.round(totals.spend / totals.leads)) : "—"}</td>
+              <td className="mono muted">{totals.estimates && totals.spend ? dollars(Math.round(totals.spend / totals.estimates)) : "—"}</td>
               <td className="mono" style={{ color: "var(--accent)" }}>{totals.spend ? (totals.revenue / totals.spend).toFixed(1) + "×" : "—"}</td>
             </tr>
           </tbody>

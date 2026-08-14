@@ -786,15 +786,27 @@ export const roiDaily = pgTable(
     sourceId: text("source_id").references(() => sources.id),
     campaignId: text("campaign_id").references(() => campaigns.id),
     location: locationEnum("location").default("unknown"),
-    leadsCount: integer("leads_count").notNull().default(0),
-    qualifiedCount: integer("qualified_count").notNull().default(0),
+    // DEMAND — inbound contacts, bucketed on the day they contacted us. Non-spam
+    // only: `is_lead` no longer gates anything here (an unclassified call from a
+    // real person is still demand), which is what stops the three rival "what is a
+    // lead" predicates from ever disagreeing again.
+    contactsCount: integer("contacts_count").notNull().default(0),
+    // OPPORTUNITY — countable HCP estimates (see lib/estimates/countable.ts).
+    // Bucketed on the CONTACT's date when we can attribute one, so estimates line
+    // up with the spend that produced them; on the estimate's own appointment date
+    // when we cannot, where there is no spend to line up with anyway.
+    estimatesCount: integer("estimates_count").notNull().default(0),
     callsCount: integer("calls_count").notNull().default(0),
     formsCount: integer("forms_count").notNull().default(0),
     wonCount: integer("won_count").notNull().default(0),
     spendCents: integer("spend_cents").notNull().default(0),
     revenueCents: integer("revenue_cents").notNull().default(0),
     quoteValueCents: integer("quote_value_cents").notNull().default(0),
-    costPerLeadCents: integer("cost_per_lead_cents"),
+    // Spend ÷ ESTIMATES, not ÷ contacts. Renamed rather than redefined in place:
+    // the old `cost_per_lead_cents` divided by a looser, larger contact count, so
+    // keeping the name would have left every historical reader silently comparing
+    // two different metrics.
+    costPerEstimateCents: integer("cost_per_estimate_cents"),
     costPerAcquisitionCents: integer("cost_per_acquisition_cents"),
     roiRatio: numeric("roi_ratio", { precision: 12, scale: 4 }),
     createdAt: createdAt(),
