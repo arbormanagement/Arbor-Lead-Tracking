@@ -472,5 +472,31 @@ function mapFormFields(fields: Record<string, string>) {
     // phone at all, which is what lead↔HCP revenue matching keys on.
     phone: find(["phone", "tel", "telephone", "mobile", "cell"]) ?? findExact(["number", "contactnumber"]),
     message: find(["message", "comment", "details", "detail", "description", "note", "project"]),
+    // "How did you hear about us?" — the only signal that ever sees the channels
+    // number-tracking cannot: word of mouth, a neighbour's recommendation, a yard
+    // sign, a truck. Roughly 41% of estimate customers reach us with no trackable
+    // touch at all, and no amount of attribution engineering will change that; the
+    // question is the instrument for it.
+    //
+    // Until now the field was only ever filled from CALL TRANSCRIPTS, so a form
+    // could carry the answer and the app would drop it. Reading it here costs
+    // nothing and means the moment the website adds the question, the data starts
+    // arriving — rather than needing a code change nobody remembers to make.
+    //
+    // Needles are specific on purpose: a bare "source" would match hidden UTM
+    // fields that forms commonly post, filing an ad's own tag as the customer's
+    // own words — which is worse than having nothing, because it looks like
+    // first-party truth.
+    selfReportedSource: find([
+      "howdidyouhearaboutus",
+      "howdidyouhear",
+      "howdidyoufindus",
+      "howheardaboutus",
+      "hearaboutus",
+      "heardaboutus",
+      "howfoundus",
+      "referralsource",
+      "referredby",
+    ]),
   };
 }
