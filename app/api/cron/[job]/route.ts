@@ -6,7 +6,6 @@ import { runAttribution } from "@/lib/sync/attribution";
 import { syncTranscriptions } from "@/lib/sync/transcribe";
 import { syncMessageClassification } from "@/lib/sync/classify-messages";
 import { backfillCallThreads } from "@/lib/sync/thread-backfill";
-import { syncLsaLeads } from "@/lib/sync/lsa";
 import { syncConversions } from "@/lib/sync/conversions";
 import { syncFacebookLeads } from "@/lib/sync/facebook-leads";
 import { releaseExpired } from "@/lib/dni/assign";
@@ -50,8 +49,6 @@ export async function GET(req: Request, { params }: { params: Promise<{ job: str
         return Response.json({ ok: true, job, result: await syncHcp() });
       case "spend":
         return Response.json({ ok: true, job, result: await syncSpend() });
-      case "lsa":
-        return Response.json({ ok: true, job, result: await syncLsaLeads({ sinceDays: 30 }) });
       case "attribution":
         return Response.json({ ok: true, job, result: await runAttribution({ windowDays: 90 }) });
       case "conversions":
@@ -67,10 +64,9 @@ export async function GET(req: Request, { params }: { params: Promise<{ job: str
       case "revenue": {
         const hcp = await syncHcp();
         const spend = await syncSpend();
-        const lsa = await syncLsaLeads({ sinceDays: 30 });
         const attribution = await runAttribution({ windowDays: 90 });
         const conversions = await syncConversions();
-        return Response.json({ ok: true, job, result: { hcp, spend, lsa, attribution, conversions } });
+        return Response.json({ ok: true, job, result: { hcp, spend, attribution, conversions } });
       }
       default:
         return Response.json({ error: `unknown job '${job}'` }, { status: 400 });
