@@ -10,6 +10,7 @@ import { isCancelledEstimate } from "@/lib/estimates/countable";
 import { landingPathSql } from "@/lib/landing-page";
 import { dollars } from "@/lib/format";
 import { TIMEFRAMES, pickDays, timeframeLabel } from "@/lib/timeframes";
+import { CoverageNotice } from "../coverage-notice";
 
 export const dynamic = "force-dynamic";
 
@@ -146,6 +147,8 @@ export default async function SourcesPage({ searchParams }: { searchParams: Prom
           ))}
         </div>
       </div>
+
+      <CoverageNotice days={days} />
 
       {/* Performance by source */}
       {rows.length === 0 ? (

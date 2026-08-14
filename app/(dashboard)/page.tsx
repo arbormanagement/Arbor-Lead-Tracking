@@ -4,6 +4,7 @@ import { db } from "@/lib/db/client";
 import { roiDaily, sources } from "@/lib/db/schema";
 import { selectedTouchModel, touchModelLabel } from "@/lib/attribution/model";
 import { wholeDollars } from "@/lib/format";
+import { CoverageNotice } from "./coverage-notice";
 
 export const dynamic = "force-dynamic";
 
@@ -94,6 +95,8 @@ export default async function OverviewPage() {
           <span className="pill">◍ All locations ▾</span>
         </div>
       </div>
+
+      <CoverageNotice days={30} />
 
       {/* Funnel */}
       <div className="funnel">
