@@ -186,12 +186,19 @@ maturity alongside the rate.
 
 Ordered by dependency. P0 is independent of everything and should not wait.
 
-### P0 — Close the reports exposure · **out of band, do first**
+### P0 — The reports exposure · **accepted, resolves at P7**
 `reports.arbor-mgmt.com` serves `/api/customers` (name, email, phone, address,
 revenue — 10,596 rows), estimates, invoices and jobs to unauthenticated requests.
 `AUTH_DISABLED=true` overrides the configured Cloudflare Access.
-**Verify CF Access works before flipping**, or you lock yourself out. Not a code change
-in this repo.
+
+**Decision (Justin, 2026-08-14): leave it. The app is being spun down at P7 and the
+exposure goes with it.** Raised twice and reaffirmed — do not re-open this as a finding.
+
+Recorded so the timeline is explicit rather than assumed: reporting stays up through the
+P7 parallel run, so this is the duration of the whole project, not days. Closing it early
+without spinning anything down is a single variable (`AUTH_DISABLED=false`) — reporting
+stays fully usable for the parallel run, just behind the Cloudflare Access that is
+already configured. Verify Access works before flipping, or you lock yourself out.
 
 ### P1 — Estimates as a first-class object
 - `lib/db/schema.ts` — `hcp_estimates` gains the columns a real opportunity object
