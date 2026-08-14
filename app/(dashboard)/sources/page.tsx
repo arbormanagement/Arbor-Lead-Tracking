@@ -74,8 +74,20 @@ export default async function SourcesPage({ searchParams }: { searchParams: Prom
     .groupBy(sources.key, roiDaily.location)
     .orderBy(desc(sql`coalesce(sum(${roiDaily.revenueCents}),0)`));
 
-  // Sub-rows only where they say something. A source whose traffic is entirely one
-  // location (or entirely unknown) would just repeat its own row underneath itself.
+  // Sub-rows only where the split actually describes the SOURCE.
+  //
+  // Location is known two very different ways. Google Business Profile determines
+  // it — two profiles, each with its own tracking number and its own
+  // `utm_campaign` on its link — so essentially every GBP contact carries one.
+  // Everywhere else it is INFERRED from the landing page, so it is really a fact
+  // about the page a visitor happened to enter on, and most contacts have none.
+  //
+  // Expanding on the second kind is noise: Organic Search split 4 unknown / 1
+  // O'Fallon / 1 Edwardsville — three rows to say almost nothing about organic.
+  // So a source expands only when at least two NAMED locations have contacts and
+  // those named locations are most of the source. That is a property of the data
+  // rather than a list of blessed sources, so a channel that starts distinguishing
+  // locations later starts expanding on its own.
   const byKeyLocation = new Map<string | null, typeof locationRows>();
   for (const r of locationRows) {
     if (!r.contacts && !r.estimates && !r.spend && !r.revenue) continue;
@@ -83,7 +95,14 @@ export default async function SourcesPage({ searchParams }: { searchParams: Prom
     if (list) list.push(r);
     else byKeyLocation.set(r.key ?? null, [r]);
   }
-  for (const [k, list] of byKeyLocation) if (list.length < 2) byKeyLocation.delete(k);
+  for (const [k, list] of byKeyLocation) {
+    const named = list.filter((r) => r.location && r.location !== "unknown");
+    const namedContacts = named.reduce((n, r) => n + r.contacts, 0);
+    const allContacts = list.reduce((n, r) => n + r.contacts, 0);
+    // `unknown` stays VISIBLE once a source qualifies — dropping it would leave
+    // sub-rows that do not add up to the row above them, which is its own confusion.
+    if (named.length < 2 || namedContacts * 2 <= allContacts) byKeyLocation.delete(k);
+  }
 
   const LOCATION_LABEL: Record<string, string> = {
     edwardsville: "Edwardsville",
@@ -178,8 +197,9 @@ export default async function SourcesPage({ searchParams }: { searchParams: Prom
           </p>
           <p className="page-sub" style={{ marginTop: 2, fontSize: 12 }}>
             <span className="muted">
-              Sources serving more than one location expand underneath — Google Business Profile is two profiles, one
-              per branch, each with its own link tag and tracking number.
+              A source expands by location only where it can actually tell them apart — Google Business Profile is two
+              profiles, one per branch, each with its own link tag and tracking number. Elsewhere location is inferred
+              from the landing page and is mostly unknown, so it is not broken out.
             </span>
           </p>
         </div>
