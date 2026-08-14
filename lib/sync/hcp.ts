@@ -173,7 +173,7 @@ export async function syncHcp(
             totalAmountCents: e.totalAmountCents,
             approvedAmountCents: e.approvedAmountCents,
             options: e.options ?? null,
-            leadSource: e.leadSource,
+            leadSourceRaw: e.leadSourceRaw,
             customerPhoneE164: normalizePhone(e.customerPhone),
             customerEmailLc: normalizeEmail(e.customerEmail),
             customerName: e.customerName,
@@ -196,7 +196,7 @@ export async function syncHcp(
             totalAmountCents: sql`excluded.total_amount_cents`,
             approvedAmountCents: sql`excluded.approved_amount_cents`,
             options: sql`excluded.options`,
-            leadSource: sql`excluded.lead_source`,
+            leadSourceRaw: sql`excluded.lead_source_raw`,
             // NOT line_items: it is filled by a separate hydration job, and the
             // estimate sync has nothing to write there. `excluded.line_items` would
             // be null on every run and would erase the backfill on the next tick.

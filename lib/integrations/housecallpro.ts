@@ -401,7 +401,7 @@ function mapEstimate(e: Record<string, unknown>): HcpEstimateDTO {
     totalAmountCents,
     approvedAmountCents,
     options,
-    leadSource: (e.lead_source as string) ?? null,
+    leadSourceRaw: (e.lead_source as string) ?? null,
     address: e.address ?? null,
     createdAtHcp: parseDate(e.created_at),
     // The booked estimate visit. Only present once the office puts it on the

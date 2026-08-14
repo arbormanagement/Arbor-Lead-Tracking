@@ -1,5 +1,5 @@
 {
-  "id": "24c99ffe-e59f-476e-b370-c98ca39f5f6c",
+  "id": "63abbef7-7984-4c64-a016-61cd829a86b8",
   "prevId": "275a5dbc-6cb9-472e-9c58-8093487beef3",
   "version": "7",
   "dialect": "postgresql",
@@ -1924,8 +1924,8 @@
           "primaryKey": false,
           "notNull": false
         },
-        "lead_source": {
-          "name": "lead_source",
+        "lead_source_raw": {
+          "name": "lead_source_raw",
           "type": "text",
           "primaryKey": false,
           "notNull": false

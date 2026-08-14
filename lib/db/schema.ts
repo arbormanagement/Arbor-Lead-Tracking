@@ -395,12 +395,26 @@ export const hcpEstimates = pgTable(
     // pivots we are absorbing group and filter on it directly — digging through
     // `raw->'options'` for that is both slower and easy to get subtly wrong.
     options: jsonb("options"),
-    // HousecallPro's OWN channel field, as the office recorded it: "Website",
-    // "Facebook", "Online Booking". Coarse — no campaign, no click id — and set on
-    // roughly 55-68% of estimates. Kept because it is the only signal available for
-    // the ~58% of estimates this app cannot attribute from tracking at all, where
-    // "came from the website" beats "unknown".
-    leadSource: text("lead_source"),
+    // HCP's `lead_source`, stored verbatim and **NOT usable as attribution**. Never
+    // let this populate `source_id` or reach an ROI surface.
+    //
+    // It records how the record was TYPED INTO HCP, not where the customer came
+    // from: the dominant values are "Online Booking" and "Website", so someone who
+    // clicks a Google ad, lands on the site and books online is filed as "Online
+    // Booking" — which says nothing about Google. Confirmed inaccurate by Justin
+    // 2026-08-14, and the data agrees three ways: the vocabulary CHANGED over time
+    // (2024 estimates use Online Booking / Google / Referral; 2026 use Website /
+    // Facebook / Online Booking, so a time series shows Google vanishing purely from
+    // relabelling), coverage swings from ~60% recently to ~22% in 2024, and
+    // `customer.lead_source` is a second, mostly-null field carrying different values
+    // again ("HMI").
+    //
+    // Kept because it costs nothing and its absence is a trap: without it the next
+    // person finds `lead_source` in the HCP payload and wires it up. A wrong source is
+    // worse than no source — it bills spend to a channel that did not earn it, while
+    // looking like data. The honest answer for an unattributable estimate is the
+    // `unattributed` bucket.
+    leadSourceRaw: text("lead_source_raw"),
     // Flattened line items across every option. NULL until the P5 hydration job
     // exists — HCP's /estimates LIST payload carries options but NOT their line
     // items, so filling this costs one API call per option (~23k calls for the

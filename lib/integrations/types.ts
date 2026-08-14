@@ -69,8 +69,9 @@ export interface HcpEstimateDTO {
   approvedAmountCents: number;
   /** The options array as HCP returns it — stages, amounts and approvals all live here. */
   options?: unknown;
-  /** HCP's own channel field ("Website", "Facebook", "Online Booking"); often null. */
-  leadSource?: string | null;
+  /** HCP's `lead_source` verbatim. NOT attribution — it records how the record was
+   *  entered, not where the customer came from. See the schema comment. */
+  leadSourceRaw?: string | null;
   address?: unknown;
   createdAtHcp?: Date | null;
   /** When the estimate VISIT is booked (HCP schedule.scheduled_start). Null until
