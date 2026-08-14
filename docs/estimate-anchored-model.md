@@ -112,13 +112,30 @@ the three-predicate divergence structurally impossible rather than patched.
 ~58% of estimates today. Displaying it is the point — it is the number that says how
 much of the business we can actually explain.
 
-**6. Close rate is computed over DECIDED estimates, and maturity is shown.**
-An estimate takes ~30 days to settle, so a close rate over a trailing window always
-understates: the denominator is full of estimates that have not had time to decide. The
-most recent 100 estimates were **86% undecided** — a naive trailing-30-day close rate
-reads ~12% against a settled reality near 24%. Ship that and the dashboard reports a
-crisis every month, forever. Either cohort by creation month and show how settled each
-cohort is, or split the denominator into decided vs open. Do not divide won by all.
+**6. Cancelled estimates are EXCLUDED from the close-rate denominator.**
+This is the rule the business already operates on, and it is not optional. Feb 2026,
+counted both ways:
+
+| | estimates | won | rate |
+|---|---|---|---|
+| every HCP record | ~114 | 29 | 25% |
+| reporting app | 60 | 29 | **48.3%** |
+
+Identical numerator; the denominator is the whole difference. ~45 of those 114 records
+are `pro canceled` / `user canceled` — including thirteen created within forty minutes
+on Feb 11, which is a bulk cleanup, not thirteen customers declining. Counting those as
+lost opportunities produces a number that is not a close rate.
+
+**The reporting app applies this filter AT INGEST**, which is why it holds 10,697
+estimates against HCP's 15,234, and why its `conversion_rate` is a plain
+`won / estimate_count` with no visible exclusion. Rebuild the pivot faithfully against
+the complete 15,234-row history now backfilled here and you get 25% while looking
+correct. **The exclusion must be an explicit, documented predicate in this app**, not a
+property of how the sync happened to be written.
+
+Still true and still worth handling: an estimate takes ~30 days to settle, so a trailing
+window under-reports — the most recent 100 estimates were 86% undecided. Show cohort
+maturity alongside the rate.
 
 ---
 
@@ -244,19 +261,24 @@ the query layer is the next design conversation.
 2. Does the reporting DB hold anything beyond customers / estimates / invoices / jobs /
    webhook events? Not yet inspected at schema level.
 3. ~~Historical close rate is 44% but ~30% recently — genuine or artefact?~~
-   **Closed 2026-08-14 — genuine, and it is a decline.** 100-estimate samples by cohort:
+   **Closed 2026-08-14 — artefact of MY denominator, not a real collapse.** Counting
+   every HCP record, including bulk-cancelled ones, gave ~25% for Feb 2026. The
+   reporting app gives 48.3% for the same month off the same 29 wins. See decision 6 —
+   cancelled estimates are excluded, and that is correct.
 
-   | cohort | approved | still open |
-   |---|---|---|
-   | Aug–Sep 2019 | 52% | 10 |
-   | Jun 2023 | 43% | 0 |
-   | May 2025 | 33% | 0 |
-   | Feb 2026 | **24%** | **0** |
+   The business's own trend, from the reporting app:
 
-   Zero open in every cohort from 2023 on, so these are fully settled — the low recent
-   numbers are not un-decided estimates. The 44% lifetime figure is real but weighted by
-   years that closed roughly twice as well as today. Cause not established (mix shift,
-   competition, price-shopping from paid channels, or a change in how declines are
-   recorded would all fit). Samples are n=100, ±~5pp.
+   | | conversion |
+   |---|---|
+   | Aug 2019 | 69.9% |
+   | Jun 2023 | 50.7% |
+   | May 2025 | 48.9% |
+   | Feb 2026 | 48.3% |
+   | Jun 2026 | 44.8% |
+
+   A real decline 2019→2023 (~70% → ~50%), then broadly flat. Nothing indicates a
+   current problem. An earlier draft of this document claimed the rate had "roughly
+   halved since 2019 and is still drifting down" — wrong on the level and wrong on the
+   recent trend.
 4. Facebook leads match at 100% — plausible, since every FB enquiry gets an estimate
    booked, but worth a spot check for over-matching.
