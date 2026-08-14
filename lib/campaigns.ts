@@ -27,3 +27,27 @@ export function campaignNotExcluded(col: AnyPgColumn, excludedIds: string[]): SQ
   if (excludedIds.length === 0) return undefined;
   return or(isNull(col), notInArray(col, excludedIds));
 }
+
+/**
+ * Link a lead to an EXISTING campaign by the `utm_campaign` text it arrived with.
+ *
+ * Campaigns are keyed `(platform, external_campaign_id)` by the spend sync, so the
+ * only bridge from a URL to one of those rows is the name — which is why the Google
+ * Ads tracking template must carry `{campaignname}` and not `{campaignid}`. A name
+ * that matches nothing resolves to null rather than creating a row: minting
+ * campaigns from arbitrary query-string text would pollute the dimension that ROI
+ * groups on and that the recruiting-exclusion UI lists, and anyone can put any
+ * `utm_campaign` they like on a link to the site.
+ *
+ * Extracted from /api/twilio/voice, which was the only path doing this. Web-form
+ * and SMS leads set no campaign at all — so a form fill from a tagged ad click was
+ * recorded with the right source and no campaign, and every campaign-level number
+ * under-counted by however much of its volume arrived as a form rather than a call.
+ * One implementation now, because three copies of a lookup are three chances for
+ * the paths to disagree about what a campaign match means.
+ */
+export async function resolveCampaignIdByName(name: string | null | undefined): Promise<string | null> {
+  if (!name) return null;
+  const [c] = await db.select({ id: campaigns.id }).from(campaigns).where(eq(campaigns.name, name)).limit(1);
+  return c?.id ?? null;
+}

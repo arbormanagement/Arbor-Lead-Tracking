@@ -12,6 +12,9 @@ const NAV: Array<{ href: string; label: string; ic: string; section?: string }> 
   { href: "/inbox", label: "Inbox", ic: "☎" },
   { href: "/leads", label: "Leads", ic: "✦" },
   { href: "/sources", label: "Sources", ic: "◈" },
+  // Campaign sits beside source rather than nested under it: it is the level
+  // budget actually moves at, so it is a destination, not a drill-down.
+  { href: "/roi", label: "Campaigns", ic: "◉" },
   { href: "/settings", label: "Settings", ic: "⚙", section: "Admin" },
 ];
 

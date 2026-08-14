@@ -1,6 +1,7 @@
 import { eq } from "drizzle-orm";
 import { db } from "@/lib/db/client";
-import { calls, campaigns, leads, numberAssignments, trackingNumbers } from "@/lib/db/schema";
+import { calls, leads, numberAssignments, trackingNumbers } from "@/lib/db/schema";
+import { resolveCampaignIdByName } from "@/lib/campaigns";
 import { validateTwilioSignature, parseTwilioForm } from "@/lib/twilio/signature";
 import { ensureSourceId, isHardSpamNumber, resolveInboundAttribution } from "@/lib/twilio/inbound";
 import { recordThreadActivity, upsertThread } from "@/lib/messaging/thread";
@@ -162,21 +163,9 @@ async function recordCall(args: {
   // Resolve source id (best-effort) for the denormalized lead row.
   const sourceId = await ensureSourceId(sourceKey);
 
-  // Link to an EXISTING campaign by name only. The lease carries `utm_campaign`
-  // text, while campaigns are keyed (platform, external_campaign_id) by the spend
-  // sync — so we match when the ad platform's campaign name is what the URL
-  // carried, and otherwise leave it null. Deliberately never creates a row:
-  // minting campaigns from arbitrary query-string text would pollute the dimension
-  // that drives ROI grouping and the recruiting-exclusion UI.
-  let campaignId: string | null = null;
-  if (lease?.campaign) {
-    const [c] = await db
-      .select({ id: campaigns.id })
-      .from(campaigns)
-      .where(eq(campaigns.name, lease.campaign))
-      .limit(1);
-    campaignId = c?.id ?? null;
-  }
+  // Link to an EXISTING campaign by the lease's `utm_campaign` text. Shared with
+  // the form and SMS paths so all three agree on what a match means.
+  const campaignId = await resolveCampaignIdByName(lease?.campaign);
 
   // Repeat-caller detection (one quick indexed lookup — keep the webhook fast).
   // Runs BEFORE the call insert so it doesn't count this very call.
