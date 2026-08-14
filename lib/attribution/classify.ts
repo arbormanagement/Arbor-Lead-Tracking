@@ -68,7 +68,14 @@ export function classifySource(p: TouchParams): Classification {
       // Instagram inventory is bought and reported in the same Meta campaigns, so
       // `utm_source=instagram` must group with facebook/paid or Meta ROI splits in
       // two and neither half reconciles with the platform's spend.
-      if (srcKey.includes("facebook") || srcKey.includes("meta") || srcKey.includes("instagram"))
+      //
+      // `fb` is here because it was found in the data, not in theory: three leads
+      // sat on a `fb/paid` source, minted back when an unmatched UTM pair became
+      // its own channel. That path is closed now, but the abbreviation is common
+      // enough in hand-written tags that without this it would land in `other` —
+      // trading a wrong channel for a missing one. Matched exactly rather than by
+      // substring, since two letters appear inside plenty of unrelated words.
+      if (srcKey === "fb" || srcKey.includes("facebook") || srcKey.includes("meta") || srcKey.includes("instagram"))
         return { sourceKey: "facebook/paid", medium: "paid" };
     }
     // Both Business Profiles link to the site with
