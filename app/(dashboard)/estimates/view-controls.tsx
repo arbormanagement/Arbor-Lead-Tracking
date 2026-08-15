@@ -2,7 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { TIMEFRAMES } from "@/lib/timeframes";
-import { DIMS, MAX_GROUPS, type Dim } from "./view";
+import { DEFAULT_DAYS, DIMS, MAX_GROUPS, type Dim } from "./view";
 
 /** Compact timeframe + grouping controls. Groupings are an editable list:
  *  each active one is a chip (change via its select, remove via ×) and a
@@ -13,7 +13,7 @@ export function ViewControls({ groups, days }: { groups: Dim[]; days: number }) 
   const nav = (nextGroups: Dim[], nextDays: number = days) => {
     const q = new URLSearchParams();
     if (nextGroups.length) q.set("g", nextGroups.join(","));
-    if (nextDays !== 90) q.set("days", String(nextDays));
+    if (nextDays !== DEFAULT_DAYS) q.set("days", String(nextDays));
     const qs = q.toString();
     router.push(qs ? `/estimates?${qs}` : "/estimates");
   };
@@ -24,7 +24,7 @@ export function ViewControls({ groups, days }: { groups: Dim[]; days: number }) 
   return (
     <>
       <select
-        className={`pill-select${days !== 90 ? " on" : ""}`}
+        className={`pill-select${days !== DEFAULT_DAYS ? " on" : ""}`}
         value={days}
         onChange={(e) => nav(groups, Number(e.target.value))}
         aria-label="Timeframe"

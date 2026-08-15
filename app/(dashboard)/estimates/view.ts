@@ -15,6 +15,16 @@ export const DIMS: Array<{ key: Dim; label: string }> = [
 
 export const MAX_GROUPS = 3;
 
+/**
+ * Default timeframe for /estimates: the last 7 days of CREATED estimates
+ * (Justin, 2026-08-15) — "what came in this week".
+ *
+ * Shared with the view controls rather than duplicated, because they omit `days`
+ * from the URL when it equals the default. Two copies of that number drifting apart
+ * is a page that renders one window and highlights another in its own control.
+ */
+export const DEFAULT_DAYS = 7;
+
 export function isDim(v: string): v is Dim {
   return DIMS.some((d) => d.key === v);
 }

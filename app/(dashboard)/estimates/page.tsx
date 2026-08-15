@@ -11,7 +11,7 @@ import { pickDays, timeframeLabel } from "@/lib/timeframes";
 import { businessDate } from "@/lib/tz";
 import { TRACKING_STARTED_AT, TRACKING_STARTED_LABEL } from "@/lib/tracking-coverage";
 import { ViewControls } from "./view-controls";
-import { DIMS, parseGroups, type Dim } from "./view";
+import { DEFAULT_DAYS, DIMS, parseGroups, type Dim } from "./view";
 import { stageClass, TYPE_META } from "../stage";
 
 export const dynamic = "force-dynamic";
@@ -36,11 +36,23 @@ export const dynamic = "force-dynamic";
  * team's own reporting already ran on, and it is the difference between a 25% and a
  * 48% close rate on the same wins.
  *
- * **Dates here are the APPOINTMENT, not the contact.** That is deliberate and it
- * differs from /sources and /roi, which bucket on the contact date so outcomes land
- * beside the spend that produced them. This page answers "of the visits we ran that
- * month, what closed?", which is a cohort on `scheduled_start`. The two never
- * reconcile row-for-row and are not supposed to — see lib/estimates/countable.ts.
+ * **This page windows on CREATED, not the appointment or the contact, and defaults
+ * to the last 7 days** (Justin, 2026-08-15). It answers "what came in this week",
+ * which is the question actually asked of it, and it is the only one of the three
+ * dates that makes the list a clean cohort of new work.
+ *
+ * It also removes an artefact rather than hiding one. Windowing on the appointment
+ * pulled in estimates written weeks earlier — 43 of 95 in the 8-15 August window
+ * were created before tracking existed, so they could never be attributed and
+ * filled Unattributed with records nothing could have matched.
+ *
+ * Two consequences worth stating rather than discovering:
+ *  · This will NOT reconcile row-for-row with /sources or /roi, which bucket on the
+ *    CONTACT date so outcomes land beside the spend that produced them. Both are
+ *    right for their own question; see lib/estimates/countable.ts.
+ *  · A close rate over recently-CREATED estimates is immature by construction —
+ *    work written this week has not been decided yet. Over a short window it reads
+ *    low, and that is the cohort, not a decline.
  */
 
 // Estimate outcomes, in pipeline order rather than alphabetical.
@@ -52,8 +64,10 @@ interface Row {
   outcome: string;
   /** False when HCP has no appointment for this estimate yet. */
   scheduled: boolean;
-  /** The appointment when there is one, otherwise creation — the only date it has. */
-  dateFor: Date;
+  /** When the estimate was written — what the page windows and groups on. */
+  createdAt: Date;
+  /** The booked visit, shown alongside. Null until someone schedules it. */
+  scheduledStart: Date | null;
   name: string | null;
   phone: string | null;
   email: string | null;
@@ -106,7 +120,7 @@ function closeRate(a: Agg): string {
   return a.scheduledCount ? `${Math.round((a.wonCount / a.scheduledCount) * 100)}%` : "—";
 }
 
-/** Monday of the appointment's week in BUSINESS time — a stable key that also
+/** Monday of the creation week in BUSINESS time — a stable key that also
  *  sorts chronologically, derived from the business date so it cannot disagree
  *  with the day grouping at the CT/UTC boundary. */
 function weekKey(d: Date): string {
@@ -122,11 +136,11 @@ function dimKey(r: Row, dim: Dim): string {
     case "stage": return r.scheduled ? r.outcome : "unscheduled";
     case "type": return r.leadType ?? "untracked";
     case "location": return r.location ?? "unknown";
-    // Business-timezone buckets, so an evening appointment cannot land in
-    // tomorrow's group while its own timestamp renders as today.
-    case "day": return businessDate(r.dateFor);
-    case "week": return weekKey(r.dateFor);
-    case "month": return businessDate(r.dateFor).slice(0, 7);
+    // Business-timezone buckets, so an estimate written in the evening cannot land
+    // in tomorrow's group while its own timestamp renders as today.
+    case "day": return businessDate(r.createdAt);
+    case "week": return weekKey(r.createdAt);
+    case "month": return businessDate(r.createdAt).slice(0, 7);
   }
 }
 
@@ -198,7 +212,7 @@ export default async function EstimatesPage({
 }) {
   const { g, days: daysParam } = await searchParams;
   const groups = parseGroups(g);
-  const days = pickDays(daysParam, 90);
+  const days = pickDays(daysParam, DEFAULT_DAYS);
   const since = new Date(Date.now() - days * 86_400_000);
 
   // Recruiting/brand campaigns are not customer acquisition, so their estimates
@@ -208,14 +222,16 @@ export default async function EstimatesPage({
 
   // At most one lead per estimate: matchLeadsToEstimates claims each lead exactly
   // once, so this join cannot fan out and double-count an estimate or its revenue.
-  // The LIST is every live estimate; the RATE below is scheduled-only. Windowed on
-  // whichever date the estimate actually has, so an estimate with no appointment
-  // still appears — it has a creation date and nothing else, and windowing on
-  // `scheduled_start` alone is precisely what hid 34 of them.
-  const dateFor = sql<Date>`coalesce(${hcpEstimates.scheduledStartHcp}, ${hcpEstimates.createdAtHcp})`;
+  // The LIST is every live estimate; the RATE below is scheduled-only.
+  //
+  // Windowed on CREATED. Every estimate has one, so an estimate with no appointment
+  // still appears — windowing on `scheduled_start` alone is precisely what hid 34 of
+  // them — and unlike `coalesce(scheduled, created)` the population does not change
+  // shape when someone books a visit: an estimate cannot leave this week's list by
+  // being scheduled for next month, which is what made the counts move on their own.
   const scope = and(
     isLiveEstimate,
-    gte(dateFor, since),
+    gte(hcpEstimates.createdAtHcp, since),
     campaignNotExcluded(leads.campaignId, excludedIds),
   );
   const withLead = db
@@ -252,7 +268,7 @@ export default async function EstimatesPage({
 
   const fetched = await withLead
     .where(scope)
-    .orderBy(desc(dateFor))
+    .orderBy(desc(hcpEstimates.createdAtHcp))
     // Grouped views aggregate, so they get the full window; the flat list stays short.
     .limit(groups.length ? 1000 : 200);
 
@@ -260,7 +276,8 @@ export default async function EstimatesPage({
     id: r.id,
     outcome: r.outcome,
     scheduled: r.scheduledStart != null,
-    dateFor: (r.scheduledStart ?? r.createdAtHcp)!,
+    createdAt: r.createdAtHcp!,
+    scheduledStart: r.scheduledStart,
     name: [r.custFirst, r.custLast].filter(Boolean).join(" ") || r.estName,
     phone: r.phone,
     email: r.email,
@@ -289,10 +306,13 @@ export default async function EstimatesPage({
       // been attributed — the customer's call or form predates the CallRail cutover
       // — so they land in Unattributed no matter how good the matching is.
       //
-      // Counted rather than inferred from the window, because the window is not
-      // what decides it: an estimate created on 2 August with an appointment today
-      // sits inside a fully-covered 7-day window and is still unattributable. That
-      // is why the existing coverage notice does not catch this case.
+      // Now that the page windows on CREATED this can only be non-zero when the
+      // selected window itself reaches back past the cutover, so it agrees with the
+      // coverage notice by construction. Still counted rather than derived from the
+      // window: the honest statement is "N of these could not be attributed", and a
+      // day count cannot say that. It is also what stops the 90d and 12mo views from
+      // silently reporting a depressed attribution rate as if it were a matching
+      // failure. Retire it, and this whole notice, when CallRail history is imported.
       createdBeforeTracking: sql<number>`count(*) filter (where ${hcpEstimates.createdAtHcp} < ${TRACKING_STARTED_AT})::int`,
       wonCents: sql<number>`coalesce(sum(coalesce(nullif(${hcpEstimates.approvedAmountCents},0), ${hcpEstimates.totalAmountCents})) filter (where ${hcpEstimates.outcome} = 'won'), 0)::int`,
     })
@@ -319,9 +339,16 @@ export default async function EstimatesPage({
     );
     return (
       <tr key={r.id}>
-        <td className="muted mono nowrap" title={r.scheduled ? "Estimate appointment" : "Created — no appointment booked yet"}>
-          {dateTime(r.dateFor)}
-          {!r.scheduled && <span className="muted" style={{ fontSize: 11, marginLeft: 6 }}>created</span>}
+        {/* Created is the primary date because it is what the window and the groups
+            run on; the visit sits under it so the two are never confused for each
+            other, which is exactly what a single coalesced column invited. */}
+        <td className="muted mono nowrap" title="When the estimate was written in HousecallPro">
+          {dateTime(r.createdAt)}
+          {r.scheduledStart && (
+            <div style={{ fontSize: 11, marginTop: 2 }} title="Booked estimate appointment">
+              visit {dateTime(r.scheduledStart)}
+            </div>
+          )}
         </td>
         <td className="col-hide-sm">
           {t ? (
@@ -388,7 +415,7 @@ export default async function EstimatesPage({
     <thead>
       {/* Channel and Source hide on phones so Stage/Value stay in view. */}
       <tr>
-        <th title="The estimate appointment, not when the customer got in touch">Appointment</th>
+        <th title="When the estimate was written — what this page windows and groups on. The booked visit is shown underneath.">Created</th>
         <th className="col-hide-sm">Channel</th>
         <th>Customer</th>
         <th className="col-hide-sm">Source</th>
@@ -484,8 +511,7 @@ export default async function EstimatesPage({
               <span className="muted">
                 <strong>{preTracking} of {total} were created before {TRACKING_STARTED_LABEL}</strong>, when call and web
                 tracking did not exist — so they cannot be attributed and count as Unattributed whatever the matching
-                does. This bites even on a window that looks covered: an estimate written in July with an appointment
-                this week still lands here. It decays on its own as that backlog works through.
+                does. Shorten the timeframe to see only estimates the app could actually have traced.
               </span>
             </p>
           )}
