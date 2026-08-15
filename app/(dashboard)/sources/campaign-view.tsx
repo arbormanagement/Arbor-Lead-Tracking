@@ -1,8 +1,10 @@
 import { and, desc, eq, gte, sql } from "drizzle-orm";
+import Link from "next/link";
 import { db } from "@/lib/db/client";
 import { campaigns, roiDaily, sources } from "@/lib/db/schema";
 import { dollars } from "@/lib/format";
 import { businessDate } from "@/lib/tz";
+import { estimateDrilldown } from "./drilldown";
 import type { TouchModel } from "@/lib/attribution/model";
 
 /**
@@ -122,15 +124,22 @@ export async function CampaignView({ days, touch }: { days: number; touch: Touch
                   <tr key={r.campaignId ?? `u${i}`}>
                     <td>
                       {unattributed ? (
-                        <span
-                          className="muted"
+                        <Link
+                          href={estimateDrilldown({ campaign: "none" }, days)}
+                          className="link muted"
                           title="Contacts with no campaign: organic search, Google Business Profile, Local Services, direct, and any paid click whose utm_campaign matched no campaign name."
                         >
                           Not campaign-attributed
-                        </span>
+                        </Link>
                       ) : (
                         <span className="src">
-                          {r.name ?? <span className="muted">Unnamed campaign</span>}
+                          {r.name ? (
+                            <Link href={estimateDrilldown({ campaign: r.name }, days)} className="link">
+                              {r.name}
+                            </Link>
+                          ) : (
+                            <span className="muted">Unnamed campaign</span>
+                          )}
                           {r.platform && (
                             <span className="muted" style={{ fontSize: 11, marginLeft: 6 }}>
                               {r.platform}
@@ -213,7 +222,9 @@ export async function CampaignView({ days, touch }: { days: number; touch: Touch
             {byLocation.map((l) => (
               <tr key={l.location ?? "unknown"}>
                 <td style={{ textTransform: "capitalize" }}>
-                  {l.location === "ofallon" ? "O'Fallon" : (l.location ?? "unknown")}
+                  <Link href={estimateDrilldown({ location: l.location ?? "unknown" }, days)} className="link">
+                    {l.location === "ofallon" ? "O'Fallon" : (l.location ?? "unknown")}
+                  </Link>
                 </td>
                 <td className="mono">{l.contacts}</td>
                 <td className="mono">{l.estimates}</td>

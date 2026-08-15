@@ -6,11 +6,13 @@ import { db } from "@/lib/db/client";
 import { campaigns, hcpCustomers, hcpEstimates, leads, sources } from "@/lib/db/schema";
 import { isCountableEstimate, isLiveEstimate } from "@/lib/estimates/countable";
 import { dateTime, dollars } from "@/lib/format";
+import { landingPathSql } from "@/lib/landing-page";
 import { formatPhoneDisplay } from "@/lib/phone";
 import { pickDays, timeframeLabel } from "@/lib/timeframes";
 import { businessDate } from "@/lib/tz";
 import { TRACKING_STARTED_AT, TRACKING_STARTED_LABEL } from "@/lib/tracking-coverage";
 import { ViewControls } from "./view-controls";
+import { estimatesHref, FILTER_KEYS, filterLabel, filterSql, hasAnyFilter, parseFilters } from "./filters";
 import { DEFAULT_DAYS, DIMS, parseGroups, type Dim } from "./view";
 import { stageClass, TYPE_META } from "../stage";
 
@@ -79,6 +81,9 @@ interface Row {
   sourceKey: string | null;
   sourceName: string | null;
   campaignName: string | null;
+  keyword: string | null;
+  /** Normalised landing PATH, so it groups and filters the same way /sources does. */
+  landingPage: string | null;
   selfReportedSource: string | null;
   location: string | null;
 }
@@ -208,12 +213,17 @@ function GroupHeadLabel({ k, dim, a }: { k: string; dim: Dim; a: Agg }) {
 export default async function EstimatesPage({
   searchParams,
 }: {
-  searchParams: Promise<{ g?: string; days?: string }>;
+  searchParams: Promise<Record<string, string | undefined>>;
 }) {
-  const { g, days: daysParam } = await searchParams;
+  const sp = await searchParams;
+  const { g, days: daysParam } = sp;
   const groups = parseGroups(g);
   const days = pickDays(daysParam, DEFAULT_DAYS);
   const since = new Date(Date.now() - days * 86_400_000);
+  // Attribution filters, so a row on /sources can link straight to the estimates
+  // behind it. See ./filters.ts — `none` is a real value on every one of them.
+  const filters = parseFilters(sp);
+  const hrefBase = { days, g, defaultDays: DEFAULT_DAYS };
 
   // Recruiting/brand campaigns are not customer acquisition, so their estimates
   // stay out of this list and its totals — the same exclusion roi_daily applies,
@@ -233,6 +243,7 @@ export default async function EstimatesPage({
     isLiveEstimate,
     gte(hcpEstimates.createdAtHcp, since),
     campaignNotExcluded(leads.campaignId, excludedIds),
+    filterSql(filters),
   );
   const withLead = db
     .select({
@@ -258,6 +269,8 @@ export default async function EstimatesPage({
       sourceKey: sources.key,
       sourceName: sources.displayName,
       campaignName: campaigns.name,
+      keyword: leads.keyword,
+      landingPage: landingPathSql(leads.landingPage),
       selfReportedSource: leads.selfReportedSource,
     })
     .from(hcpEstimates)
@@ -288,6 +301,8 @@ export default async function EstimatesPage({
     sourceKey: r.sourceKey,
     sourceName: r.sourceName,
     campaignName: r.campaignName,
+    keyword: r.keyword,
+    landingPage: r.landingPage,
     selfReportedSource: r.selfReportedSource,
     // The attributed contact's location when there is one, the estimate's own
     // otherwise — the same precedence the rollup uses, so the two agree.
@@ -361,8 +376,46 @@ export default async function EstimatesPage({
             tracked contact has nothing to open, so it renders plain rather than as
             a dead link. */}
         <td>{r.leadId ? <Link href={`/leads/${r.leadId}`} className="rowlink">{who}</Link> : who}</td>
+        {/* The whole attribution chain for this estimate, in one cell: source →
+            campaign → landing page → keyword, plus what the caller said. It all
+            reaches the estimate through ONE join (leads.hcp_estimate_id), so
+            showing it together is showing that join, and an estimate with no lead
+            renders as Unattributed rather than as blanks. Each value links to the
+            same list filtered by it, which is the reverse of clicking through from
+            /sources. */}
         <td className="muted col-hide-sm">
-          {r.sourceName ?? r.sourceKey ?? <span className="muted">Unattributed</span>}
+          {r.sourceKey ? (
+            <Link href={estimatesHref(hrefBase, filters, { source: r.sourceKey })} className="link">
+              {r.sourceName ?? r.sourceKey}
+            </Link>
+          ) : (
+            <Link
+              href={estimatesHref(hrefBase, filters, { source: "none" })}
+              className="link muted"
+              title="No tracked contact matched this estimate — show all of them"
+            >
+              Unattributed
+            </Link>
+          )}
+          {r.campaignName && (
+            <div style={{ fontSize: 11, marginTop: 2 }}>
+              <Link href={estimatesHref(hrefBase, filters, { campaign: r.campaignName })} className="link muted">
+                ◉ {r.campaignName}
+              </Link>
+            </div>
+          )}
+          {r.landingPage && (
+            <div className="mono" style={{ fontSize: 11, marginTop: 2, maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={r.landingPage}>
+              <Link href={estimatesHref(hrefBase, filters, { page: r.landingPage })} className="link muted">
+                ▤ {r.landingPage}
+              </Link>
+            </div>
+          )}
+          {r.keyword && (
+            <div style={{ fontSize: 11, marginTop: 2 }} title="Search keyword that produced the click">
+              ⌕ {r.keyword}
+            </div>
+          )}
           {r.selfReportedSource && (
             <div style={{ fontSize: 11, marginTop: 2 }} title="Caller's own answer to 'how did you hear about us'">
               says: {r.selfReportedSource}
@@ -504,6 +557,28 @@ export default async function EstimatesPage({
                 {" "}{agg?.attributed ?? 0} of {total} traced to a tracked contact; the rest are repeat business,
                 referrals and estimates written in the field, shown as Unattributed.
               </span>
+            </p>
+          )}
+          {/* Active filters, each removable. Rendered as chips rather than a
+              filter bar because they arrive by LINK — from a /sources row, or from
+              clicking a value in the table — so the job is to say what you are
+              looking at and let you undo it, not to offer every option up front. */}
+          {hasAnyFilter(filters) && (
+            <p className="page-sub" style={{ marginTop: 6, display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
+              {FILTER_KEYS.filter((k) => filters[k]).map((k) => (
+                <Link
+                  key={k}
+                  href={estimatesHref(hrefBase, filters, { [k]: null })}
+                  className="pill"
+                  style={{ color: "var(--accent)", borderColor: "var(--accent-line)", background: "var(--accent-soft)" }}
+                  title="Remove this filter"
+                >
+                  {filterLabel(k, filters[k]!)} ×
+                </Link>
+              ))}
+              <Link href={estimatesHref(hrefBase, {})} className="link muted" style={{ fontSize: 12 }}>
+                clear all
+              </Link>
             </p>
           )}
           {preTracking > 0 && (
