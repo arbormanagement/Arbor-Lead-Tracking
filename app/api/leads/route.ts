@@ -88,6 +88,13 @@ export async function GET(req: Request) {
       campaignName: campaigns.name,
       medium: leads.medium,
       keyword: leads.keyword,
+      // The caller's own answer to "how did you hear about us", from the transcript
+      // classifier. It is the only field that can say what is inside the `direct`
+      // bucket — a static published number attributes every call to `direct`,
+      // whether the caller saw it on a truck or arrived from an ad the DNI swap
+      // missed. Returned here because this is the route used to answer exactly that
+      // kind of question and it was the one attribution field missing.
+      selfReportedSource: leads.selfReportedSource,
       gclid: leads.gclid,
       gbraid: leads.gbraid,
       wbraid: leads.wbraid,
