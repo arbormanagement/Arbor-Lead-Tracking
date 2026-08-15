@@ -6,6 +6,7 @@ import { db } from "@/lib/db/client";
 import { leads, webSessions } from "@/lib/db/schema";
 import { dollars } from "@/lib/format";
 import { landingPathSql } from "@/lib/landing-page";
+import { estimateDrilldown } from "./drilldown";
 import { sourcesHref } from "./view";
 
 /**
@@ -144,7 +145,7 @@ export async function PageView({ days }: { days: number }) {
                 {rows.map((r) => (
                   <tr key={r.path}>
                     <td style={{ maxWidth: 320, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={r.path}>
-                      {r.path}
+                      <Link href={estimateDrilldown({ page: r.path }, days)} className="link">{r.path}</Link>
                     </td>
                     <td className="mono">{r.sessions || <span className="muted">—</span>}</td>
                     <td className="mono">{r.contacts}</td>

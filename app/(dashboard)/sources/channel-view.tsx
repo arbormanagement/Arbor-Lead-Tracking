@@ -1,5 +1,6 @@
 import { and, desc, eq, gte, isNotNull, ne, sql, type SQL } from "drizzle-orm";
 import type { AnyPgColumn } from "drizzle-orm/pg-core";
+import Link from "next/link";
 import { Fragment } from "react";
 import { campaignNotExcluded, excludedCampaignIds } from "@/lib/campaigns";
 import { db } from "@/lib/db/client";
@@ -9,6 +10,7 @@ import { landingPathSql } from "@/lib/landing-page";
 import { dollars } from "@/lib/format";
 import { timeframeLabel } from "@/lib/timeframes";
 import { businessDate } from "@/lib/tz";
+import { estimateDrilldown } from "./drilldown";
 import type { TouchModel } from "@/lib/attribution/model";
 
 const SRC_HUES = ["#2ea043", "#4c8dff", "#facc15", "#a371f7", "#e08a4c", "#8b98a5"];
@@ -232,7 +234,13 @@ export async function ChannelView({ days, touch }: { days: number; touch: TouchM
               return (
                 <Fragment key={r.key ?? `u${i}`}>
                 <tr>
-                  <td><span className="src"><span className="dot" style={{ background: SRC_HUES[i % SRC_HUES.length] }} />{r.name ?? r.key ?? "Unattributed"}</span></td>
+                  {/* Through to the estimates this row is counting. /sources says
+                      which channel produced work; this is the "which work". */}
+                  <td>
+                    <Link href={estimateDrilldown({ source: r.key ?? "none" }, days)} className="rowlink">
+                      <span className="src"><span className="dot" style={{ background: SRC_HUES[i % SRC_HUES.length] }} />{r.name ?? r.key ?? "Unattributed"}</span>
+                    </Link>
+                  </td>
                   <td className="mono">{r.contacts}</td>
                   <td className="mono">{r.estimates}</td>
                   <td>{r.won > 0 ? <span className="badge win">{r.won}</span> : <span className="muted mono">0</span>}</td>
@@ -258,7 +266,9 @@ export async function ChannelView({ days, touch }: { days: number; touch: TouchM
                   <tr key={`${r.key}/${sub.location}`} style={{ fontSize: 12.5 }}>
                     <td style={{ paddingLeft: 34 }}>
                       <span style={{ color: "var(--faint)", marginRight: 7 }}>↳</span>
-                      <span className="muted">{LOCATION_LABEL[sub.location ?? "unknown"] ?? sub.location}</span>
+                      <Link href={estimateDrilldown({ source: r.key ?? "none", location: sub.location ?? "unknown" }, days)} className="link muted">
+                        {LOCATION_LABEL[sub.location ?? "unknown"] ?? sub.location}
+                      </Link>
                     </td>
                     <td className="mono muted">{sub.contacts}</td>
                     <td className="mono muted">{sub.estimates}</td>
@@ -297,7 +307,7 @@ export async function ChannelView({ days, touch }: { days: number; touch: TouchM
         referrals, yard signs and trucks that number-tracking can&apos;t see.
       </p>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 14, marginBottom: 26 }}>
-        <BreakdownCard title="◧ Landing pages" rows={byLanding} empty="No landing pages captured yet — populates once track.js is live." />
+        <BreakdownCard title="◧ Landing pages" rows={byLanding} days={days} filterKey="page" empty="No landing pages captured yet — populates once track.js is live." />
         <BreakdownCard title="⌕ Keywords" rows={byKeyword} empty="No keywords captured yet — populates from paid-search leads." />
         <BreakdownCard title="☏ Callers say" rows={bySelfReported} empty="No self-reported sources yet — extracted from call transcripts." />
       </div>
@@ -309,10 +319,17 @@ function BreakdownCard({
   title,
   rows,
   empty,
+  days,
+  filterKey,
 }: {
   title: string;
   rows: Array<{ value: string | null; contacts: number; estimates: number; won: number; revenue: number }>;
   empty: string;
+  /** Only set where /estimates can actually filter on this dimension. Keywords and
+   *  self-reported answers are not filterable there, so those cards stay plain
+   *  rather than offering a link that would silently ignore the value. */
+  days?: number;
+  filterKey?: "page";
 }) {
   return (
     <div className="card">
@@ -325,7 +342,13 @@ function BreakdownCard({
             {rows.map((r) => (
               <tr key={r.value ?? ""}>
                 <td style={{ maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 12.5 }} title={r.value ?? ""}>
-                  {displayValue(r.value)}
+                  {filterKey && days != null && r.value ? (
+                    <Link href={estimateDrilldown({ [filterKey]: r.value }, days)} className="link">
+                      {displayValue(r.value)}
+                    </Link>
+                  ) : (
+                    displayValue(r.value)
+                  )}
                 </td>
                 <td className="mono" style={{ width: 40 }}>{r.contacts}</td>
                 <td className="mono muted" style={{ width: 34 }}>{r.estimates}</td>

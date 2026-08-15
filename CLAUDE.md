@@ -133,6 +133,20 @@ two windows differ: channel/campaign use `roi_daily`'s BUSINESS date, the page v
 raw session/lead timestamps, so totals won't reconcile at a window edge. Views live in
 `app/(dashboard)/sources/{channel,campaign,page}-view.tsx` with the shell in `page.tsx`.
 
+**The two pages are two DIRECTIONS through one join** (`leads.hcp_estimate_id` →
+`leads.source_id`), and both are now navigable. Every `/sources` row links to the
+estimates behind it (`sources/drilldown.ts`), and `/estimates` accepts
+`?source=&campaign=&page=&location=&type=` (`estimates/filters.ts`), rendering active
+filters as removable chips. **`none` is a real value on every filter** — ~41% of
+estimates have no lead at all, so "show me the unattributed ones" has to be askable
+directly rather than by elimination. Each estimate row also shows its full chain
+inline (source → campaign → landing page → keyword → self-reported), every value
+linking to the list filtered by it. Two gotchas, both verified against the schema:
+the drill-down counts won't match `/sources` exactly (different date buckets, as
+above), and `leads.location` DEFAULTS to `'unknown'` rather than null, so a matched
+contact with unknown location beats the estimate's own — the filter inherits that
+from the column it filters, deliberately.
+
 **Phase 6 lives in the `arbor-general` repo** — `callrail-migration/` (plan, number
 inventory, transfer mechanics) plus a summary in that repo's CLAUDE.md. It is vendor and
 account knowledge, not app documentation, so it sits where every session sees it. Two
