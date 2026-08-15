@@ -3,9 +3,10 @@ import { authorizeAdmin, unauthorized } from "@/lib/admin-auth";
 import { credentialStatus } from "@/lib/credentials";
 import { CREDENTIAL_SPECS } from "@/lib/credentials/spec";
 import { db } from "@/lib/db/client";
-import { calls, conversionExports, leads, numberAssignments, pools, syncRuns, trackingNumbers, webSessions } from "@/lib/db/schema";
+import { calls, conversionExports, hcpEstimates, leads, numberAssignments, pools, syncRuns, trackingNumbers, webSessions } from "@/lib/db/schema";
 import { isLikelyBot } from "@/lib/bot";
 import { env } from "@/lib/env";
+import { getSetting } from "@/lib/settings";
 import { businessDate, BUSINESS_TZ } from "@/lib/tz";
 import { MAX_EXPORT_ATTEMPTS } from "@/lib/sync/conversions";
 
@@ -244,6 +245,49 @@ export async function GET(req: Request) {
     })
     .from(calls);
 
+  // ── Estimate sync coverage: is HousecallPro actually reconciled? ─────────────
+  //
+  // This exists because the estimate sync's one real failure was INVISIBLE from
+  // inside the app: it reported success, row counts looked healthy, and ~5 in 6 won
+  // estimates sat frozen at `qualified` for nine days until a human compared a lead
+  // against HCP by hand. Nothing here would have been wrong; nothing here would have
+  // said so either.
+  //
+  // Two numbers fix that, and both are pure DB reads — the cold-zone crawl records
+  // HCP's own `total_items` as it goes, so this endpoint stays free of upstream calls
+  // (see the note on /api/diagnostics/hcp-shape for why that separation is kept).
+  //
+  //   drift  — our row count vs HCP's. Deletions are SOFT there (a deleted estimate
+  //            keeps being returned, see isDeletedEstimate), so nothing legitimately
+  //            removes rows and this should sit at 0 forever. Any divergence is a
+  //            real gap, not noise to explain away.
+  //   passAgeHours — how long since the crawl last completed a full lap of the
+  //            history. This is the "coverage is slipping" signal: the crawl is
+  //            fault-tolerant by design, so a persistent failure shows up here as a
+  //            stalling number rather than as a failed sync run.
+  const crawl = await getSetting<{
+    nextPage: number;
+    passes: number;
+    lastCompletedPassAt: string | null;
+    totalItems: number | null;
+  }>("hcp.estimates.crawl", { nextPage: 1, passes: 0, lastCompletedPassAt: null, totalItems: null });
+
+  const [estCount] = await db.select({ n: sql<number>`count(*)::int` }).from(hcpEstimates);
+  const ourEstimates = estCount?.n ?? 0;
+  const passAgeHours = crawl.lastCompletedPassAt
+    ? Number(((now.getTime() - new Date(crawl.lastCompletedPassAt).getTime()) / 3_600_000).toFixed(1))
+    : null;
+
+  const estimateSync = {
+    ours: ourEstimates,
+    housecallPro: crawl.totalItems,
+    drift: crawl.totalItems == null ? null : ourEstimates - crawl.totalItems,
+    crawlPage: crawl.nextPage,
+    completedPasses: crawl.passes,
+    lastCompletedPassAt: crawl.lastCompletedPassAt,
+    passAgeHours,
+  };
+
   // ── Configuration sanity ────────────────────────────────────────────────────
   // Credentials resolve from env only (the DB store was removed 2026-08-12), so a field is
   // set or it isn't — there is no third state where a stored value silently outranks env.
@@ -291,6 +335,23 @@ export async function GET(req: Request) {
   }
   if (pool.size > 0 && pool.free === 0) {
     warnings.push("DNI pool is exhausted — visitors are being shown the static fallback number");
+  }
+  // Soft deletes mean rows are never legitimately removed upstream, so any drift at
+  // all is a gap. Warned in both directions: fewer than HCP means we are missing
+  // estimates, more means something vanished there and we should find out why before
+  // deciding whether to tombstone it.
+  if (estimateSync.drift != null && estimateSync.drift !== 0) {
+    warnings.push(
+      `estimate count differs from HousecallPro by ${estimateSync.drift} ` +
+        `(ours ${estimateSync.ours}, HCP ${estimateSync.housecallPro})`,
+    );
+  }
+  // ~2 full passes at the configured crawl rate. Slower than that means the crawl is
+  // erroring or the cursor is stuck, and old estimates are drifting out of sync.
+  if (passAgeHours != null && passAgeHours > 96) {
+    warnings.push(
+      `estimate history crawl has not completed a full pass in ${passAgeHours}h — coverage of older estimates is stale`,
+    );
   }
   // Stated before any capacity tuning: an unreleased-lease backlog looks exactly
   // like heavy traffic from the pool's side, and only this tells the two apart.
@@ -350,6 +411,7 @@ export async function GET(req: Request) {
     failingExports,
     traffic,
     volume: { ...vol, ...callVol },
+    estimateSync,
     credentials: creds,
   });
 }

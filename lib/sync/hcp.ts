@@ -4,6 +4,7 @@ import { hcpCustomers, hcpEstimates, hcpJobs } from "@/lib/db/schema";
 import { revenueProvider } from "@/lib/integrations";
 import { normalizeEmail, normalizePhone } from "@/lib/phone";
 import { linkContactsToHcpCustomers } from "@/lib/contacts/link-hcp";
+import { getSetting, setSetting } from "@/lib/settings";
 import { incrementalWindowDays, withSyncRun } from "./run";
 
 // Fixed window for jobs (whose server-side scheduled_start filter must stay broad).
@@ -26,6 +27,38 @@ const MAX_WINDOW_DAYS = 365;
  * in-memory map instead of a query per row.
  */
 const CHUNK = 100; // rows per multi-row upsert — bounded so the raw jsonb payload stays under the HTTP-driver request limit
+
+/**
+ * Pages of the cold-zone crawl to walk per run. Each page is ~7s against HCP, and
+ * this job shares a 10-minute budget with customers and jobs — so this is the knob
+ * that keeps the crawl inside the timeout.
+ *
+ * At 2 pages/run hourly the whole ~77-page history is verified every ~1.6 days,
+ * against a measured background change rate of 1–3% per 30 days on aged estimates.
+ * That is comfortably faster than the thing it is chasing; raising it buys little.
+ */
+const ESTIMATE_CRAWL_PAGES_PER_RUN = 2;
+
+/** `settings` key holding the crawl cursor. Persisted so the walk survives deploys. */
+const CRAWL_KEY = "hcp.estimates.crawl";
+
+interface EstimateCrawlState {
+  /** Page to read next, 1-based. */
+  nextPage: number;
+  /** Completed full passes — a monotonic counter, useful for spotting a stuck cursor. */
+  passes: number;
+  /** ISO timestamp of the last completed pass; null until the first one finishes. */
+  lastCompletedPassAt: string | null;
+  /** Provider's own total estimate count, from the last response seen. */
+  totalItems: number | null;
+}
+
+const CRAWL_INITIAL: EstimateCrawlState = {
+  nextPage: 1,
+  passes: 0,
+  lastCompletedPassAt: null,
+  totalItems: null,
+};
 
 async function chunkedUpsert<T>(rows: T[], run: (batch: T[]) => Promise<unknown>): Promise<void> {
   for (let i = 0; i < rows.length; i += CHUNK) {
@@ -69,12 +102,28 @@ export async function syncHcp(
     const windowDays =
       sinceDays ?? (await incrementalWindowDays("hcp.sync.jobs", { overlapHours: 2, maxDays: MAX_WINDOW_DAYS }));
 
-    // Fetch the three independent endpoints concurrently — read time is the slowest
-    // one, not the sum. (Each still paginates 100/page internally.)
-    const [customersRaw, jobsRaw, estimatesRaw] = await Promise.all([
+    // Where the cold-zone crawl left off. Read before the fetch so the crawl can
+    // ride along with the other endpoints rather than adding a serial leg.
+    const crawlBefore = await getSetting<EstimateCrawlState>(CRAWL_KEY, CRAWL_INITIAL);
+
+    // Fetch the independent endpoints concurrently — read time is the slowest one,
+    // not the sum. (Each still paginates 200/page internally.)
+    //
+    // The crawl is deliberately fault-TOLERANT while the rest is not: a crawl error
+    // must not cost us the hot zone, customers and jobs for the hour. It surfaces
+    // instead through `crawl.lastCompletedPassAt` going stale on /api/diagnostics,
+    // which is the signal that actually means "coverage is slipping" — a thrown
+    // error here would just retry the same page next tick and hide the hot data.
+    const [customersRaw, jobsRaw, estimatesRaw, crawled] = await Promise.all([
       provider.listCustomers({ sinceDays: windowDays }),
       provider.listJobs({ sinceDays: jobsSinceDays }),
       provider.listEstimates({ sinceDays: windowDays }),
+      provider
+        .crawlEstimates({ startPage: crawlBefore.nextPage, pages: ESTIMATE_CRAWL_PAGES_PER_RUN })
+        .catch((err) => {
+          console.error("[hcp] estimate crawl failed — cursor not advanced", err);
+          return null;
+        }),
     ]);
 
     // ── Customers ────────────────────────────────────────────────────────────
@@ -163,7 +212,13 @@ export async function syncHcp(
     );
 
     // ── Estimates (ROI revenue event) ─────────────────────────────────────────
-    const estimates = dedupeBy(estimatesRaw, (e) => e.hcpEstimateId);
+    // Hot zone + whatever slice of the cold crawl this run reached. They overlap
+    // once per pass, when the cursor reaches the newest pages; `dedupeBy` keeps one
+    // row per id, which a multi-row ON CONFLICT requires anyway.
+    const estimates = dedupeBy(
+      [...estimatesRaw, ...(crawled?.estimates ?? [])],
+      (e) => e.hcpEstimateId,
+    );
     await chunkedUpsert(estimates, (batch) =>
       db
         .insert(hcpEstimates)
@@ -215,8 +270,47 @@ export async function syncHcp(
             syncedAt: sql`now()`,
             updatedAt: sql`now()`,
           },
+          // Skip the write when nothing meaningful moved. The crawl re-reads the
+          // whole 15k-row history every pass, and without this every pass would
+          // rewrite every row — ~15,000 jsonb updates a day to record a hundred
+          // real changes, and a `synced_at` churn that makes "when did this last
+          // CHANGE?" unanswerable.
+          //
+          // Compared on the fields a surface actually reads. `raw` is deliberately
+          // NOT compared: HCP reshapes it and bumps timestamps inside it during its
+          // own backend work, so diffing it would mark nearly every row as changed
+          // and defeat the check. It is still WRITTEN whenever something else moved.
+          setWhere: sql`
+            ${hcpEstimates.status} IS DISTINCT FROM excluded.status
+            OR ${hcpEstimates.won} IS DISTINCT FROM excluded.won
+            OR ${hcpEstimates.outcome} IS DISTINCT FROM excluded.outcome
+            OR ${hcpEstimates.totalAmountCents} IS DISTINCT FROM excluded.total_amount_cents
+            OR ${hcpEstimates.approvedAmountCents} IS DISTINCT FROM excluded.approved_amount_cents
+            OR ${hcpEstimates.scheduledStartHcp} IS DISTINCT FROM excluded.scheduled_start_hcp
+            OR ${hcpEstimates.approvedAtHcp} IS DISTINCT FROM excluded.approved_at_hcp
+            OR ${hcpEstimates.updatedAtHcp} IS DISTINCT FROM excluded.updated_at_hcp
+            OR ${hcpEstimates.hcpCustomerId} IS DISTINCT FROM excluded.hcp_customer_id
+            OR ${hcpEstimates.customerPhoneE164} IS DISTINCT FROM excluded.customer_phone_e164
+            OR ${hcpEstimates.customerEmailLc} IS DISTINCT FROM excluded.customer_email_lc
+            OR ${hcpEstimates.customerName} IS DISTINCT FROM excluded.customer_name
+            OR ${hcpEstimates.options} IS DISTINCT FROM excluded.options
+          `,
         }),
     );
+
+    // Advance the cursor only after the rows are safely upserted — a crash between
+    // the two would skip those pages until the next full pass came round.
+    const crawlAfter: EstimateCrawlState = crawled
+      ? {
+          nextPage: crawled.nextPage,
+          passes: crawlBefore.passes + (crawled.wrapped ? 1 : 0),
+          lastCompletedPassAt: crawled.wrapped
+            ? new Date().toISOString()
+            : crawlBefore.lastCompletedPassAt,
+          totalItems: crawled.totalItems ?? crawlBefore.totalItems,
+        }
+      : crawlBefore;
+    if (crawled) await setSetting(CRAWL_KEY, crawlAfter);
 
     // Now that customers are fresh, tie inbox threads to them. This is the
     // direction the per-contact lookup can't cover: someone texts as a stranger
@@ -235,6 +329,14 @@ export async function syncHcp(
       wonValueCents,
       mode: sinceDays == null ? "incremental" : "explicit",
       windowDays: Number(windowDays.toFixed(3)),
+      crawl: {
+        ok: crawled != null,
+        fromPage: crawlBefore.nextPage,
+        toPage: crawlAfter.nextPage,
+        rows: crawled?.estimates.length ?? 0,
+        passes: crawlAfter.passes,
+        lastCompletedPassAt: crawlAfter.lastCompletedPassAt,
+      },
     };
   });
 }

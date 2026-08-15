@@ -347,13 +347,50 @@ re-argued rather than assumed.
   every estimate was read exactly once, at creation, when it is unpriced
   (`total_amount: 0`) and undecided (`approval_status: null`), and never again. Approvals
   were invisible — ~5 in 6 won estimates sat frozen at `qualified`, and the funnel showed
-  a ~6% close rate against a real one near 30%. The fix is a rolling `created_at` re-read
-  (`ESTIMATE_REPULL_DAYS`, 120d) alongside the incremental pass; `estimateTouchedAt()` is
-  the option-aware "when did this really change", and feeds `updated_at_hcp` so
-  `attribution.run` re-derives late approvals. **Nothing about this was visible from
-  inside the app** — the sync reported success, row counts looked healthy, and only
-  comparing a lead against its estimate in HCP showed it. Treat "is this field really the
-  last-modified?" as a thing to verify per endpoint, not assume.
+  a ~6% close rate against a real one near 30%. `estimateTouchedAt()` is the option-aware
+  "when did this really change", and feeds `updated_at_hcp` so `attribution.run` re-derives
+  late approvals. **Nothing about this was visible from inside the app** — the sync reported
+  success, row counts looked healthy, and only comparing a lead against its estimate in HCP
+  showed it. Treat "is this field really the last-modified?" as a thing to verify per
+  endpoint, not assume.
+- **Estimates sync in two zones, and there is no server-side delta to be had (probed
+  2026-08-15, don't re-litigate without new evidence).** `updated_at[gte]`, `updated_at_min`,
+  `updated_at_after`, `modified_since` and `since` all return the full 15,249 rows —
+  identical to a parameter invented for the test — against a `scheduled_start_min` control
+  returning 47. **HCP silently ignores unknown query params**, which is why `arbor-reporting`
+  added `updated_at[gte]` and ripped it out 19h later, and why its `sort_field=updated_at` is
+  also inert (HCP's param is `sort_by`; reporting therefore pages `created_at`, not what its
+  docs claim). Options are not listable or sortable either (`sort_by=options.updated_at` →
+  *"You may not sort by"*), and there is no change feed — `/events` is the crew calendar.
+  - **Hot zone** (`ESTIMATE_HOT_PAGES`, 7 pages ≈ 1,400 newest ≈ 90 days), re-read every run.
+    Sized from the measured decay curve, not a guess: cohorts sampled across 2017–2026 show
+    100% of 26-day-old estimates changed in the last 30 days, 74% at 49d, 18% at 72d, then
+    ~1% from 113d onward. **The cliff is ~60 days, not the 120 the old window assumed.**
+  - **Cold zone** — `crawlEstimates`, a cursor walking the ENTIRE history a couple of pages
+    per run (`ESTIMATE_CRAWL_PAGES_PER_RUN`), wrapping forever; full pass ~1.6 days. It exists
+    because the change rate does NOT decay to zero: a 2017 estimate is as likely to move in a
+    given month as a 2024 one (~2% vs ~3%), which across ~10k aged rows is 100–300 changes a
+    month. No window of any width covers that. **Ascending on purpose** — `created_at` is
+    immutable so new rows append at the END and the cursor is stable; crawling descending
+    shifts rows between pages mid-pass and drops them silently. Cursor lives in `settings`
+    under `hcp.estimates.crawl`.
+  - Writes are skipped when nothing meaningful moved (`setWhere` on the upsert), so a pass
+    costs ~77 reads and a handful of writes rather than 15k. `raw` is deliberately excluded
+    from that comparison — HCP reshapes it during its own backend work, so diffing it would
+    mark nearly every row changed.
+  - **`estimateSync` on `/api/diagnostics` is the check that the above is actually working**:
+    our row count vs HCP's `total_items` (recorded by the crawl, so the endpoint stays a pure
+    DB read), plus hours since the last completed pass. Deletions are SOFT upstream, so drift
+    should sit at 0 forever and any divergence is a real gap, not noise.
+- **Deleting an estimate in HCP is a soft delete and it stays in the API forever.** There is
+  no `deleted` work_status and no header `deleted_at` — the only trace is every
+  `options[].status` being `deleted` (measured: 120 of 2,048 rows, 5.9%). In practice HCP
+  also sets the work_status to `user canceled`/`pro canceled`, so `CANCELLED_STATUSES` was
+  already excluding these from the RATE; `isDeletedEstimate` in `lib/estimates/countable.ts`
+  now tests the marker directly so a deleted estimate left at `needs scheduling` cannot be
+  LISTED as an open opportunity either. **Do not add a prune/delete path** — nothing legitimately
+  disappears upstream, so there is nothing to reconcile away, and the diagnostics drift number
+  is what would tell us if that ever changed. If it does: tombstone, never hard delete.
 - Spend sync is self-healing (`lib/sync/spend.ts`): rolling 35-day re-pull (platforms restate) + automatic cold-start backfill reaching to each platform's earliest lead (≤365d — spend with no leads to match is deliberately not fetched), keyed `(platform, external_campaign_id, date)`. No manual backfills.
 - **The ad platforms' UTM templates are part of this app's input contract, and they drifted
   (audited + fixed 2026-08-12).** Google Ads applies the most specific tracking template only —
