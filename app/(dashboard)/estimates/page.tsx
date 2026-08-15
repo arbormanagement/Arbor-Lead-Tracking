@@ -9,6 +9,7 @@ import { dateTime, dollars } from "@/lib/format";
 import { formatPhoneDisplay } from "@/lib/phone";
 import { pickDays, timeframeLabel } from "@/lib/timeframes";
 import { businessDate } from "@/lib/tz";
+import { TRACKING_STARTED_AT, TRACKING_STARTED_LABEL } from "@/lib/tracking-coverage";
 import { ViewControls } from "./view-controls";
 import { DIMS, parseGroups, type Dim } from "./view";
 import { stageClass, TYPE_META } from "../stage";
@@ -284,6 +285,15 @@ export default async function EstimatesPage({
       scheduled: sql<number>`count(*) filter (where ${hcpEstimates.scheduledStartHcp} is not null)::int`,
       won: sql<number>`count(*) filter (where ${hcpEstimates.outcome} = 'won')::int`,
       attributed: sql<number>`count(*) filter (where ${leads.id} is not null)::int`,
+      // Estimates WRITTEN before this app tracked anything. They could never have
+      // been attributed — the customer's call or form predates the CallRail cutover
+      // — so they land in Unattributed no matter how good the matching is.
+      //
+      // Counted rather than inferred from the window, because the window is not
+      // what decides it: an estimate created on 2 August with an appointment today
+      // sits inside a fully-covered 7-day window and is still unattributable. That
+      // is why the existing coverage notice does not catch this case.
+      createdBeforeTracking: sql<number>`count(*) filter (where ${hcpEstimates.createdAtHcp} < ${TRACKING_STARTED_AT})::int`,
       wonCents: sql<number>`coalesce(sum(coalesce(nullif(${hcpEstimates.approvedAmountCents},0), ${hcpEstimates.totalAmountCents})) filter (where ${hcpEstimates.outcome} = 'won'), 0)::int`,
     })
     .from(hcpEstimates)
@@ -291,6 +301,7 @@ export default async function EstimatesPage({
     .where(scope);
 
   const total = agg?.total ?? 0;
+  const preTracking = agg?.createdBeforeTracking ?? 0;
   const scheduled = agg?.scheduled ?? 0;
   const won = agg?.won ?? 0;
   // Off SCHEDULED, never off the listed total — see closeRate().
@@ -465,6 +476,16 @@ export default async function EstimatesPage({
                 {total > scheduled && <> — the {total - scheduled} with no appointment booked are listed but not counted</>}.
                 {" "}{agg?.attributed ?? 0} of {total} traced to a tracked contact; the rest are repeat business,
                 referrals and estimates written in the field, shown as Unattributed.
+              </span>
+            </p>
+          )}
+          {preTracking > 0 && (
+            <p className="page-sub" style={{ marginTop: 2 }}>
+              <span className="muted">
+                <strong>{preTracking} of {total} were created before {TRACKING_STARTED_LABEL}</strong>, when call and web
+                tracking did not exist — so they cannot be attributed and count as Unattributed whatever the matching
+                does. This bites even on a window that looks covered: an estimate written in July with an appointment
+                this week still lands here. It decays on its own as that backlog works through.
               </span>
             </p>
           )}
