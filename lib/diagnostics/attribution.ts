@@ -106,6 +106,23 @@ export async function attributionBreakdown(rawDays = 90) {
     FROM classified
   `);
 
+  // "Attributed" is not the same as "usefully attributed". A call to a static
+  // published number resolves through `tracking_numbers.static_source_id`, so it
+  // lands on a real source row — but if that row is `direct` or `other`, the
+  // estimate counts as attributed while telling you nothing you can act on.
+  // Splitting the attributed bucket by source is what stops a healthy-looking
+  // percentage from hiding a pile of `direct`.
+  const bySource = await db.execute(sql`
+    SELECT coalesce(s.key, '(none)') AS source_key, count(*)::int AS n
+    FROM hcp_estimates e
+    JOIN leads l ON l.hcp_estimate_id = e.id AND l.is_spam = false
+    LEFT JOIN sources s ON s.id = l.source_id
+    WHERE e.created_at_hcp >= ${since}
+      AND (e.status IS NULL OR e.status NOT IN ('pro canceled', 'user canceled'))
+    GROUP BY 1
+    ORDER BY 2 DESC
+  `);
+
   const r = (rows.rows?.[0] ?? {}) as Record<string, number | string[] | null>;
   const n = (k: string) => Number(r[k] ?? 0);
 
@@ -133,6 +150,11 @@ export async function attributionBreakdown(rawDays = 90) {
       noIdentifiersAtAll: n("no_identifiers_at_all"),
     },
     unlinkedSample: r.unlinked_sample ?? [],
+    // Which channels the attributed ones landed on. `direct` and `other` are real
+    // source rows, so they inflate "attributed" without being actionable.
+    attributedBySource: Object.fromEntries(
+      (bySource.rows as Array<{ source_key: string; n: number }>).map((x) => [x.source_key, Number(x.n)]),
+    ),
     note:
       "reachedUsButUnlinked is the fixable bucket: a non-spam contact exists from one of this customer's " +
       "phone numbers or emails, but no lead is linked to the estimate. preTracking decays on its own. " +
