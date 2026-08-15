@@ -1,4 +1,4 @@
-import { and, inArray, isNotNull, isNull, notInArray, or, type SQL } from "drizzle-orm";
+import { and, inArray, isNotNull, isNull, notInArray, or, sql, type SQL } from "drizzle-orm";
 import { hcpEstimates } from "@/lib/db/schema";
 
 /**
@@ -41,11 +41,41 @@ export const CANCELLED_STATUSES = ["pro canceled", "user canceled"];
  * population for asking "how many appointments are we losing before we get there?",
  * which is a real operational question. They just are not opportunities.
  */
+/**
+ * Every option on the estimate is marked `deleted` — i.e. it was deleted in HCP.
+ *
+ * HCP soft-deletes: a deleted estimate is still returned by the API, forever. There
+ * is no `deleted` work_status and no `deleted_at` on the header — the only trace is
+ * `options[].status`. Measured 2026-08-15 over 2,048 estimates spanning 2017–2026:
+ * 120 (5.9%) have every option deleted, and all of them are still listed.
+ *
+ * In practice HCP also sets the work_status to `user canceled` / `pro canceled` when
+ * you delete, so `CANCELLED_STATUSES` was already catching these for the RATE — none
+ * of the 120 passed `isCountableEstimate`. This is belt-and-braces for the LIST:
+ * `isLiveEstimate` tests only the work_status, so a deleted estimate left at
+ * `needs scheduling` would render as an "unscheduled" opportunity. Testing the
+ * deletion marker directly means that cannot happen whatever HCP does with the header.
+ *
+ * Uses jsonb containment rather than a NOT EXISTS subquery so it stays a single
+ * expression that composes into the shared predicates below. `<@ '["deleted"]'`
+ * is true only when EVERY element of the projected status array is "deleted".
+ */
+export const isDeletedEstimate: SQL = sql`
+  ${hcpEstimates.options} IS NOT NULL
+  AND jsonb_typeof(${hcpEstimates.options}) = 'array'
+  AND jsonb_array_length(${hcpEstimates.options}) > 0
+  AND jsonb_path_query_array(${hcpEstimates.options}, '$[*].status') <@ '["deleted"]'::jsonb
+`;
+
+/** Its negation, for composing into the "still counts" predicates. */
+const notDeleted: SQL = sql`NOT (${isDeletedEstimate})`;
+
 export const isCountableEstimate: SQL = and(
   isNotNull(hcpEstimates.scheduledStartHcp),
   // `status IS NULL OR status NOT IN (...)` — spelled out because SQL NULL is not
   // false, so a bare NOT IN would silently drop every estimate with no work_status.
   or(isNull(hcpEstimates.status), notInArray(hcpEstimates.status, CANCELLED_STATUSES)),
+  notDeleted,
 )!;
 
 /**
@@ -82,9 +112,12 @@ export const isCancelledEstimate: SQL = and(
  * never scheduled — none of them priced — and the page rendered none of them, so work
  * that exists in HousecallPro was missing from the app entirely.
  */
-export const isLiveEstimate: SQL = or(
-  isNull(hcpEstimates.status),
-  notInArray(hcpEstimates.status, CANCELLED_STATUSES),
+export const isLiveEstimate: SQL = and(
+  or(isNull(hcpEstimates.status), notInArray(hcpEstimates.status, CANCELLED_STATUSES)),
+  // See `isDeletedEstimate`: this predicate tests the work_status, and a deleted
+  // estimate whose header did not go to `canceled` would otherwise be LISTED as
+  // an unscheduled opportunity even though it no longer exists to the business.
+  notDeleted,
 )!;
 
 /**

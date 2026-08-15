@@ -85,6 +85,26 @@ export interface HcpEstimateDTO {
   raw?: unknown;
 }
 
+/**
+ * One slice of the cold-zone estimate crawl (see `crawlEstimates`). The cursor is
+ * returned rather than held by the provider so it can be persisted — a crawl that
+ * forgot its position on every deploy would re-read the oldest pages forever and
+ * never reach the newer ones.
+ */
+export interface HcpEstimateCrawlPage {
+  estimates: HcpEstimateDTO[];
+  /** Page to resume from next run. Resets to 1 when `wrapped`. */
+  nextPage: number;
+  /** The crawl ran off the end of the account — a full pass just completed. */
+  wrapped: boolean;
+  /**
+   * The provider's own count of all estimates, as reported on the last response.
+   * Stored so `/api/diagnostics` can compare it against our row count without
+   * making an upstream call of its own.
+   */
+  totalItems: number | null;
+}
+
 export interface SpendProvider {
   readonly name: string;
   /** ad_spend.platform values this provider writes — used for cold-start detection. */
@@ -101,4 +121,11 @@ export interface RevenueProvider {
   listJobs(opts: { sinceDays: number }): Promise<HcpJobDTO[]>;
   /** Estimates updated within the window, with won/approved amounts folded in. */
   listEstimates(opts: { sinceDays: number }): Promise<HcpEstimateDTO[]>;
+  /**
+   * The cold zone: a few pages of a cursor walk over the ENTIRE estimate history,
+   * resumed from `startPage`. `listEstimates` only covers recent work; this is what
+   * keeps estimates older than the hot zone in sync, which no time window can do
+   * because the provider's change rate never decays to zero with age.
+   */
+  crawlEstimates(opts: { startPage: number; pages: number }): Promise<HcpEstimateCrawlPage>;
 }

@@ -1,7 +1,13 @@
 import { getPlatformCreds } from "@/lib/credentials";
 import { env } from "@/lib/env";
 import { fetchWithRetry } from "./http";
-import type { HcpCustomerDTO, HcpEstimateDTO, HcpJobDTO, RevenueProvider } from "./types";
+import type {
+  HcpCustomerDTO,
+  HcpEstimateCrawlPage,
+  HcpEstimateDTO,
+  HcpJobDTO,
+  RevenueProvider,
+} from "./types";
 
 /**
  * Direct HousecallPro REST client. HCP is the ROI revenue source of truth, so it
@@ -17,26 +23,39 @@ interface HcpConfig {
   base: string;
 }
 
+/** HCP's maximum `page_size`. Verified against the live API: 500 is rejected with
+ *  "Size must be less than or equal to 200". */
+const HCP_MAX_PAGE_SIZE = 200;
+
 /** Floor for the /jobs schedule window. Wide enough that a job scheduled months
  *  ago and completed today still re-syncs — the case a tight window missed — while
  *  keeping the pull bounded server-side. */
 const JOBS_MIN_WINDOW_DAYS = 180;
 
 /**
- * How far back `/estimates` is re-read in full on EVERY run, keyed on `created_at`.
- * See `listEstimates` for why an `updated_at` window cannot work here.
+ * The "hot zone": how many pages of newest-first estimates are re-read on EVERY
+ * run. See `listEstimates` for why an `updated_at` window cannot work here.
  *
- * Sized off the observed decision window: Arbor's estimates settle (approve,
- * decline, or expire) within roughly 30 days of creation — the slowest in the
- * 2026-08-13 sample took 34. 120 days is ~4× that, and matches the 120-day
- * lookback `attribution.run` already scans, so nothing re-read here lands outside
- * the window that would re-derive it. At ~500 estimates/month that is ~2,000 rows
- * (20 pages) per run, against a ceiling of `pageCeilingFor(120)` = 60 — and if
- * volume ever outgrows that, `paginate` fails the run rather than truncating it.
+ * Sized from the measured decay curve rather than a guess (2026-08-15, sampling
+ * creation cohorts across the full 2017–2026 history — what fraction of a cohort
+ * had any option change in the last 30 days):
+ *
+ *   age  17d ...... 100%      age  72d ......  18%
+ *   age  26d ...... 100%      age 113d ......   1%
+ *   age  49d ......  74%      age 443d ......   1%
+ *
+ * The cliff is at roughly 60 days, NOT the 120 this used to assume. 7 pages is
+ * ~1,400 estimates ≈ 90 days at current volume — past the cliff with margin, and
+ * enough to cover HCP's nightly expiry sweep, which fires 30–45 days after
+ * creation (05:01 UTC, visible as option `updated_at` values in a tight run).
+ *
+ * Everything older is covered by `crawlEstimates` instead. Deliberately a PAGE
+ * count, not a day count: it is what bounds the request cost per run, and the
+ * cost is the thing this number exists to control.
  */
-const ESTIMATE_REPULL_DAYS = 120;
+const ESTIMATE_HOT_PAGES = 7;
 
-/** Page ceiling for a routine pull. 50 pages x 100 = 5,000 rows. */
+/** Page ceiling for a routine pull. 50 pages x 200 = 10,000 rows. */
 const DEFAULT_MAX_PAGES = 50;
 
 /**
@@ -93,6 +112,38 @@ class HousecallProProvider implements RevenueProvider {
    * `updated_at` off a list sorted by `created_at` would stop on the first row
    * that happens to be old, mid-list, and silently drop the rest.
    */
+  /**
+   * Read exactly `pages` pages and stop, with no truncation semantics.
+   *
+   * Deliberately separate from `paginate`, which throws when it exhausts its page
+   * ceiling on a full page — correct there, because the ceiling means "this window
+   * held more than we expected" and silence would look like completeness. Here the
+   * page count IS the window: the hot zone is defined as "the newest N pages", so
+   * stopping on a full page is the normal, intended outcome. Overloading `paginate`
+   * with a "ceiling is fine actually" flag would have made every future reader work
+   * out which of the two meanings applied at each call site.
+   */
+  private async paginateFixed(
+    cfg: HcpConfig,
+    path: string,
+    listKey: string,
+    query: Record<string, string | number>,
+    pages: number,
+  ): Promise<Array<Record<string, unknown>>> {
+    const out: Array<Record<string, unknown>> = [];
+    for (let page = 1; page <= pages; page++) {
+      const body = await this.get<Record<string, unknown>>(cfg, path, {
+        ...query,
+        page,
+        page_size: HCP_MAX_PAGE_SIZE,
+      });
+      const items = (body[listKey] as Array<Record<string, unknown>>) ?? [];
+      out.push(...items);
+      if (items.length < HCP_MAX_PAGE_SIZE) break; // ran out of data
+    }
+    return out;
+  }
+
   private async paginate(
     cfg: HcpConfig,
     path: string,
@@ -103,7 +154,10 @@ class HousecallProProvider implements RevenueProvider {
     maxPages: number = DEFAULT_MAX_PAGES,
   ): Promise<Array<Record<string, unknown>>> {
     const out: Array<Record<string, unknown>> = [];
-    const pageSize = 100;
+    // 200 is HCP's hard maximum — `page_size=500` is rejected with
+    // "Size must be less than or equal to 200". Every list endpoint here was
+    // paging at 100, i.e. twice the requests for the same rows.
+    const pageSize = HCP_MAX_PAGE_SIZE;
     let page = 1;
     for (; page <= maxPages; page++) {
       const body = await this.get<Record<string, unknown>>(cfg, path, { ...query, page, page_size: pageSize });
@@ -216,21 +270,27 @@ class HousecallProProvider implements RevenueProvider {
    * That is not a slow drift: it silently froze ~5 in 6 won estimates at
    * `qualified`, so the funnel showed a ~6% close rate against a real one near 30%.
    *
-   * The fix is a rolling re-read keyed on `created_at`, in the same spirit as the
-   * spend sync's 35-day re-pull: an estimate young enough to still be in play is
-   * re-read on every run, so a decision lands within the hour however it was made.
-   * The `updated_at` pass is kept alongside it — it is one page, and it is the only
-   * one that catches a header-level change (reschedule, cancellation) on an
-   * estimate that has aged out of the re-read window.
+   * The fix is a re-read keyed on `created_at`: an estimate young enough to still
+   * be in play is re-read on every run, so a decision lands within the hour however
+   * it was made. The `updated_at` pass is kept alongside it — it is one page, and it
+   * is the only thing that catches a header-level change (reschedule, cancellation)
+   * on an old estimate quickly, rather than waiting for the crawler to reach it.
+   *
+   * **This covers the HOT zone only** — the newest `ESTIMATE_HOT_PAGES` pages.
+   * Everything older is `crawlEstimates`, because the measured change rate never
+   * decays to zero: a 2017 estimate is as likely to change in a given month as a
+   * 2024 one (~2% vs ~3%). A window of any width leaves that uncovered.
    */
   async listEstimates({ sinceDays }: { sinceDays: number }): Promise<HcpEstimateDTO[]> {
     const cfg = await this.config();
     const cutoff = Date.now() - sinceDays * 86_400_000;
-    // Explicit backfills widen the re-read rather than narrowing it — a caller
-    // asking for 365 days wants 365 days of estimates re-derived, not 120.
-    const repullMs = Date.now() - Math.max(sinceDays, ESTIMATE_REPULL_DAYS) * 86_400_000;
 
-    const ceiling = pageCeilingFor(Math.max(sinceDays, ESTIMATE_REPULL_DAYS));
+    // An explicit backfill (`sinceDays` passed by hand) still widens the hot zone
+    // rather than narrowing it — a caller asking for 365 days wants 365 days of
+    // estimates re-derived, not whatever the hot page count happens to reach.
+    const hotPages = Math.max(ESTIMATE_HOT_PAGES, Math.ceil(sinceDays / 12));
+    const ceiling = pageCeilingFor(sinceDays);
+
     const [byUpdated, byCreated] = await Promise.all([
       this.paginate(
         cfg,
@@ -241,34 +301,96 @@ class HousecallProProvider implements RevenueProvider {
         undefined,
         ceiling,
       ),
-      this.paginate(
+      // No date cutoff: the hot zone is a fixed page count. Early-stopping on a
+      // timestamp here is exactly what broke this sync — the field it would stop
+      // on does not move when an option is approved.
+      this.paginateFixed(
         cfg,
         "/estimates",
         "estimates",
         { sort_by: "created_at", sort_direction: "desc" },
-        repullMs,
-        (r) => parseDate(r.created_at),
-        ceiling,
+        hotPages,
       ),
     ]);
 
     // The two passes overlap heavily; keep one row per id.
     const merged = new Map<string, Record<string, unknown>>();
     for (const r of [...byUpdated, ...byCreated]) merged.set(String(r.id), r);
+    return [...merged.values()].map(mapEstimate);
+  }
 
-    return [...merged.values()]
-      .filter((e) => {
-        const created = parseDate(e.created_at);
-        // Inside the re-read window: always keep, whatever the timestamps say —
-        // this pass exists precisely because they under-report.
-        if (created && created.getTime() >= repullMs) return true;
-        // Older: keep only if something genuinely moved. `estimateTouchedAt`
-        // reads the options too, so a late approval on an aged estimate is not
-        // discarded here just because the header stayed still.
-        const touched = estimateTouchedAt(e);
-        return !touched || touched.getTime() >= cutoff;
-      })
-      .map(mapEstimate);
+  /**
+   * The COLD zone: a cursor that walks every estimate in the account, a few pages
+   * per run, and wraps forever.
+   *
+   * Why a crawler rather than a wider window. HCP offers no server-side `updated_at`
+   * filter (verified 2026-08-15: `updated_at[gte]`, `updated_at_min`,
+   * `updated_at_after`, `modified_since` and `since` all return the full 15,247 rows,
+   * identical to a parameter invented for the test, against a `scheduled_start_min`
+   * control that returns 47 — HCP silently ignores unknown query params). Options are
+   * not listable or sortable in their own right (`sort_by=options.updated_at` →
+   * "You may not sort by"), and there is no change feed. So the only way to learn that
+   * an old estimate moved is to read it.
+   *
+   * And old estimates do move: sampling creation cohorts across 2017–2026, every
+   * cohort had ~1–3% of its rows touched in the last 30 days, flat all the way back —
+   * the 2017 cohort's most recent touch was two days before this was written. Across
+   * ~10,000 aged estimates that is 100–300 changes a month.
+   *
+   * **Ascending, deliberately.** `created_at` is immutable, so new estimates append
+   * at the END and a page cursor is stable across runs. Crawling descending while
+   * rows are inserted at the front shifts records between pages mid-pass and skips
+   * them silently. Verified: 0 ordering inversions and 0 exact-timestamp ties across
+   * a 200-row page, and deep pagination works to the last page (page 77 returns the
+   * tail, 78 is empty — no offset cap).
+   *
+   * Pages are ~7s each, so the per-run page count is what keeps this inside the job's
+   * timeout: a full 77-page pass is ~9 minutes, against a 10-minute budget shared with
+   * customers and jobs. That is why this is a cursor and not a nightly full sweep.
+   */
+  async crawlEstimates({
+    startPage,
+    pages,
+  }: {
+    startPage: number;
+    pages: number;
+  }): Promise<HcpEstimateCrawlPage> {
+    const cfg = await this.config();
+    const out: Array<Record<string, unknown>> = [];
+    let page = Math.max(1, startPage);
+    let wrapped = false;
+    let totalItems: number | null = null;
+
+    for (let i = 0; i < pages; i++) {
+      const body = await this.get<Record<string, unknown>>(cfg, "/estimates", {
+        page,
+        page_size: HCP_MAX_PAGE_SIZE,
+        sort_by: "created_at",
+        sort_direction: "asc",
+      });
+      const items = (body.estimates as Array<Record<string, unknown>>) ?? [];
+      // `total_items` rides along on every response and is the authority for the
+      // reconciliation check. Read from the LAST page fetched so a pass records the
+      // freshest count it saw.
+      if (typeof body.total_items === "number") totalItems = body.total_items;
+
+      if (items.length === 0) {
+        // Ran off the end: the pass is complete. Wrap to the start rather than
+        // stalling, and let the caller record the completed pass.
+        wrapped = true;
+        page = 1;
+        break;
+      }
+      out.push(...items);
+      page++;
+    }
+
+    return {
+      estimates: out.map(mapEstimate),
+      nextPage: page,
+      wrapped,
+      totalItems,
+    };
   }
 }
 
