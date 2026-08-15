@@ -118,8 +118,20 @@ unions them into one timeline. There is no per-channel inbox table.
 1. Call tracking on **static** numbers (current scaffold). 2. HCP revenue + spend sync + ROI. 3. `track.js` web/form. 4. Pooled DNI. 5. FB leadgen + Deepgram transcription + spam. 6. CallRail decommission.
 
 **Surfaces (all estimate-anchored as of 2026-08-14):** `/` overview · `/inbox` threads ·
-`/estimates` opportunities · `/sources` channels · `/roi` campaigns · `/pages` landing-page
-CRO. `/leads`, `/calls`, `/numbers`, `/spend` are redirects to their new homes.
+`/estimates` opportunities · `/sources` channels + campaigns + landing pages.
+`/leads`, `/calls`, `/numbers`, `/spend`, `/roi`, `/pages` are redirects to their new homes.
+
+**`/sources` is one page with three VIEWS** (`?view=channel|campaign|page`, 2026-08-15).
+Campaigns and Landing pages were their own nav items; they are one question at three
+grains, and three tabs meant three timeframes to keep in step by hand. **The views share
+a shell, not a table, deliberately:** channel + campaign read `roi_daily` and carry spend,
+while the page view reads `web_sessions` + `leads` and has none — cost attaches to a
+campaign, not a page, and its whole point is a RATE, which needs the visitors who did NOT
+convert in the denominator (`roi_daily` holds outcomes only, so they aren't in it).
+Forcing one table would have meant an empty Spend column or dropping that rate. Note the
+two windows differ: channel/campaign use `roi_daily`'s BUSINESS date, the page view uses
+raw session/lead timestamps, so totals won't reconcile at a window edge. Views live in
+`app/(dashboard)/sources/{channel,campaign,page}-view.tsx` with the shell in `page.tsx`.
 
 **Phase 6 lives in the `arbor-general` repo** — `callrail-migration/` (plan, number
 inventory, transfer mechanics) plus a summary in that repo's CLAUDE.md. It is vendor and

@@ -47,7 +47,7 @@ export const dynamic = "force-dynamic";
  * filled Unattributed with records nothing could have matched.
  *
  * Two consequences worth stating rather than discovering:
- *  · This will NOT reconcile row-for-row with /sources or /roi, which bucket on the
+ *  · This will NOT reconcile row-for-row with /sources, which buckets on the
  *    CONTACT date so outcomes land beside the spend that produced them. Both are
  *    right for their own question; see lib/estimates/countable.ts.
  *  · A close rate over recently-CREATED estimates is immature by construction —
