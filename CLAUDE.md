@@ -360,9 +360,36 @@ re-argued rather than assumed.
   still its number, so calls attribute exactly as before. The 157 pre-cutover rows were
   deleted at Justin's direction; that history is to be re-imported from CallRail, and until
   it is, **Local Services shows near-zero attributed revenue for July/early August**.
-- **~41% of estimate customers have no lead on ANY channel** (measured 2026-08-14 over 80
-  recent estimates). That is mostly real — referrals, repeat business, walk-ups — not a
-  tracking failure, and no amount of attribution engineering reaches it. `self_reported_source`
+- **The "~41% of estimates have no lead" figure was a WINDOW ARTEFACT — the real rate is
+  ~18% (`/api/diagnostics/attribution`, measured 2026-08-15).** The original number was taken
+  over "80 recent estimates" by appointment date, most of which were CREATED before the
+  8 August CallRail cutover and so could never have been attributed. Over a 7-day created
+  window (entirely post-cutover): **85 estimates, 70 attributed (82%)**, and `leadButNoSource`
+  is **0** — there has never been a case where we tracked someone and failed to classify their
+  source, so the DNI swap and `classifySource` are working. Any window reaching past 8 August
+  measures the cutover, not the tracking: at 30d, 269 of 285 unattributed are pre-tracking; at
+  365d, 2,501 of 2,517.
+  - **The number that actually matters is not "attributed" but "attributed to a channel you
+    can act on".** `direct` and `other` are real `sources` rows, so a call to a static published
+    number counts as attributed while saying nothing. Week of 2026-08-15: `google/cpc` 14,
+    `direct` 13, `gbp` 13, `google/lsa` 13, `facebook/paid` 10, `organic/seo` 5. So **26 of 85
+    (31%) — 12 with no contact at all plus 13 `direct` plus 1 `other` — cannot be traced to a
+    spendable channel.** That is the real target for a self-reported-source process, and the
+    baseline to measure it against.
+  - **`reachedUsButUnlinked` is small and is NOT accruing damage** (3 when checked). All three
+    were explained: one was an estimate created 20 minutes earlier still waiting for the hourly
+    `attribution` tick, and two were customers who generated more estimates than tracked
+    enquiries — see the `matchLeadsToEstimates` note below. Expect a couple of in-flight rows
+    in this bucket at any moment; it is a rolling window, not a leak.
+- **One enquiry can only ever credit ONE estimate**, because `matchLeadsToEstimates` claims each
+  lead exactly once. A customer who submits one form and gets two estimates from it leaves the
+  second unattributed by construction (observed: a Google Ads form lead at 15:03 producing
+  estimates at 15:03 and 22:22, only the first credited). This systematically understates paid
+  channels wherever one visit produces several estimates. Not fixed — relaxing it risks
+  double-counting revenue against a single click, so it needs a deliberate decision rather than
+  a quiet change.
+- Repeat customers are the other half of the unattributed tail and are genuinely unreachable by
+  tracking: one customer in the sample had **20 estimates going back to 2018**. `self_reported_source`
   is the only instrument that does; it is now captured from web and Meta forms as well as call
   transcripts, deliberately before the website has the field. Note also that under LAST touch a
   repeat customer is unattributed BY DESIGN; both models are stored, so switching to first
