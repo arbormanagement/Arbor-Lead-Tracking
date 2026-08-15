@@ -13,7 +13,8 @@ import type { AnyPgColumn } from "drizzle-orm/pg-core";
  *
  * Expressed as SQL rather than TypeScript so that grouping and display use the same
  * value by construction — normalising at render time is exactly how the two came
- * apart. It lives here rather than inline so /sources and /pages cannot disagree
+ * apart. It lives here rather than inline so the Channels and Landing-pages views
+ * of /sources cannot disagree
  * about what a page is.
  *
  * Lowercased on the way through: paths are case-sensitive in principle, but a

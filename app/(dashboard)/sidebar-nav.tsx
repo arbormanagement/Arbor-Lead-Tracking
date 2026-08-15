@@ -12,13 +12,11 @@ const NAV: Array<{ href: string; label: string; ic: string; section?: string }> 
   // so repeat business and referrals appear instead of being invisible.
   { href: "/inbox", label: "Inbox", ic: "☎" },
   { href: "/estimates", label: "Estimates", ic: "✦" },
+  // Sources covers channel, campaign and landing page as views on one page. They
+  // were three nav items until 2026-08-15; they are one question at three grains,
+  // and separate tabs meant three timeframes to keep in step by hand. /roi and
+  // /pages redirect into the matching view.
   { href: "/sources", label: "Sources", ic: "◈" },
-  // Campaign sits beside source rather than nested under it: it is the level
-  // budget actually moves at, so it is a destination, not a drill-down.
-  { href: "/roi", label: "Campaigns", ic: "◉" },
-  // Pages is CRO, not attribution — a rate, with no spend column. It sits after the
-  // money pages because it answers a different question about the same traffic.
-  { href: "/pages", label: "Pages", ic: "▤" },
   { href: "/settings", label: "Settings", ic: "⚙", section: "Admin" },
 ];
 

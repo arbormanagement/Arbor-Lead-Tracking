@@ -11,7 +11,7 @@
  * **The failure mode this exists to prevent is a silent one, and it is severe.**
  * Ad spend is complete for the whole window — the spend sync does a rolling 35-day
  * re-pull and a cold-start backfill reaching to each platform's earliest lead. So a
- * 30-day view on `/sources` or `/roi` puts THIRTY days of spend beside SIX days of
+ * 30-day view on `/sources` puts THIRTY days of spend beside SIX days of
  * attributed outcomes and calls the quotient ROAS. Every paid channel therefore
  * reads far worse than it is, with nothing on screen saying so.
  *
