@@ -56,8 +56,16 @@ can optimize toward **won revenue**, not just raw lead volume.
   the identical problem, but LSA bidding does not run through these conversion
   actions, and a hashed phone can match a Search click by the same person —
   crediting Search for an LSA lead. Add it as a deliberate decision, not a default.
-- **Events:** `qualified` (value = quote) and `won` (value = approved amount).
-  Google → two conversion actions; Meta → `Lead` / `Purchase`.
+- **Events:** four stages — `lead` (the call or form itself), `qualified` (an estimate
+  was written), `scheduled` (that estimate got a date), `won` (an option was approved).
+  Google → one conversion action each; Meta → `Lead` / — / `Schedule` / `Purchase`
+  (`qualified` has no Meta analogue).
+- **Only `won` carries a dollar value** (2026-08-17); the other three send 0. A quote is
+  not revenue, and the earlier stages could not report one honestly anyway: HCP creates
+  estimates UNPRICED and an export row only ever reaches `sent` once, so the value would
+  be frozen at whatever existed when the cron happened to run. Measured before the fix:
+  $1,400 across 15 real estimates. Inert while bidding on conversion COUNT, and a trap
+  under Maximize Conversion Value / tROAS.
 - **Conversion time** is the HCP estimate's created/approved timestamp, not the lead
   time — an estimate approved weeks later reports at approval.
 - **Idempotency:** `conversion_exports` table, unique `(lead, platform, event)`.
@@ -72,19 +80,19 @@ can optimize toward **won revenue**, not just raw lead volume.
 1. ✅ **Conversion actions created 2026-07-23** (type `UPLOAD_CLICKS`, secondary /
    observe-only, one-per-click, 90-day click lookback, transaction-specific values):
    - **"Estimate Created"** — category `QUALIFIED_LEAD`, id `7695123530` (fires on
-     lead status qualified/quoted, value = quote amount).
+     lead status qualified/quoted).
    - **"Estimate Won"** — category `CONVERTED_LEAD`, id `7695519049` (fires on won,
      value = approved amount).
    Verified after creation: `primaryForGoal=false` on both, and the primary
    campaign's (23633267649) new `QUALIFIED_LEAD`/`CONVERTED_LEAD` goals are
    **not** biddable — existing bidding untouched.
-2. **Still planned:** a dedicated **Submit-Form** conversion action to send web-form
-   leads to Google Ads (separate from the phone-call ones CallRail currently feeds).
-3. **TODO:** in **Settings → Integrations → Google Ads**, hit **Choose from
-   account** under the conversion-action fields and pick **Estimate Created**
-   (`7695123530`) for *Qualified Lead* and **Estimate Won** (`7695519049`) for
-   *Won Estimate* — the picker lists the account's import (upload) actions via
-   `/api/settings/google-ads/conversion-actions`. Manual ID paste still works.
+   **Superseded 2026-08-17** on both counts: `QUALIFIED_LEAD ~ WEBSITE` is now the
+   campaign's ONLY biddable goal, and Estimate Created no longer sends a value —
+   only `won` does. See CLAUDE.md for the reasoning and the measurements behind it.
+2. ~~**Still planned:** a dedicated **Submit-Form** conversion action.~~ Obsolete —
+   the `lead` stage covers web-form leads, so a separate action would double-count.
+3. ~~**TODO:** pick the conversion actions in Settings → Integrations.~~ Done; all
+   four ids resolve from env (`GOOGLE_ADS_CONV_{LEAD,QUALIFIED,SCHEDULED,WON}`).
    Leaving one blank disables just that event.
 4. **No new token needed** — the Ads OAuth scope (`adwords`) is already read+write;
    the existing refresh token can upload. Developer token must have Standard access.
