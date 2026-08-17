@@ -19,6 +19,11 @@ interface ProvisionOpts {
   tollFree?: boolean;
   /** Import an already-owned number instead of buying one. */
   importPhoneNumber?: string;
+  /**
+   * Import a number whose webhooks already point at another app, overwriting
+   * them. Refused by default — see assertImportIsSafe.
+   */
+  forceImport?: boolean;
   isStatic?: boolean;
   staticSourceId?: string | null;
   location?: Loc;
@@ -65,6 +70,62 @@ export async function searchAvailableNumbers(opts: {
     locality: n.locality ?? null,
     region: n.region ?? null,
   }));
+}
+
+/**
+ * URLs that mean "nothing is listening here" — safe to overwrite on import.
+ * Twilio stamps its demo TwiML onto a freshly bought number, and the forward
+ * twimlet is our own fallback, so neither indicates another app owns this number.
+ */
+const INERT_WEBHOOK_HOSTS = new Set(["demo.twilio.com", "twimlets.com"]);
+
+function isForeignWebhook(url: string | null | undefined, base: string): boolean {
+  if (!url) return false;
+  try {
+    const host = new URL(url).host;
+    if (INERT_WEBHOOK_HOSTS.has(host)) return false;
+    return host !== new URL(base).host;
+  } catch {
+    return false; // unparseable — not evidence of another app
+  }
+}
+
+/**
+ * Refuse to import a number that is already wired to something else.
+ *
+ * `provisionNumber` overwrites voice, SMS, status and fallback in one update, so
+ * importing a number another system is using silently steals it. Owning a number
+ * on the Twilio account is NOT evidence it is spare.
+ *
+ * Checked per channel, because they fail independently and a number can be idle
+ * on one while live on another. On 2026-08-17 +16183103486 was imported as a
+ * "spare" on the strength of its voice_url being Twilio's demo page — its
+ * sms_url pointed at the Arbor MCP and it was the live review-request SMS line.
+ * Inbound customer replies went to the wrong handler until it was restored.
+ */
+function assertImportIsSafe(
+  owned: { phoneNumber: string; voiceUrl?: string | null; smsUrl?: string | null; statusCallback?: string | null },
+  base: string,
+  force?: boolean,
+) {
+  if (force) return;
+  const conflicts = (
+    [
+      ["voice_url", owned.voiceUrl],
+      ["sms_url", owned.smsUrl],
+      ["status_callback", owned.statusCallback],
+    ] as const
+  ).filter(([, url]) => isForeignWebhook(url, base));
+
+  if (conflicts.length === 0) return;
+
+  throw new Error(
+    `${owned.phoneNumber} is already in use by another application and was NOT imported. ` +
+      conflicts.map(([field, url]) => `${field} -> ${url}`).join("; ") +
+      `. Importing rewrites every webhook on the number, which would break whatever is serving those. ` +
+      `Confirm the number is genuinely unused (check recent traffic on EVERY channel, not just the one that looks idle), ` +
+      `then re-run with forceImport: true.`,
+  );
 }
 
 async function webhookBase(): Promise<string> {
@@ -166,6 +227,9 @@ export async function provisionNumber(opts: ProvisionOpts) {
       limit: 1,
     });
     if (!owned) throw new Error(`Number ${opts.importPhoneNumber} is not owned by this Twilio account`);
+    // Owning it is not the same as it being spare — check nothing else is served
+    // by it BEFORE the update below overwrites every webhook.
+    assertImportIsSafe(owned, base, opts.forceImport);
     const updated = await client.incomingPhoneNumbers(owned.sid).update(config);
     sid = updated.sid;
     phoneNumber = updated.phoneNumber;
