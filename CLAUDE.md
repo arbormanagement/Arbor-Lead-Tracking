@@ -247,8 +247,10 @@ exactly matches the exporter's 90-day window, so nothing is truncated at the far
 | scheduled | 7714132224 | Estimate Scheduled | BOOK_APPOINTMENT |
 | won | 7695519049 | Estimate Won | CONVERTED_LEAD |
 
-**✅ DONE — `Lead Created` is live as the biddable signal on `Search | Tree Services`**
-(verified 2026-08-13). The 2026-08-10 decision below has been carried out.
+**✅ `Estimate Created` is THE biddable signal on `Search | Tree Services` — and the ONLY
+one** (switched and verified 2026-08-17; it was `Lead Created` from 2026-08-13). The
+campaign now has exactly one biddable goal, `QUALIFIED_LEAD ~ WEBSITE`. Rationale and the
+four goals that were switched off are below.
 
 **⚠️ Do NOT read `conversion_action.include_in_conversions_metric` to answer "is this
 bidding?" — it is false on all four and is not the whole story.** That field reflects the
@@ -259,21 +261,22 @@ together with `conversion_action.primary_for_goal`. All four actions are `origin
 
 | goal (category ~ origin) | action | account | campaign 23633267649 | bidding? |
 |---|---|---|---|---|
-| `CONTACT ~ WEBSITE` | Lead Created (`primary_for_goal: true`) | secondary | **biddable** | **YES** |
-| `QUALIFIED_LEAD ~ WEBSITE` | Estimate Created (`primary: true`) | secondary | not biddable | no |
+| `QUALIFIED_LEAD ~ WEBSITE` | Estimate Created (`primary: true`) | secondary | **biddable** | **YES** |
+| `CONTACT ~ WEBSITE` | Lead Created (`primary_for_goal: true`) | secondary | not biddable | no |
 | `BOOK_APPOINTMENT ~ WEBSITE` | Estimate Scheduled (`primary: false`) | biddable | not biddable | no |
 | `CONVERTED_LEAD ~ WEBSITE` | Estimate Won (`primary: false`) | biddable | not biddable | no |
 
-**⚠️ That table is the four UPLOAD actions only, and they are not the whole biddable set.**
-Campaign 23633267649 has **four** biddable goals (re-read 2026-08-17), and three of them
-have nothing to do with this app: `PHONE_CALL_LEAD ~ CALL_FROM_ADS` ("Calls from ads",
-21/30d — **bigger than Lead Created**), `CONTACT ~ CALL_FROM_ADS` (a Smart-campaign action;
-no Smart campaigns run, so zero), and `SUBMIT_LEAD_FORM ~ WEBSITE` (only REMOVED actions
-behind it — CallRail's Form Capture — so dead weight). Bidding optimizes the SUM of the
-biddable goals, so **an ad caller is currently worth ~2 conversions and a form lead ~1**:
-they fire "Calls from ads" at the click AND reach `+16184145907`, which exports as our own
-lead. Always enumerate `campaign_conversion_goal` rather than reasoning from this app's
-four actions.
+**⚠️ That table is the four UPLOAD actions only, and they were never the whole biddable
+set — the trap that hid for four days.** Until 2026-08-17 campaign 23633267649 had **four**
+biddable goals, three of them nothing to do with this app: `PHONE_CALL_LEAD ~
+CALL_FROM_ADS` ("Calls from ads", 21/30d — **bigger than Lead Created**), `CONTACT ~
+CALL_FROM_ADS` (a Smart-campaign action; no Smart campaigns run, so zero), and
+`SUBMIT_LEAD_FORM ~ WEBSITE` (only REMOVED actions behind it — CallRail's Form Capture —
+so dead weight). Bidding optimizes the SUM of the biddable goals, so **an ad caller was
+worth ~2 conversions and a form lead ~1**: the caller fired "Calls from ads" at the click
+AND reached `+16184145907`, which exports as our own lead. All three are now off. **Always
+enumerate `campaign_conversion_goal` rather than reasoning from this app's four actions** —
+"we promoted Lead Created" was true and still described only half of what was bidding.
 
 **Stage volumes and lag, measured 2026-08-17** over 8/08–8/16 (there is no earlier data —
 DNI went live at the cutover), by CONVERSION date, account-wide: Lead Created 16 ·
@@ -321,10 +324,34 @@ also zeroes Meta's `Schedule` event value; `Purchase` (won) still carries `sales
 **Already-`sent` rows keep their old value** — the fix is forward-only, so the historical
 $1,400 stays in the Ads UI and is not evidence of a regression.
 
+**Decision (2026-08-17, Justin): `Estimate Created` replaces `Lead Created` as the biddable
+signal, and it is now the ONLY biddable goal on the campaign.** The reasoning that settled
+it: an estimate being written is a HUMAN confirming this was real business, where
+`Lead Created` trusts the transcription classifier's `isLead` verdict — and a human
+confirmation cannot drift the way a classifier can. The two objections both died against
+measurement (see the stage volumes above): it is not thinner (~50/month vs ~53) and it is
+not slower (99.6% inside a day). The residual costs are real but accepted — it couples the
+bidding signal to how promptly the office writes estimates, and it puts the HCP sync and
+`matchLeadsToEstimates` in the path, whose known gaps under-report repeat customers.
+
+**Dropping "Calls from ads" was gated on one fact, and the check is worth repeating.**
+Those callers reach a STATIC number, so they carry no gclid and can only export through the
+`user_data` fallback — which matches `sources.key` against the literal string `google/cpc`.
+If that mapping were anything else, turning the goal off would have deleted ~30 calls/month
+from bidding silently. Verified via `GET /api/leads?type=call&hasClickId=false` (admin
+token; the route exists for exactly this question): **7 of 7 callers to `+16184145907` in
+the window came back `google/cpc`, none spam, 3 already carrying estimates.** Note the
+population that query returns is dominated by `direct` (46) and `gbp` (24) — those are
+static published numbers and are correctly NOT exportable; only the `google/cpc` slice is.
+`/api/diagnostics` cannot answer this (it covers `is_static = false` numbers only) and the
+Railway Postgres has no public TCP proxy, so the leads route is the reachable check.
+
 **Sequencing mattered, and was deliberate:** promote only AFTER uploads are confirmed
 flowing. Flipping first means the 90-day backfill lands as a single spike into a live
 bidding signal, which reads as a sudden performance change that has nothing to do with the
-ads. Backfill while observation-only, confirm the counts, then promote.
+ads. Backfill while observation-only, confirm the counts, then promote. **Same rule applied
+to the goal switch itself:** `QUALIFIED_LEAD ~ WEBSITE` was made biddable BEFORE the other
+four were switched off, so the campaign was never left with zero biddable goals.
 
 **Revisit when:** won-estimate conversions are sustained (roughly 30+/month) — at that
 point Estimate Won becomes a candidate for value-based bidding and this ranking should be
