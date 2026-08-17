@@ -295,15 +295,22 @@ Created's 100%. The office writes the estimate during or right after the call. S
 between them is a question of WHO confirms the lead — a classifier or a human — not of
 volume or delay.
 
-**The account defaults are the INVERSE of what is wanted, so a new campaign is a trap.**
-A campaign created without its own goal overrides inherits the account's: it will bid on
-Estimate Won and Estimate Scheduled — both far too thin to learn on — and will NOT bid on
-Estimate Created or Lead Created. Account biddable set, read 2026-08-17:
-`PHONE_CALL_LEAD ~ CALL_FROM_ADS`, `SUBMIT_LEAD_FORM ~ WEBSITE`, `BOOK_APPOINTMENT ~
-WEBSITE`, `CONTACT ~ CALL_FROM_ADS`, `CONVERTED_LEAD ~ WEBSITE`. Set campaign goals
-explicitly on anything new. Same shape as the tracking-template trap above, where an
-account-level default silently governs a new campaign. **There is no MCP tool for
-`customer_conversion_goal`** — fixing the account defaults is a Google Ads UI job.
+**✅ The account defaults were the INVERSE of what is wanted; FIXED 2026-08-17.** They now
+mirror the campaign: `QUALIFIED_LEAD ~ WEBSITE` is the account's only biddable goal, so a
+campaign created without its own overrides inherits the right one. Before the fix the
+biddable set was `PHONE_CALL_LEAD ~ CALL_FROM_ADS`, `SUBMIT_LEAD_FORM ~ WEBSITE`,
+`BOOK_APPOINTMENT ~ WEBSITE`, `CONTACT ~ CALL_FROM_ADS`, `CONVERTED_LEAD ~ WEBSITE` — i.e.
+a new campaign would have bid on Estimate Won and Estimate Scheduled, both far too thin to
+learn on, and not on Estimate Created at all. Same shape as the tracking-template trap
+above, where an account-level default silently governs a new campaign. **Still set campaign
+goals explicitly on anything new** rather than trusting the inherited default to stay put.
+  - Fixed with `googleads_update_customer_conversion_goal`, added to the Arbor MCP for this
+    (`arbor-mcp-server` #212) — the catalog could read and write `campaign_conversion_goal`
+    but had nothing for `customer_conversion_goal`, so this had been a UI-only job. Same
+    ordering rule as the campaign switch: `QUALIFIED_LEAD ~ WEBSITE` was made biddable
+    first, so the account was never left with zero biddable goals.
+  - **Verified LSA is untouched**, as the paragraph below predicts: campaign 21142513191 is
+    still ENABLED on MAXIMIZE_CONVERSIONS with zero `campaign_conversion_goal` rows.
 
 **The LSA campaign does NOT run through the conversion-goal system, so account-level goal
 changes cannot touch it** (established 2026-08-17, because it was the one thing blocking a
