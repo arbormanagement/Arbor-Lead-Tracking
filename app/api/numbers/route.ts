@@ -19,6 +19,9 @@ const Body = z.object({
   purchasePhoneNumber: z.string().optional(),
   tollFree: z.boolean().default(false),
   importPhoneNumber: z.string().optional(),
+  // Overwrite the webhooks of a number already serving another app. Off by
+  // default; provisionNumber refuses such an import outright.
+  forceImport: z.boolean().default(false),
   isStatic: z.boolean().default(false),
   staticSourceKey: z.string().optional(),
   location: z.enum(["edwardsville", "ofallon", "unknown"]).default("unknown"),
@@ -65,6 +68,7 @@ export async function POST(req: Request) {
       purchasePhoneNumber: b.purchasePhoneNumber,
       tollFree: b.tollFree,
       importPhoneNumber: b.importPhoneNumber,
+      forceImport: b.forceImport,
       isStatic: b.isStatic,
       staticSourceId,
       location: b.location,
