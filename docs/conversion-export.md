@@ -56,8 +56,16 @@ can optimize toward **won revenue**, not just raw lead volume.
   the identical problem, but LSA bidding does not run through these conversion
   actions, and a hashed phone can match a Search click by the same person —
   crediting Search for an LSA lead. Add it as a deliberate decision, not a default.
-- **Events:** `qualified` (value = quote) and `won` (value = approved amount).
-  Google → two conversion actions; Meta → `Lead` / `Purchase`.
+- **Events:** four stages — `lead` (the call or form itself), `qualified` (an estimate
+  was written), `scheduled` (that estimate got a date), `won` (an option was approved).
+  Google → one conversion action each; Meta → `Lead` / — / `Schedule` / `Purchase`
+  (`qualified` has no Meta analogue).
+- **Only `won` carries a dollar value** (2026-08-17); the other three send 0. A quote is
+  not revenue, and the earlier stages could not report one honestly anyway: HCP creates
+  estimates UNPRICED and an export row only ever reaches `sent` once, so the value would
+  be frozen at whatever existed when the cron happened to run. Measured before the fix:
+  $1,400 across 15 real estimates. Inert while bidding on conversion COUNT, and a trap
+  under Maximize Conversion Value / tROAS.
 - **Conversion time** is the HCP estimate's created/approved timestamp, not the lead
   time — an estimate approved weeks later reports at approval.
 - **Idempotency:** `conversion_exports` table, unique `(lead, platform, event)`.
