@@ -269,14 +269,19 @@ together with `conversion_action.primary_for_goal`. All four actions are `origin
 **⚠️ That table is the four UPLOAD actions only, and they were never the whole biddable
 set — the trap that hid for four days.** Until 2026-08-17 campaign 23633267649 had **four**
 biddable goals, three of them nothing to do with this app: `PHONE_CALL_LEAD ~
-CALL_FROM_ADS` ("Calls from ads", 21/30d — **bigger than Lead Created**), `CONTACT ~
-CALL_FROM_ADS` (a Smart-campaign action; no Smart campaigns run, so zero), and
-`SUBMIT_LEAD_FORM ~ WEBSITE` (only REMOVED actions behind it — CallRail's Form Capture —
-so dead weight). Bidding optimizes the SUM of the biddable goals, so **an ad caller was
-worth ~2 conversions and a form lead ~1**: the caller fired "Calls from ads" at the click
-AND reached `+16184145907`, which exports as our own lead. All three are now off. **Always
-enumerate `campaign_conversion_goal` rather than reasoning from this app's four actions** —
-"we promoted Lead Created" was true and still described only half of what was bidding.
+CALL_FROM_ADS` ("Calls from ads"), `CONTACT ~ CALL_FROM_ADS` (a Smart-campaign action; no
+Smart campaigns run, so zero), and `SUBMIT_LEAD_FORM ~ WEBSITE` (only REMOVED actions
+behind it — CallRail's Form Capture — so dead weight). Bidding optimizes the SUM of the
+biddable goals, so **an ad caller was worth ~2 conversions and a form lead ~1**: the caller
+fired "Calls from ads" at the click AND reached `+16184145907`, which exports as our own
+lead. All three are now off. **Always enumerate `campaign_conversion_goal` rather than
+reasoning from this app's four actions** — "we promoted Lead Created" was true and still
+described only half of what was bidding.
+  - **Size "Calls from ads" on a POST-cutover window, not `LAST_30_DAYS`.** Over 30 days it
+    reads 21 and looks larger than Lead Created; over 8/08–8/16 it is **4.0** against Lead
+    Created's 14.4 on this campaign. The difference is that most of the 30-day figure
+    predates 8 Aug, when the old campaigns and their call assets were still serving. Any
+    `LAST_30_DAYS` number straddles the cutover and describes two different setups.
 
 **Stage volumes and lag, measured 2026-08-17** over 8/08–8/16 (there is no earlier data —
 DNI went live at the cutover), by CONVERSION date, account-wide: Lead Created 16 ·
@@ -293,8 +298,45 @@ volume or delay.
 **The account defaults are the INVERSE of what is wanted, so a new campaign is a trap.**
 A campaign created without its own goal overrides inherits the account's: it will bid on
 Estimate Won and Estimate Scheduled — both far too thin to learn on — and will NOT bid on
-Lead Created. Set campaign goals explicitly on anything new. Same shape as the tracking-
-template trap above, where an account-level default silently governs a new campaign.
+Estimate Created or Lead Created. Account biddable set, read 2026-08-17:
+`PHONE_CALL_LEAD ~ CALL_FROM_ADS`, `SUBMIT_LEAD_FORM ~ WEBSITE`, `BOOK_APPOINTMENT ~
+WEBSITE`, `CONTACT ~ CALL_FROM_ADS`, `CONVERTED_LEAD ~ WEBSITE`. Set campaign goals
+explicitly on anything new. Same shape as the tracking-template trap above, where an
+account-level default silently governs a new campaign. **There is no MCP tool for
+`customer_conversion_goal`** — fixing the account defaults is a Google Ads UI job.
+
+**The LSA campaign does NOT run through the conversion-goal system, so account-level goal
+changes cannot touch it** (established 2026-08-17, because it was the one thing blocking a
+fix to the defaults above). Three independent checks agree: campaign 21142513191 has
+**zero** `campaign_conversion_goal` rows (not zero biddable — zero), no
+`customer_conversion_goal` exists with a `LOCAL_SERVICES_ADS` origin at all, and its
+Conversions column over 8/08–8/16 is `local_services_phone_lead` 27 and nothing else. The
+decisive one is the third: our `Estimate Scheduled` and `Estimate Won` uploads DO get
+attributed to that campaign (1.0 each in `all_conversions`) and their categories
+`BOOK_APPOINTMENT ~ WEBSITE` / `CONVERTED_LEAD ~ WEBSITE` **are** account-biddable — yet
+both report `conversions: 0` there. If LSA inherited the account goals they would be
+counted. It doesn't, so they aren't.
+  - Worth knowing separately: Google cross-attributes some of our uploads to the LSA
+    campaign (Lead Created 1.6, Estimate Created 0.8 over that window). That is Google's
+    attribution, not our exporter — `google/lsa` is excluded from
+    `USER_DATA_FALLBACK_SOURCES`. It muddies per-campaign ROI in the Ads UI only; the
+    app's own `roi_daily` uses its own attribution and is unaffected.
+
+**⚠️ A conversion action cannot be PAUSED.** The status enum is ENABLED / REMOVED / HIDDEN
+— the API rejects `PAUSED` outright, and REMOVED is irreversible. So there is no cheap way
+to tidy a dead-but-harmless action away; leave zero-volume ones ENABLED rather than
+removing something a future campaign might need (the four Smart-campaign actions are in
+exactly this state: ENABLED, 0 conversions over 90 days, no Smart campaigns running).
+
+**⚠️ Goal changes apply FORWARD from the date they are made, never retroactively** —
+verified 2026-08-17 by re-reading dates either side of two changes. `Estimate Created`
+still reports `conversions: 0` for 8/13–8/16 although it is biddable now, and `Lead
+Created` still reports 1–3/day for those same dates although it is switched off. **So the
+"Conversions" column across the last two weeks is three different metrics stitched
+together** (8/08–8/12 both actions · 8/13–8/16 Lead Created · 8/17+ Estimate Created), and
+no cleanup can repair it — the history is frozen at whatever the config was on each day.
+For any window spanning a change, segment `all_conversions` by `segments.conversion_action`
+and read one action at a time.
 
 **Uploads are confirmed landing** (first end-to-end proof, 2026-08-13 — previously only
 `sent` in `sync_runs`, which proves a valid payload and nothing about attribution). Last
