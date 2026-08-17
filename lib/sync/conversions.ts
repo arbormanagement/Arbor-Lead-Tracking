@@ -150,7 +150,7 @@ export async function syncConversions({ sinceDays = 90, limit = 500 }: { sinceDa
         emailLc: leads.emailLc,
         // Gates the no-click-id fallback: only genuinely-paid sources qualify.
         sourceKey: sources.key,
-        quoteValueCents: leads.quoteValueCents,
+        // No `quoteValueCents`: only the `won` stage reports money now (see below).
         salesValueCents: leads.salesValueCents,
         occurredAt: leads.occurredAt,
         estimateCreatedAt: hcpEstimates.createdAtHcp,
@@ -204,8 +204,16 @@ export async function syncConversions({ sinceDays = 90, limit = 500 }: { sinceDa
       // Report the conversion at the time it actually happened — the estimate being
       // written (qualified) or approved (won) — falling back to the lead time. An
       // estimate approved weeks later would otherwise be reported at lead time.
-      // The lead itself always converts at lead time and carries no value — its
-      // worth to bidding is volume and recency, not a dollar figure.
+      //
+      // ONLY `won` carries money (2026-08-17, Justin). A quote is not revenue, and
+      // the earlier stages could not report it honestly even if it were: HCP creates
+      // estimates UNPRICED (`total_amount: 0`, priced later on `options[]`), and an
+      // export row only ever reaches 'sent' once — so whatever `quoteValueCents`
+      // happened to hold at cron time is frozen there forever. That produced a $93
+      // average across real estimates, which is noise, not a conservative valuation.
+      // Harmless while the campaign bids on conversion COUNT, and a live trap the
+      // moment anyone tries Maximize Conversion Value — so it is zeroed at the
+      // source rather than left for the bidder to discover.
       const events: Array<{ event: EventKind; valueCents: number; convertedAt: Date }> = [
         { event: "lead", valueCents: 0, convertedAt: l.occurredAt },
       ];
@@ -214,7 +222,7 @@ export async function syncConversions({ sinceDays = 90, limit = 500 }: { sinceDa
       if (l.status !== "new" && l.status !== "working") {
         events.push({
           event: "qualified",
-          valueCents: l.quoteValueCents ?? 0,
+          valueCents: 0,
           convertedAt: l.estimateCreatedAt ?? l.occurredAt,
         });
         // Only when a date actually exists. Reporting it at estimate-creation time
@@ -222,7 +230,7 @@ export async function syncConversions({ sinceDays = 90, limit = 500 }: { sinceDa
         if (l.estimateScheduledAt) {
           events.push({
             event: "scheduled",
-            valueCents: l.quoteValueCents ?? 0,
+            valueCents: 0,
             convertedAt: l.estimateScheduledAt,
           });
         }

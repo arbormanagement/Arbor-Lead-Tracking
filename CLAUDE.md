@@ -224,10 +224,17 @@ server-side dedup, which is what the bolted-on attempt cap was standing in for.
   before that). `failingExports` / `abandonedExports` in `/api/diagnostics` are the place to
   look when that changes — the former exists because waiting for the attempt cap to expose
   an error means seeing it only after the row is out of retries.
-- **Not yet done:** eligibility still requires a click id. Widening to `userData`-only
-  (Enhanced Conversions for Leads) would make organic calls exportable, but needs the
-  account's customer-data terms accepted and the setting enabled on each conversion action
-  first — uploads are accepted either way, so getting this wrong is invisible.
+- **✅ `userData`-only export is LIVE and the account is eligible** (verified 2026-08-17:
+  `customer.conversion_tracking_setting.accepted_customer_data_terms: true` and
+  `enhanced_conversions_for_leads_enabled: true`). This supersedes the earlier "not yet
+  done" note. It is deliberately NOT a blanket widening: `USER_DATA_FALLBACK_SOURCES` in
+  `lib/sync/conversions.ts` holds `google/cpc` alone, because "no click id ⇒ not from the
+  ad" is false for exactly one shape of traffic — a STATIC number wired to a Google ad.
+  Confirmed both ends of that chain: campaign 23633267649's CALL asset is `+16184145907`
+  (ENABLED), which holds no DNI lease and so can never carry a gclid. Organic/GBP/direct
+  stay out — uploading them invites Google to credit itself for traffic it never sent.
+  **Check the two account flags before blaming the exporter for a missing call**: uploads
+  are accepted whether or not they are set, so a wrong answer here is invisible.
 
 ### The conversion actions, and why nothing bids on them yet
 All four are `UPLOAD_CLICKS`, ENABLED, `clickThroughLookbackWindowDays: 90` — which
@@ -257,6 +264,29 @@ together with `conversion_action.primary_for_goal`. All four actions are `origin
 | `BOOK_APPOINTMENT ~ WEBSITE` | Estimate Scheduled (`primary: false`) | biddable | not biddable | no |
 | `CONVERTED_LEAD ~ WEBSITE` | Estimate Won (`primary: false`) | biddable | not biddable | no |
 
+**⚠️ That table is the four UPLOAD actions only, and they are not the whole biddable set.**
+Campaign 23633267649 has **four** biddable goals (re-read 2026-08-17), and three of them
+have nothing to do with this app: `PHONE_CALL_LEAD ~ CALL_FROM_ADS` ("Calls from ads",
+21/30d — **bigger than Lead Created**), `CONTACT ~ CALL_FROM_ADS` (a Smart-campaign action;
+no Smart campaigns run, so zero), and `SUBMIT_LEAD_FORM ~ WEBSITE` (only REMOVED actions
+behind it — CallRail's Form Capture — so dead weight). Bidding optimizes the SUM of the
+biddable goals, so **an ad caller is currently worth ~2 conversions and a form lead ~1**:
+they fire "Calls from ads" at the click AND reach `+16184145907`, which exports as our own
+lead. Always enumerate `campaign_conversion_goal` rather than reasoning from this app's
+four actions.
+
+**Stage volumes and lag, measured 2026-08-17** over 8/08–8/16 (there is no earlier data —
+DNI went live at the cutover), by CONVERSION date, account-wide: Lead Created 16 ·
+Estimate Created 15 · Estimate Scheduled 14 · Estimate Won 1. **Estimate Created is a
+strict SUBSET of Lead Created by construction** — every lead that emits `qualified` also
+emits `lead` — so the office writes an estimate for ~15 of every 16 exported leads. The
+filtering a "real lead" signal would buy is already done upstream by the `isLead`/`isSpam`
+gate. **Lag is not the differentiator either: 99.6% of Estimate Created lands <1 day from
+the click** (`segments.conversion_lag_bucket` on `campaign`), indistinguishable from Lead
+Created's 100%. The office writes the estimate during or right after the call. So choosing
+between them is a question of WHO confirms the lead — a classifier or a human — not of
+volume or delay.
+
 **The account defaults are the INVERSE of what is wanted, so a new campaign is a trap.**
 A campaign created without its own goal overrides inherits the account's: it will bid on
 Estimate Won and Estimate Scheduled — both far too thin to learn on — and will NOT bid on
@@ -275,6 +305,21 @@ That row is the check that the fix worked.
 Won as observation for now. Volume is the reason — 21 won leads against 211 qualified is
 far too thin for Smart Bidding to learn on won revenue, and a value-based strategy fed
 that sparsely optimizes noise.
+
+**Decision (2026-08-17, Justin): ONLY `won` reports a dollar value.** `qualified` and
+`scheduled` now send 0 — they used to send `leads.quote_value_cents`. A quote is not
+revenue, and those stages could not have reported it honestly anyway: **HCP creates
+estimates UNPRICED** (`total_amount: 0`; pricing lands on `options[]` later, per the
+estimates-staleness watch-out) and **an export row only ever reaches `sent` once**, so
+whatever the value was at cron time is frozen there forever. Measured result was $1,400
+across 15 real estimates — a $93 average, i.e. mostly zeros with a couple of priced
+stragglers. That is noise, not a conservative valuation. It was harmless while the
+campaign bids on conversion COUNT (Maximize Conversions ignores value) and a live trap the
+moment anyone selects Maximize Conversion Value or tROAS — which is why it is zeroed at
+the source in `lib/sync/conversions.ts` rather than left for the bidder to find. Note this
+also zeroes Meta's `Schedule` event value; `Purchase` (won) still carries `sales_value_cents`.
+**Already-`sent` rows keep their old value** — the fix is forward-only, so the historical
+$1,400 stays in the Ads UI and is not evidence of a regression.
 
 **Sequencing mattered, and was deliberate:** promote only AFTER uploads are confirmed
 flowing. Flipping first means the 90-day backfill lands as a single spike into a live
