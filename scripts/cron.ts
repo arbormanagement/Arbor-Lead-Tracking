@@ -57,6 +57,11 @@ const JOBS: Array<{ job: string; schedule: string; timeoutMs?: number }> = [
   { job: "conversions", schedule: "37 * * * *", timeoutMs: 600_000 },
   { job: "spend", schedule: "37 7 * * *", timeoutMs: 900_000 },
   { job: "twilio-fallback", schedule: "52 * * * *", timeoutMs: 300_000 },
+  // Hourly rather than daily (CallRail's cadence): the breakage it catches arrives
+  // with a website deploy, and every hour it goes unnoticed is an hour of visitors
+  // landing on the published number and reading as `direct`. One page fetch and one
+  // lease, so the cost of the tighter loop is nil.
+  { job: "dni-canary", schedule: "41 * * * *", timeoutMs: 120_000 },
   // Backfills pre-inbox call history on its first runs, then idles at zero rows —
   // staying on as the repair path for the voice webhook's best-effort threading.
   { job: "thread-backfill", schedule: "17 * * * *", timeoutMs: 600_000 },

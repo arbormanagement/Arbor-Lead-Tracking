@@ -9,6 +9,7 @@ import { env } from "@/lib/env";
 import { getSetting } from "@/lib/settings";
 import { businessDate, BUSINESS_TZ } from "@/lib/tz";
 import { MAX_EXPORT_ATTEMPTS } from "@/lib/sync/conversions";
+import { readSwapCoverage } from "@/lib/dni/outcomes";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -228,6 +229,12 @@ export async function GET(req: Request) {
     noUserAgentRecorded: unknownUa,
   };
 
+  // ── Did the number swap actually reach visitors? ────────────────────────────
+  // `traffic` above says who ASKED for a number; this says who GOT one. The gap is
+  // the share of website visitors dialling a published number, which then reads as
+  // `direct` on /sources and is indistinguishable from genuine word of mouth.
+  const swapCoverage = await readSwapCoverage(7);
+
   // ── Ingest volume: has anything actually arrived? ───────────────────────────
   const [vol] = await db
     .select({
@@ -362,6 +369,20 @@ export async function GET(req: Request) {
     );
   }
   if (pool.size === 0) warnings.push("DNI pool is empty — no number can be leased to a visitor");
+  // Only worth a warning once there is enough traffic for the rate to mean anything;
+  // below that it swings on single requests and would cry wolf every quiet night.
+  if (swapCoverage.visitors >= 100 && swapCoverage.coveredPct !== null && swapCoverage.coveredPct < 80) {
+    warnings.push(
+      `only ${swapCoverage.coveredPct}% of DNI requests got a pool number over the last ` +
+        `${swapCoverage.windowDays}d — the rest of those visitors keep the published number and read as 'direct'`,
+    );
+  }
+  if ((swapCoverage.byOutcome.static_fallback ?? 0) > 0) {
+    warnings.push(
+      `${swapCoverage.byOutcome.static_fallback} visitor(s) were handed the static fallback in the last ` +
+        `${swapCoverage.windowDays}d — the pool ran dry at least once`,
+    );
+  }
   for (const j of jobs) {
     if (j.stuckRunning) warnings.push(`sync job '${j.job}' has been 'running' for over 6h — its claim is blocking later ticks`);
     if (j.lastStatus === "error") warnings.push(`sync job '${j.job}' last run failed: ${j.lastError ?? "unknown error"}`);
@@ -410,6 +431,7 @@ export async function GET(req: Request) {
     abandonedExports,
     failingExports,
     traffic,
+    swapCoverage,
     volume: { ...vol, ...callVol },
     estimateSync,
     credentials: creds,

@@ -556,6 +556,18 @@ re-argued rather than assumed.
     our row count vs HCP's `total_items` (recorded by the crawl, so the endpoint stays a pure
     DB read), plus hours since the last completed pass. Deletions are SOFT upstream, so drift
     should sit at 0 forever and any divergence is a real gap, not noise.
+- **An HCP `created_at` is truncated to WHOLE SECONDS, and `leads.occurred_at` is not.**
+  `matchLeadsToEstimates` requires the lead to precede the estimate, so comparing the two
+  directly makes an enquiry read as LATER than the estimate it produced whenever the
+  estimate is written inside the same second — which the web-form automation does routinely
+  (measured gaps of 0.5–1s). The lead is then never claimed, the estimate is unattributed
+  forever, and the lead sits frozen at `new`. Found 2026-08-19: Jim Wiemers (+16183776379)
+  submitted at 15:57:58.050 and `csr_ab13fcb79a104e8386b333959024e223` is stamped 15:57:58 —
+  same phone, same email, 50 ms apart. Nine siblings from the same batch matched only because
+  their estimate landed in the next second. The bound is now the END of the stamped second
+  (`HCP_CREATED_AT_GRANULARITY_MS`, `lib/sync/attribution.ts`), which is still strictly under
+  a second so no unrelated later enquiry can steal an old job. **Assume any HCP timestamp is
+  second-granular before comparing it to something that carries milliseconds.**
 - **Deleting an estimate in HCP is a soft delete and it stays in the API forever.** There is
   no `deleted` work_status and no header `deleted_at` — the only trace is every
   `options[].status` being `deleted` (measured: 120 of 2,048 rows, 5.9%). In practice HCP
@@ -577,6 +589,18 @@ re-argued rather than assumed.
   matching `campaigns.name`, so an id there resolves to null. The account-level default still
   holds the old `{adname}` string and can only be edited in the Google Ads UI (no API tool);
   it is shadowed for every live campaign, so it bites only a campaign created without its own.
+- **A promoted channel does NOT reclassify the leads already in `other`.** `classifySource`
+  runs once, at ingest, and the key is frozen onto the lead — so adding a mapping fixes every
+  future lead and none of the rows that prompted the mapping. `lib/sources/reclassify.ts`
+  re-runs the classifier over leads currently on `other` and moves the ones it now recognises —
+  as `npm run db:reclassify-sources` (dry run; `-- --apply` to write) for a local DB, and as
+  **`POST /api/admin/reclassify-sources?apply=true`** for production, which is the only way to
+  run it there: the Railway Postgres has no public TCP proxy, so nothing outside the project's
+  private network can reach the database. GET is always a dry run; writing needs BOTH a POST and
+  the flag. It only ever moves a lead OFF `other`, never between
+  mapped sources, so it cannot rewrite the source that earned a call. First use: the 18 Aug
+  2026 SendGrid newsletter (`utm_source=newsletter&utm_medium=email`), 10 leads and 9
+  estimates that were sitting in "Other / Unmapped" — now `email/newsletter`.
 - Both Google Business Profiles link to the site as `utm_source=google+my+business` — which
   arrives as `"google my business"`, since `+` decodes to a space. `classifySource` therefore
   compares utm values **squashed** to letters and digits, so a spelling change in a tag can't
@@ -619,6 +643,41 @@ re-argued rather than assumed.
   15 minutes and can cost several. `/api/track` is deliberately NOT gated — pageview capture is
   cheap and unbounded, and filtering there would change what the site records, not what the
   pool spends.
+- **What `/api/dni/assign` decided is now COUNTED (`dni_outcomes`, `lib/dni/outcomes.ts`), because
+  part of `direct` is not word of mouth — it is a failed swap.** The endpoint has eight exits and
+  recorded none of them, and it cannot be reconstructed afterwards: `findShareableLease` hands a
+  second visitor an EXISTING lease without writing a row, so a shared visitor and a refused one
+  look identical in `number_assignments`. `swapCoverage` on `/api/diagnostics` splits a 7-day
+  window into `leased` / `session_reuse` / `visitor_capped` / `shared` (covered) against `bot` /
+  `rate_limited` / `origin_rejected` / `invalid_payload` / `static_fallback` / `none` / `error`.
+  - **`coveredPct` is an UPPER BOUND, not a measurement**, and the note on the endpoint says so.
+    It proves a pool number was handed out, never that it reached the page. The client-side half
+    that would close that gap was deliberately NOT built: a browser beacon is blocked by exactly
+    the things that break the swap, so its failures go unreported and coverage would read BETTER
+    the more broken it got. Same shape as the Twilio webhooks failing closed for weeks while calls
+    still connected. Do not add it without solving that.
+  - **Counts are BUFFERED in-process and flushed on time/size, not written per request.** This is a
+    public unauthenticated endpoint and the `bot` / `origin_rejected` exits sit in FRONT of the
+    rate limiter, so a row per request would let a stranger drive our write volume. A redeploy
+    drops up to a minute of counts; that is the right trade for a diagnostic rate and the wrong one
+    for anything billable, so put nothing billable there.
+  - The canary identifies itself with `CRON_SECRET` via `x-arbor-canary` and is counted as
+    `canary`, excluded from the rate — a magic visitor id would let anyone label traffic synthetic.
+- **`dni.canary` (hourly, `lib/sync/dni-canary.ts`) is the check that the swap still happens at
+  all.** Four assertions: the site serves HTML referencing our `track.js`, `track.js` is served and
+  still calls `/api/dni/assign`, that endpoint answers a browser-shaped POST with a number, and the
+  number is a rotating POOL number rather than the static fallback. The fourth matters most —
+  assign returns the static number rather than an error when the pool is dry, so a "successful"
+  request can still mean every visitor is seeing a published number. **Being SYNTHETIC is the
+  point:** it still fires when scripts are being blocked, which is exactly when a client-side
+  measurement goes quiet. Copied from CallRail, which runs a daily fetch of one nominated URL and
+  alerts when the snippet looks wrong; hourly here because the breakage arrives with a website
+  deploy. It leases a real number each run and releases it in a `finally` — an unreleased canary
+  lease would push a real visitor onto the fallback, i.e. the monitor causing the fault it watches
+  for. Release is scoped to its own `web_session_id`, so a run handed a SHARED lease cannot release
+  a customer's number mid-visit. **It does NOT verify the number reached the screen** — that needs
+  a headless browser on the `cron` service, deliberately deferred; the SPA re-render risk is real
+  but is already defended by the MutationObserver in `app/track.js/route.ts`.
 - DNI leasing draws only from pools flagged `pools.is_dni`, so a number provisioned for a mailer
   (default pool `reserved`) can't be handed to website visitors before it's marked static.
   `number_assignments_active_idx` is UNIQUE — one active lease per number — and `leaseNumber`

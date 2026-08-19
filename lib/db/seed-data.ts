@@ -27,6 +27,9 @@ export const SEED_SOURCES: Array<{
   { key: "gbp", displayName: "Google Business Profile", platform: "other", costModel: "none" },
   { key: "direct", displayName: "Direct", platform: "other", costModel: "none" },
   { key: "referral", displayName: "Referral", platform: "other", costModel: "none" },
+  // The newsletter/broadcast list (SendGrid). Owned media, so no per-click cost —
+  // ROI on it is revenue against zero spend, which is the honest answer.
+  { key: "email/newsletter", displayName: "Email Newsletter", platform: "other", costModel: "none" },
   // Catch-all for traffic we do not recognise. See lib/sources/naming.ts.
   { key: "other", displayName: "Other / Unmapped", platform: "other", costModel: "none" },
 ];

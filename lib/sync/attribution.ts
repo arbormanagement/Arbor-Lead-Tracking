@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lte, ne, or, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lt, ne, or, sql, type SQL } from "drizzle-orm";
 import { campaignNotExcluded, excludedCampaignIds } from "@/lib/campaigns";
 import { db } from "@/lib/db/client";
 import {
@@ -16,6 +16,25 @@ import { isCountableEstimate } from "@/lib/estimates/countable";
 import { getSetting } from "@/lib/settings";
 import { businessDate } from "@/lib/tz";
 import { withSyncRun } from "./run";
+
+/**
+ * HousecallPro reports `created_at` to WHOLE SECONDS — there is no sub-second
+ * component in the payload — so an estimate stamped 15:57:58 was really created
+ * somewhere in [15:57:58.000, 15:57:59.000).
+ *
+ * That matters because the lead must precede the estimate, and `leads.occurred_at`
+ * DOES carry milliseconds. Comparing the two directly makes an enquiry look later
+ * than the estimate it produced whenever the office (or the web-form automation)
+ * writes the estimate inside the same second.
+ *
+ * Measured 2026-08-19: web form from Jim Wiemers (+16183776379) at 15:57:58.050 →
+ * estimate csr_ab13fcb79a104e8386b333959024e223 stamped 15:57:58. Same phone, same
+ * email, 50 ms apart — and permanently unattributable, with the lead frozen at
+ * `new`. Nine other leads from the same batch matched only because their estimate
+ * happened to land in the NEXT second. The failure is silent and looks exactly like
+ * a customer who never contacted us.
+ */
+const HCP_CREATED_AT_GRANULARITY_MS = 1000;
 
 /** Bulk-insert batch size — a single-statement insert exceeds Postgres's 65,535
  *  bind-param limit at ~5-6k rows (attributions/roi_daily are ~10 params/row). */
@@ -165,6 +184,7 @@ async function matchLeadsToEstimates(windowDays: number): Promise<{ qualified: n
     ) as string[];
 
     const windowStart = new Date(estDate.getTime() - windowDays * 86_400_000);
+    const estUpperBound = new Date(estDate.getTime() + HCP_CREATED_AT_GRANULARITY_MS);
     // Identity, widest first: the contact this estimate's customer resolves to,
     // then the estimate's own phone/email as the fallback for a customer the
     // contact spine has not linked yet. The spine arm is what recovers a caller
@@ -185,7 +205,13 @@ async function matchLeadsToEstimates(windowDays: number): Promise<{ qualified: n
           contactMatch,
           eq(leads.isSpam, false),
           gte(leads.occurredAt, windowStart),
-          lte(leads.occurredAt, estDate),
+          // "Before the estimate was written" — to the end of the second HCP
+          // stamped it in, not to the truncated stamp itself. See
+          // HCP_CREATED_AT_GRANULARITY_MS. The widening is under one second, so it
+          // cannot let an unrelated later enquiry steal an old job; what it buys is
+          // that a lead which genuinely caused the estimate stops reading as later
+          // than it.
+          lt(leads.occurredAt, estUpperBound),
           // Never steal a lead that is already linked to an estimate this run did
           // not scan. Those leads are outside the reset above, so their stage and
           // value are frozen history — letting a newer estimate claim one would
@@ -219,7 +245,10 @@ async function matchLeadsToEstimates(windowDays: number): Promise<{ qualified: n
       if (est.won && customerWindowDays > 0) {
         const prior = contactKeys.map((k) => claimedByContact.get(k)).find(Boolean);
         const age = prior ? estDate.getTime() - prior.leadAt.getTime() : -1;
-        if (prior && age >= 0 && age <= customerWindowDays * 86_400_000) {
+        // Same second-truncation allowance as the candidate window above, so a
+        // repeat customer whose enquiry landed inside the estimate's own second is
+        // not read as having contacted us afterwards.
+        if (prior && age > -HCP_CREATED_AT_GRANULARITY_MS && age <= customerWindowDays * 86_400_000) {
           await db
             .update(leads)
             .set({

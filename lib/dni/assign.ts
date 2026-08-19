@@ -57,6 +57,25 @@ export async function releaseExpired(): Promise<void> {
 
 /** A visitor revisiting within their session keeps the same number (one consistent
  *  number across pages). Extends the lease window on reuse. */
+/**
+ * Hand back every live lease held by ONE session.
+ *
+ * Exists for the DNI canary, which leases a real number every run to prove the pool
+ * still works and must not then sit on it for the full window — six numbers cannot
+ * spare one to a robot. Scoped to `web_session_id` on purpose: when the canary is
+ * handed a SHARED lease (`findShareableLease`) the row belongs to a real visitor and
+ * matches nothing here, so this can never release a number out from under a customer
+ * mid-visit.
+ */
+export async function releaseSessionLeases(sid: string): Promise<number> {
+  const released = await db
+    .update(numberAssignments)
+    .set({ releasedAt: new Date() })
+    .where(and(eq(numberAssignments.webSessionId, sid), isNull(numberAssignments.releasedAt)))
+    .returning({ id: numberAssignments.id });
+  return released.length;
+}
+
 export async function getActiveAssignmentForSession(sid: string): Promise<LeaseResult | null> {
   const [row] = await db
     .select({

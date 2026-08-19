@@ -10,6 +10,7 @@ import { syncConversions } from "@/lib/sync/conversions";
 import { syncFacebookLeads } from "@/lib/sync/facebook-leads";
 import { releaseExpired } from "@/lib/dni/assign";
 import { syncNumberWebhooks } from "@/lib/sync/twilio-webhooks";
+import { runDniCanary } from "@/lib/sync/dni-canary";
 
 export const runtime = "nodejs";
 
@@ -55,6 +56,11 @@ export async function GET(req: Request, { params }: { params: Promise<{ job: str
         return Response.json({ ok: true, job, result: await syncConversions() });
       case "fbleads":
         return Response.json({ ok: true, job, result: await syncFacebookLeads() });
+      case "dni-canary":
+        // Synthetic check that the number swap still works end to end. Deliberately
+        // NOT folded into `reaper` or any other DNI job: a canary that shares a run
+        // with real work reports that work's failures as its own.
+        return Response.json({ ok: true, job, result: await runDniCanary() });
       case "twilio-fallback":
         // Self-healing: re-assert every tracking number's Twilio webhooks — voice
         // fallback (outage protection) and inbound SMS — so no number can drift or
