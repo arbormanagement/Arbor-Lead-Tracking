@@ -886,6 +886,42 @@ export const spamRules = pgTable("spam_rules", {
   updatedAt: updatedAt(),
 });
 
+/**
+ * What `/api/dni/assign` actually did, counted per business day.
+ *
+ * The endpoint has eight different ways to end and recorded none of them, so the
+ * one question that matters about DNI — "what share of visitors actually got a
+ * tracking number, and why not?" — could not be asked at all. It cannot be
+ * reconstructed from `number_assignments` either: `findShareableLease` hands a
+ * second visitor an EXISTING lease without writing a row, so a shared visitor and
+ * a refused one look identical after the fact. Only the endpoint knows, and only
+ * at the moment it decides.
+ *
+ * COUNTS, not rows-per-visit, and written through the buffer in
+ * `lib/dni/outcomes.ts`. This endpoint is public and unauthenticated: a row per
+ * request would let a stranger drive our write volume, and the refusal paths
+ * (bot, bad origin) sit in front of the rate limiter, so they are the least
+ * bounded of all. Buffering makes writes scale with elapsed time rather than with
+ * traffic, and a day-grain counter is all a rate needs.
+ *
+ * `outcome` is deliberately free text rather than an enum: it is diagnostic, and a
+ * new branch in the endpoint should be able to start counting itself without a
+ * migration. See `AssignOutcome` for the live vocabulary.
+ */
+export const dniOutcomes = pgTable(
+  "dni_outcomes",
+  {
+    id: id(),
+    // businessDate() — America/Chicago, like every other daily bucket in this
+    // schema. A UTC bucket here would split a Central evening across two rows.
+    date: date("date").notNull(),
+    outcome: text("outcome").notNull(),
+    count: integer("count").notNull().default(0),
+    updatedAt: updatedAt(),
+  },
+  (t) => [unique("dni_outcomes_date_outcome_uq").on(t.date, t.outcome)],
+);
+
 export const syncRuns = pgTable(
   "sync_runs",
   {

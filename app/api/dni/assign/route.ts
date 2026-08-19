@@ -6,6 +6,9 @@ import { isLikelyBot } from "@/lib/bot";
 import { isAllowedOrigin } from "@/lib/origin";
 import { formatPhoneDisplay } from "@/lib/phone";
 import { clientIp, rateLimit } from "@/lib/rate-limit";
+import { env } from "@/lib/env";
+import { secretEquals } from "@/lib/secret-compare";
+import { recordAssignOutcome, type AssignOutcome } from "@/lib/dni/outcomes";
 import {
   findShareableLease,
   getActiveAssignmentForSession,
@@ -64,7 +67,22 @@ export function OPTIONS() {
   return new Response(null, { status: 204, headers: CORS });
 }
 
+/**
+ * The scheduled canary (lib/sync/dni-canary.ts) drives this endpoint exactly as a
+ * browser would, so its requests would otherwise land in the coverage counters and
+ * quietly improve them. It identifies itself with CRON_SECRET rather than a magic
+ * visitor id, so a stranger cannot label their traffic synthetic to hide it.
+ */
+function isCanary(req: Request): boolean {
+  return !!env.CRON_SECRET && secretEquals(req.headers.get("x-arbor-canary"), env.CRON_SECRET);
+}
+
 export async function POST(req: Request) {
+  const canary = isCanary(req);
+  // Counting is fire-and-forget by contract: `recordAssignOutcome` swallows its own
+  // errors, so nothing here can cost a visitor their number.
+  const record = (outcome: AssignOutcome) => recordAssignOutcome(canary ? "canary" : outcome);
+
   // Public-endpoint hygiene: browser posts must come from our own sites, and
   // each IP gets a budget — leases are a finite pool worth protecting.
   //
@@ -74,19 +92,24 @@ export async function POST(req: Request) {
   // on the static fallback and silently ends paid-click attribution. Browsers
   // always send Origin on a POST, so requiring it costs real visitors nothing.
   if (!(await isAllowedOrigin(req, { requireOrigin: true }))) {
+    await record("origin_rejected");
     return Response.json({ error: "origin not allowed" }, { status: 403, headers: CORS });
   }
   // A crawler will never dial the number it is handed, but it holds one for the full lease
   // window while it does not. Returning null leaves the page on its own hard-coded number,
   // which is exactly the right outcome for a bot and costs a misdetected human only their
   // attribution, not their call.
-  if (isLikelyBot(req.headers.get("user-agent"))) {
+  // The canary is exempt: it announces itself honestly rather than wearing a browser
+  // user-agent, and the bot gate is not what it is here to test.
+  if (!canary && isLikelyBot(req.headers.get("user-agent"))) {
+    await record("bot");
     return Response.json({ number: null }, { headers: CORS });
   }
   // Tighter than /api/track's budget: a page needs ONE lease per session, not 30
   // per minute, and each request can consume a scarce pool number.
   const rl = rateLimit(`dni:${clientIp(req)}`, 10, 60_000);
   if (!rl.ok) {
+    await record("rate_limited");
     return Response.json(
       { error: "rate limited" },
       { status: 429, headers: { ...CORS, "Retry-After": String(rl.retryAfterSec) } },
@@ -97,6 +120,7 @@ export async function POST(req: Request) {
   try {
     b = Body.parse(JSON.parse(await req.text()));
   } catch {
+    await record("invalid_payload");
     return Response.json({ error: "invalid payload" }, { status: 400, headers: CORS });
   }
 
@@ -107,7 +131,10 @@ export async function POST(req: Request) {
 
     // Same session → same number.
     const existing = await getActiveAssignmentForSession(sid);
-    if (existing) return numberResponse(existing.phoneNumber);
+    if (existing) {
+      await record("session_reuse");
+      return numberResponse(existing.phoneNumber);
+    }
 
     const cls = classifySource({
       gclid: click.gclid,
@@ -173,24 +200,40 @@ export async function POST(req: Request) {
     // rather than letting one visitor (e.g. sid churn with blocked cookies)
     // drain the pool.
     const capped = await getNewestAssignmentAtVisitorCap(vid);
-    if (capped) return numberResponse(capped.phoneNumber);
+    if (capped) {
+      await record("visitor_capped");
+      return numberResponse(capped.phoneNumber);
+    }
 
     // Before spending a number: is one already out that says exactly the same thing? Only
     // ever true for visitors with no click id, so paid traffic still gets its own.
     const shared = await findShareableLease(snapshot);
-    if (shared) return numberResponse(shared.phoneNumber);
+    if (shared) {
+      await record("shared");
+      return numberResponse(shared.phoneNumber);
+    }
 
     const leased = await leaseNumber(snapshot, sid, vid);
-    if (leased) return numberResponse(leased.phoneNumber);
+    if (leased) {
+      await record("leased");
+      return numberResponse(leased.phoneNumber);
+    }
 
     // Website pool exhausted — fall back to a static number (still tracked) and flag it.
     console.warn(`[dni] website pool exhausted — using static fallback`);
     const fallback = await getFallbackNumber();
-    if (fallback) return numberResponse(fallback.phoneNumber);
+    if (fallback) {
+      // The visitor is now on a static published number, so their call will read as
+      // `direct`. This counter is the only place that difference is recorded.
+      await record("static_fallback");
+      return numberResponse(fallback.phoneNumber);
+    }
 
+    await record("none");
     return Response.json({ number: null }, { headers: CORS });
   } catch (err) {
     console.error("[dni/assign] error", err);
+    await record("error");
     return Response.json({ number: null }, { headers: CORS });
   }
 }

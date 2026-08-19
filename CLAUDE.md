@@ -639,6 +639,41 @@ re-argued rather than assumed.
   15 minutes and can cost several. `/api/track` is deliberately NOT gated — pageview capture is
   cheap and unbounded, and filtering there would change what the site records, not what the
   pool spends.
+- **What `/api/dni/assign` decided is now COUNTED (`dni_outcomes`, `lib/dni/outcomes.ts`), because
+  part of `direct` is not word of mouth — it is a failed swap.** The endpoint has eight exits and
+  recorded none of them, and it cannot be reconstructed afterwards: `findShareableLease` hands a
+  second visitor an EXISTING lease without writing a row, so a shared visitor and a refused one
+  look identical in `number_assignments`. `swapCoverage` on `/api/diagnostics` splits a 7-day
+  window into `leased` / `session_reuse` / `visitor_capped` / `shared` (covered) against `bot` /
+  `rate_limited` / `origin_rejected` / `invalid_payload` / `static_fallback` / `none` / `error`.
+  - **`coveredPct` is an UPPER BOUND, not a measurement**, and the note on the endpoint says so.
+    It proves a pool number was handed out, never that it reached the page. The client-side half
+    that would close that gap was deliberately NOT built: a browser beacon is blocked by exactly
+    the things that break the swap, so its failures go unreported and coverage would read BETTER
+    the more broken it got. Same shape as the Twilio webhooks failing closed for weeks while calls
+    still connected. Do not add it without solving that.
+  - **Counts are BUFFERED in-process and flushed on time/size, not written per request.** This is a
+    public unauthenticated endpoint and the `bot` / `origin_rejected` exits sit in FRONT of the
+    rate limiter, so a row per request would let a stranger drive our write volume. A redeploy
+    drops up to a minute of counts; that is the right trade for a diagnostic rate and the wrong one
+    for anything billable, so put nothing billable there.
+  - The canary identifies itself with `CRON_SECRET` via `x-arbor-canary` and is counted as
+    `canary`, excluded from the rate — a magic visitor id would let anyone label traffic synthetic.
+- **`dni.canary` (hourly, `lib/sync/dni-canary.ts`) is the check that the swap still happens at
+  all.** Four assertions: the site serves HTML referencing our `track.js`, `track.js` is served and
+  still calls `/api/dni/assign`, that endpoint answers a browser-shaped POST with a number, and the
+  number is a rotating POOL number rather than the static fallback. The fourth matters most —
+  assign returns the static number rather than an error when the pool is dry, so a "successful"
+  request can still mean every visitor is seeing a published number. **Being SYNTHETIC is the
+  point:** it still fires when scripts are being blocked, which is exactly when a client-side
+  measurement goes quiet. Copied from CallRail, which runs a daily fetch of one nominated URL and
+  alerts when the snippet looks wrong; hourly here because the breakage arrives with a website
+  deploy. It leases a real number each run and releases it in a `finally` — an unreleased canary
+  lease would push a real visitor onto the fallback, i.e. the monitor causing the fault it watches
+  for. Release is scoped to its own `web_session_id`, so a run handed a SHARED lease cannot release
+  a customer's number mid-visit. **It does NOT verify the number reached the screen** — that needs
+  a headless browser on the `cron` service, deliberately deferred; the SPA re-render risk is real
+  but is already defended by the MutationObserver in `app/track.js/route.ts`.
 - DNI leasing draws only from pools flagged `pools.is_dni`, so a number provisioned for a mailer
   (default pool `reserved`) can't be handed to website visitors before it's marked static.
   `number_assignments_active_idx` is UNIQUE — one active lease per number — and `leaseNumber`

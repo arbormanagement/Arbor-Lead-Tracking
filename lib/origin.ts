@@ -22,16 +22,24 @@ export const DEFAULT_ALLOWED_ORIGINS = ["https://arbor-mgmt.com", "https://www.a
 const CACHE_MS = 60_000;
 let cached: { set: ReadonlySet<string>; at: number } | null = null;
 
+/**
+ * The configured site origins, in order, before the app's own origin is folded in.
+ * The DNI canary needs the FIRST one — the marketing site it should be checking —
+ * which a Set cannot promise; reading the setting twice would let the canary and the
+ * allowlist drift apart, which is the failure where the canary passes against a site
+ * nobody visits.
+ */
+export async function trackingOrigins(): Promise<string[]> {
+  const stored = await getSetting<string[] | null>(TRACKING_ORIGINS_KEY, null);
+  const list = stored?.length ? stored : DEFAULT_ALLOWED_ORIGINS;
+  return list.map((e) => normalizeOrigin(e.trim())).filter((o): o is string => !!o);
+}
+
 async function allowedSet(): Promise<ReadonlySet<string>> {
   const now = Date.now();
   if (cached && now - cached.at < CACHE_MS) return cached.set;
 
-  const stored = await getSetting<string[] | null>(TRACKING_ORIGINS_KEY, null);
-  const set = new Set<string>();
-  for (const entry of stored?.length ? stored : DEFAULT_ALLOWED_ORIGINS) {
-    const o = normalizeOrigin(entry.trim());
-    if (o) set.add(o);
-  }
+  const set = new Set<string>(await trackingOrigins());
   const own = normalizeOrigin(env.APP_BASE_URL);
   if (own) set.add(own);
 
