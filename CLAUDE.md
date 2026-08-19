@@ -556,6 +556,18 @@ re-argued rather than assumed.
     our row count vs HCP's `total_items` (recorded by the crawl, so the endpoint stays a pure
     DB read), plus hours since the last completed pass. Deletions are SOFT upstream, so drift
     should sit at 0 forever and any divergence is a real gap, not noise.
+- **An HCP `created_at` is truncated to WHOLE SECONDS, and `leads.occurred_at` is not.**
+  `matchLeadsToEstimates` requires the lead to precede the estimate, so comparing the two
+  directly makes an enquiry read as LATER than the estimate it produced whenever the
+  estimate is written inside the same second — which the web-form automation does routinely
+  (measured gaps of 0.5–1s). The lead is then never claimed, the estimate is unattributed
+  forever, and the lead sits frozen at `new`. Found 2026-08-19: Jim Wiemers (+16183776379)
+  submitted at 15:57:58.050 and `csr_ab13fcb79a104e8386b333959024e223` is stamped 15:57:58 —
+  same phone, same email, 50 ms apart. Nine siblings from the same batch matched only because
+  their estimate landed in the next second. The bound is now the END of the stamped second
+  (`HCP_CREATED_AT_GRANULARITY_MS`, `lib/sync/attribution.ts`), which is still strictly under
+  a second so no unrelated later enquiry can steal an old job. **Assume any HCP timestamp is
+  second-granular before comparing it to something that carries milliseconds.**
 - **Deleting an estimate in HCP is a soft delete and it stays in the API forever.** There is
   no `deleted` work_status and no header `deleted_at` — the only trace is every
   `options[].status` being `deleted` (measured: 120 of 2,048 rows, 5.9%). In practice HCP
@@ -577,6 +589,14 @@ re-argued rather than assumed.
   matching `campaigns.name`, so an id there resolves to null. The account-level default still
   holds the old `{adname}` string and can only be edited in the Google Ads UI (no API tool);
   it is shadowed for every live campaign, so it bites only a campaign created without its own.
+- **A promoted channel does NOT reclassify the leads already in `other`.** `classifySource`
+  runs once, at ingest, and the key is frozen onto the lead — so adding a mapping fixes every
+  future lead and none of the rows that prompted the mapping. `npm run db:reclassify-sources`
+  (dry run; `-- --apply` to write) re-runs the classifier over leads currently on `other` and
+  moves the ones it now recognises. It only ever moves a lead OFF `other`, never between
+  mapped sources, so it cannot rewrite the source that earned a call. First use: the 18 Aug
+  2026 SendGrid newsletter (`utm_source=newsletter&utm_medium=email`), 10 leads and 9
+  estimates that were sitting in "Other / Unmapped" — now `email/newsletter`.
 - Both Google Business Profiles link to the site as `utm_source=google+my+business` — which
   arrives as `"google my business"`, since `+` decodes to a space. `classifySource` therefore
   compares utm values **squashed** to letters and digits, so a spelling change in a tag can't

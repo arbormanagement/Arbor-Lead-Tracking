@@ -92,6 +92,20 @@ export function classifySource(p: TouchParams): Classification {
     ) {
       return { sourceKey: "gbp", medium: "organic" };
     }
+    // Email marketing. Arbor sends its newsletter through SendGrid, tagged
+    // `utm_source=newsletter&utm_medium=email`, and until this branch existed the
+    // whole send landed in `other` — 10 leads and 9 estimates from the 18 Aug 2026
+    // blast alone, filed under "Other / Unmapped" on /sources and /estimates.
+    //
+    // Promoted deliberately, which is the rule this file works by: a channel earns
+    // a `sources` row by being added to SEED_SOURCES and mapped here, never by a
+    // UTM string minting one at runtime. The medium is the reliable half — the
+    // source half is whatever the sender happens to be called — so `medium=email`
+    // is the primary test and `source=newsletter` catches a send that only tagged
+    // the source.
+    if (medKey === "email" || srcKey === "newsletter" || srcKey === "email") {
+      return { sourceKey: "email/newsletter", medium: "email" };
+    }
     // Anything not matched above is UNMAPPED, not a new channel. Minting
     // `${src}/${med}` from raw UTM text is what filled /sources with rows nobody
     // runs: a third party can tag a link to your site however they like, and the

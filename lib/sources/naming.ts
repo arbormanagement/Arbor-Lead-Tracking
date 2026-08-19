@@ -38,6 +38,7 @@ const KNOWN: Record<string, string> = {
   "organic/seo": "Organic Search",
   gbp: "Google Business Profile",
   direct: "Direct",
+  "email/newsletter": "Email Newsletter",
   referral: "Referral",
   [UNMAPPED_SOURCE_KEY]: "Other / Unmapped",
 };
