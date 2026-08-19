@@ -591,9 +591,13 @@ re-argued rather than assumed.
   it is shadowed for every live campaign, so it bites only a campaign created without its own.
 - **A promoted channel does NOT reclassify the leads already in `other`.** `classifySource`
   runs once, at ingest, and the key is frozen onto the lead — so adding a mapping fixes every
-  future lead and none of the rows that prompted the mapping. `npm run db:reclassify-sources`
-  (dry run; `-- --apply` to write) re-runs the classifier over leads currently on `other` and
-  moves the ones it now recognises. It only ever moves a lead OFF `other`, never between
+  future lead and none of the rows that prompted the mapping. `lib/sources/reclassify.ts`
+  re-runs the classifier over leads currently on `other` and moves the ones it now recognises —
+  as `npm run db:reclassify-sources` (dry run; `-- --apply` to write) for a local DB, and as
+  **`POST /api/admin/reclassify-sources?apply=true`** for production, which is the only way to
+  run it there: the Railway Postgres has no public TCP proxy, so nothing outside the project's
+  private network can reach the database. GET is always a dry run; writing needs BOTH a POST and
+  the flag. It only ever moves a lead OFF `other`, never between
   mapped sources, so it cannot rewrite the source that earned a call. First use: the 18 Aug
   2026 SendGrid newsletter (`utm_source=newsletter&utm_medium=email`), 10 leads and 9
   estimates that were sitting in "Other / Unmapped" — now `email/newsletter`.
