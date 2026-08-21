@@ -442,17 +442,15 @@ export default async function EstimatesPage({
               replacing it. Showing only the calendar state hid what had actually
               happened to the estimate — a won job, or a priced quote awaiting a
               decision, both rendered as a bare "unscheduled". */}
-          {(r.outcome === "won" || r.outcome === "lost" || r.scheduled) && (
-            <span className={stageClass(r.outcome)}>{r.outcome}</span>
-          )}
+          <span className={stageClass(r.outcome)}>{r.outcome}</span>
           {!r.scheduled && (
             <span
               className="badge warn"
-              style={{ marginLeft: r.outcome === "won" || r.outcome === "lost" ? 4 : 0 }}
+              style={{ marginLeft: 4 }}
               title={
                 r.outcome === "won"
                   ? "Won without a booked visit — settled over the phone. Counted in the close rate."
-                  : "No visit booked yet — not counted in the close rate unless it is won."
+                  : "No visit booked. An `open` estimate here may still be a live quote — check the amount."
               }
             >
               unscheduled
