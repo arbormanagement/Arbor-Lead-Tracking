@@ -1,0 +1,1 @@
+CREATE INDEX "number_assignments_number_expiry_idx" ON "number_assignments" USING btree ("tracking_number_id","expires_at");

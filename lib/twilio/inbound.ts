@@ -1,5 +1,5 @@
 import { displayNameFor } from "@/lib/sources/naming";
-import { and, desc, eq, gt, isNull, or } from "drizzle-orm";
+import { and, desc, eq, gt } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { numberAssignments, sources, spamRules, trackingNumbers } from "@/lib/db/schema";
 
@@ -10,8 +10,27 @@ import { numberAssignments, sources, spamRules, trackingNumbers } from "@/lib/db
  * query count low and never throw for a merely-missing row.
  */
 
-/** A just-released lease still explains a contact that started before the release. */
-const GRACE_MS = 15 * 60 * 1000;
+/**
+ * How long after a DNI lease ENDS a contact on that number is still explained by it.
+ *
+ * The number stays on the visitor's screen after the lease lapses, and people ring
+ * when it suits them — they read it, get interrupted, and dial after the meeting.
+ * At 15 minutes on top of a 15-minute lease, a caller had ~30 minutes from their
+ * last pageview before the call resolved to NO SOURCE at all: pool numbers carry no
+ * `static_source_id`, so with no assignment to match there is nothing to fall back
+ * to. Measured 2026-08-21: a call on 8/20 that self-reported "google search" and
+ * went on to produce an estimate landed with a null source — the first
+ * `leadButNoSource` this app has ever recorded.
+ *
+ * Two hours, not longer, because the failure modes are asymmetric. Widening only
+ * changes the outcome while the number sits IDLE — once it is re-leased the newest
+ * assignment wins below, and a late caller is credited to whoever holds it now
+ * whatever this value is. So the cost of a wide window is a stale cached page dialled
+ * the next morning being credited to a lease from hours earlier, which is a WRONG
+ * answer where null is merely a coarse one. Same principle as never sharing a lease
+ * across a click id.
+ */
+const GRACE_MS = 120 * 60 * 1000;
 
 export interface InboundAttribution {
   sourceKey: string | null;
@@ -32,7 +51,7 @@ export interface InboundAttribution {
 /**
  * Which source does a contact on this number belong to? Static numbers map
  * straight to their configured source; pooled numbers resolve to the most recent
- * active (or recently released) DNI lease.
+ * lease that is still active or ended within `GRACE_MS`.
  */
 export async function resolveInboundAttribution(
   tn: typeof trackingNumbers.$inferSelect,
@@ -46,16 +65,23 @@ export async function resolveInboundAttribution(
     return { sourceKey: src?.key ?? null, assignmentId: null, lease: null };
   }
 
+  // Keyed on `expires_at`, NOT `released_at`, and deliberately so. `released_at` is
+  // stamped by `releaseExpired()`, which runs opportunistically at the top of each
+  // /api/dni/assign request — so on a busy day it lands seconds after the lease
+  // lapsed, while on a quiet evening an expired lease can sit with `released_at`
+  // NULL for hours and match here forever. That made the real grace window a
+  // function of how much OTHER traffic the site happened to get, which is exactly
+  // the kind of silent, traffic-dependent behaviour that makes an attribution bug
+  // impossible to reproduce. `expires_at` is when the lease actually ended and is
+  // written once, so the window below is the same length at 3am as at noon.
+  //
+  // An active lease still matches: its `expires_at` is in the future, which is
+  // trivially after the cutoff.
   const graceCutoff = new Date(Date.now() - GRACE_MS);
   const [assignment] = await db
     .select()
     .from(numberAssignments)
-    .where(
-      and(
-        eq(numberAssignments.trackingNumberId, tn.id),
-        or(isNull(numberAssignments.releasedAt), gt(numberAssignments.releasedAt, graceCutoff)),
-      ),
-    )
+    .where(and(eq(numberAssignments.trackingNumberId, tn.id), gt(numberAssignments.expiresAt, graceCutoff)))
     .orderBy(desc(numberAssignments.assignedAt))
     .limit(1);
 

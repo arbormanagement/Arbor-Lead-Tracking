@@ -306,6 +306,13 @@ export const numberAssignments = pgTable(
     index("number_assignments_expiry_idx")
       .on(t.expiresAt)
       .where(sql`released_at IS NULL`),
+    // `resolveInboundAttribution` — the inbound call/text lookup — filters
+    // `tracking_number_id = ? AND expires_at > ?`. Neither index above can serve it:
+    // both are partial on `released_at IS NULL`, and that lookup deliberately
+    // matches RELEASED leases too (a caller dialling within the grace window). Left
+    // unindexed it is a sequential scan on a table that grows with every lease, on
+    // the one path CLAUDE.md requires to answer in under three seconds.
+    index("number_assignments_number_expiry_idx").on(t.trackingNumberId, t.expiresAt),
   ],
 );
 

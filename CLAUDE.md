@@ -158,7 +158,9 @@ things from it that constrain this codebase:
   `track.js` now calls `/api/dni/assign` and owns the displayed number.** Verified live:
   session-sticky leases, distinct numbers per visitor, `gclid` frozen onto the lease, and a
   test call to a leased pool number completing cleanly. Pool = the 5 transferred CallRail
-  pool numbers; the 5 published numbers plus test line `+16184278164` are static.
+  pool numbers; the 5 published numbers are static. **`+16184278164` is no longer the static
+  test line — it is now `Pool: Website 1`, making the DNI pool SIX numbers** (verified against
+  `/api/diagnostics` 2026-08-21; check `pool.numbers` there rather than trusting this count).
 - **⚠️ `TWILIO_AUTH_TOKEN` must stay set on the Railway `web` service.** It was unset from
   the Railway migration until 2026-08-08, and because `/api/twilio/status` and
   `/api/twilio/recording` **fail CLOSED** (`sig === "unresolved"` → 403 in production;
@@ -623,6 +625,43 @@ re-argued rather than assumed.
   same 5 for the same traffic without exhausting. `exhausted` in `/api/diagnostics` is the
   signal; if it returns, `MAX_ACTIVE_LEASES_PER_VISITOR = 2` is the next lever (CallRail
   assigns one per session).
+- **A short lease needs a LONG grace window, and the two are set independently** (2026-08-21).
+  `LEASE_MINUTES` is a capacity control; `GRACE_MS` in `lib/twilio/inbound.ts` is how long after
+  a lease ends a call on that number still resolves to it. They were both 15, so a visitor had
+  ~30 minutes from their last pageview to dial before the call matched NO assignment — and pool
+  numbers carry no `static_source_id`, so there is nothing to fall back to and the lead is
+  written with a **null source**. That produced the first `leadButNoSource` this app has ever
+  recorded (a call on 8/20 that self-reported "google search" and became an estimate). Grace is
+  now **120 minutes**. Widening it further is cheap in one direction only: it changes nothing
+  once the number has been re-leased, because the newest assignment wins, so the only thing a
+  wide window buys is the risk of crediting a stale cached page to an hours-old lease — a WRONG
+  answer where null is merely a coarse one.
+  - **It is keyed on `expires_at`, not `released_at`, and that is load-bearing.** `released_at`
+    is stamped by `releaseExpired()`, which runs opportunistically at the top of each
+    `/api/dni/assign` request — so it lands seconds after expiry on a busy afternoon and can stay
+    NULL for hours on a quiet evening, matching forever. The grace window was therefore a
+    function of how much OTHER traffic the site got, which is unreproducible by construction.
+  - The lookup this feeds is on the `/voice` hot path and both existing indexes are partial on
+    `released_at IS NULL`, which this query deliberately does not filter on. Hence
+    `number_assignments_number_expiry_idx` (migration 0038) — without it, a sequential scan on a
+    table that grows with every lease.
+- **The DNI rate limit is TWO limits, and neither is "10/min per IP"** (2026-08-21). That single
+  limit conflated "a page needs one lease" with "one address is one visitor". Carrier CGNAT puts
+  thousands of subscribers behind one address and an office is one address for everyone in it, so
+  the first ten won and the rest got a 429 — and **a refused visitor keeps the published number,
+  rings a static line, and lands in `direct`**, which reads as word of mouth. Measured over the
+  7 days to 2026-08-21: **42 `rate_limited` exits against 317 non-bot requests, ~13% of real
+  visitors**, none abusive. Now a generous per-IP flood ceiling (120/min) plus the real budget
+  keyed on `vid` (10/min). `vid` is client-supplied and forgeable, which is why it cannot be the
+  only limit — but the Origin gate, the bot check, `MAX_ACTIVE_LEASES_PER_VISITOR` and the IP
+  ceiling all still stand in front of it.
+  - **`coveredPct` in `swapCoverage` counts bots in its denominator, so it reads far worse than
+    reality.** 64.5% over that window was `bot` 106 (correctly refused — a crawler never dials),
+    `rate_limited` 42, `static_fallback` 2. Excluding bots it is 86%. Read the `byOutcome`
+    breakdown, not the percentage.
+  - The per-IP ceiling is what used to bound how much body the route would read. Raising it moved
+    that guarantee, so `MAX_BODY_BYTES` now bounds it explicitly — the zod schema caps what is
+    ACCEPTED, but only after `req.text()` has already buffered whatever was sent.
 - **Two visitors with IDENTICAL attribution share one number** (`findShareableLease`, checked
   before leasing). The pool exists to tell sources apart, and `roi_daily` keys on
   (date, source, campaign, location) — so two `direct` visitors with no click id already land
