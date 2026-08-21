@@ -224,8 +224,15 @@ export async function GET(req: Request) {
     sessions24h: recentSessions.length,
     botSessions24h: botSessions,
     botShare: recentSessions.length ? Math.round((botSessions / recentSessions.length) * 100) : 0,
-    // Rows written before user_agent was captured — they read as bots to the predicate, so
+    // Sessions carrying no user_agent at all. They read as bots to the predicate, so
     // botShare is only meaningful once this reaches zero.
+    //
+    // It could not reach zero until 2026-08-21: `/api/dni/assign` seeded session rows
+    // without an agent and `onConflictDoNothing` stopped the pageview beacon filling
+    // it in, so every session where assign won the race manufactured its own bot.
+    // Both routes now record it — a non-zero figure here is once again what it claims
+    // to be (pre-fix history, or a genuinely agent-less client) rather than our own
+    // bookkeeping.
     noUserAgentRecorded: unknownUa,
   };
 

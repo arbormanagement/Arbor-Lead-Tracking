@@ -243,6 +243,16 @@ export async function POST(req: Request) {
         fbclid: click.fbclid,
         referrer,
         landingPage: url,
+        // The same user-agent the bot gate above read. Without it this seed writes a
+        // session with a NULL user_agent, and `onConflictDoNothing` means the
+        // pageview beacon can never fill it in afterwards — so every session where
+        // assign won the race (or /api/track was blocked outright) was permanently
+        // indistinguishable from a crawler. `/api/diagnostics` classifies a null
+        // agent as a bot, which is why botShare read 45% against a real figure well
+        // below that, and why `noUserAgentRecorded` was never going to reach the
+        // zero its own note describes as the point at which botShare becomes
+        // meaningful.
+        userAgent: req.headers.get("user-agent"),
       })
       .onConflictDoNothing({ target: webSessions.id });
 
