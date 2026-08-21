@@ -57,6 +57,9 @@ const Body = z.object({
     .optional(),
 });
 
+/** Comfortably above the largest payload the schema above can accept (~7KB). */
+const MAX_BODY_BYTES = 16 * 1024;
+
 const CORS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
@@ -105,23 +108,70 @@ export async function POST(req: Request) {
     await record("bot");
     return Response.json({ number: null }, { headers: CORS });
   }
-  // Tighter than /api/track's budget: a page needs ONE lease per session, not 30
-  // per minute, and each request can consume a scarce pool number.
-  const rl = rateLimit(`dni:${clientIp(req)}`, 10, 60_000);
-  if (!rl.ok) {
+  // FLOOD control, per IP — deliberately generous, and NOT the per-visitor budget.
+  //
+  // This used to be the only limit, at 10/min per IP, which conflated "one page
+  // needs one lease" with "one address is one visitor". It is not: mobile carriers
+  // put thousands of subscribers behind a single CGNAT address, and an office or a
+  // coffee shop is one address for everyone in it. The first ten requests from such
+  // an address won, the rest got a 429 — and a refused visitor keeps the site's
+  // published number, so they ring a STATIC line and land in `direct`, which reads
+  // as word-of-mouth rather than as the paid click it may well have been. Measured
+  // over the 7 days to 2026-08-21: 42 `rate_limited` exits against 317 non-bot
+  // requests, i.e. ~13% of real visitors refused, none of them abusive.
+  //
+  // The ceiling stays because this endpoint is public and unauthenticated. It is set
+  // where a shared address cannot reach it in normal use but a flood still trips it.
+  const ipRl = rateLimit(`dni:ip:${clientIp(req)}`, 120, 60_000);
+  if (!ipRl.ok) {
     await record("rate_limited");
     return Response.json(
       { error: "rate limited" },
-      { status: 429, headers: { ...CORS, "Retry-After": String(rl.retryAfterSec) } },
+      { status: 429, headers: { ...CORS, "Retry-After": String(ipRl.retryAfterSec) } },
     );
+  }
+
+  // Refuse an oversized body before reading it into memory. The zod schema already
+  // bounds every field, but it only runs AFTER `req.text()` has buffered whatever was
+  // sent — so the schema caps what we accept, not what we read. That gap was covered
+  // by the old 10/min-per-IP limit; raising the ceiling to 120 reopens it, so the
+  // bound is made explicit rather than left as a side effect of the rate limiter.
+  // Every legitimate payload is under ~7KB (the sum of the maxima below).
+  const declaredLength = Number(req.headers.get("content-length") ?? 0);
+  if (declaredLength > MAX_BODY_BYTES) {
+    await record("invalid_payload");
+    return Response.json({ error: "payload too large" }, { status: 413, headers: CORS });
   }
 
   let b;
   try {
-    b = Body.parse(JSON.parse(await req.text()));
+    const raw = await req.text();
+    // A chunked request carries no content-length, so re-check what actually arrived.
+    if (raw.length > MAX_BODY_BYTES) throw new Error("payload too large");
+    b = Body.parse(JSON.parse(raw));
   } catch {
     await record("invalid_payload");
     return Response.json({ error: "invalid payload" }, { status: 400, headers: CORS });
+  }
+
+  // The REAL budget: per visitor, which is the unit the old per-IP limit was trying
+  // to approximate. A page needs one lease per session, so ten a minute is already
+  // far above anything a browser does.
+  //
+  // `vid` is client-supplied and therefore forgeable, which is why this cannot be the
+  // only limit — but forging it buys very little here. Every request has already
+  // passed the Origin gate and the bot check, `MAX_ACTIVE_LEASES_PER_VISITOR` bounds
+  // what any one vid can hold, and the per-IP ceiling above still caps the flood.
+  // Rotating vids to escape this limit therefore costs an attacker more than it
+  // gains, while an honest visitor behind a busy NAT is no longer punished for their
+  // neighbours' traffic.
+  const vidRl = rateLimit(`dni:vid:${b.vid}`, 10, 60_000);
+  if (!vidRl.ok) {
+    await record("rate_limited");
+    return Response.json(
+      { error: "rate limited" },
+      { status: 429, headers: { ...CORS, "Retry-After": String(vidRl.retryAfterSec) } },
+    );
   }
 
   try {
