@@ -37,11 +37,22 @@ Edwardsville + O'Fallon). WhatConverts-style. Single-tenant. Owner: Justin
       (`coalesce(scheduled_start_hcp, created_at_hcp)`), not `scheduled_start` directly, or
       it silently re-drops exactly the rows the `won` arm admits while the predicate still
       claims they count.
-    - **`work_status` is NOT the test, and the two disagree constantly.** Filtering HCP on
-      `work_status = 'unscheduled'` returns only rows literally marked `needs scheduling`.
-      Of the 37 estimates with no `scheduled_start` in the most recent 200, only 9 were
-      `needs scheduling` — 27 were cancelled and 2 were `created job from estimate`, i.e.
-      won and converted. Measure the null column, never the label.
+    - **`work_status` is NOT the test — not for scheduling, and never for WON.** Filtering
+      HCP on `work_status = 'unscheduled'` returns only rows literally marked `needs
+      scheduling`: of the 37 estimates with no `scheduled_start` in the most recent 200,
+      only 9 carried that label, 27 were cancelled and 2 sat at `created job from
+      estimate`. Measure the null column, never the label.
+      - **`won` is decided by OPTION APPROVAL and nothing else** (Justin, 2026-08-21), as
+        `mapEstimate` has always done it: at least one `options[].approval_status` in
+        {`approved`, `pro approved`}. `work_status` is read in exactly ONE place in this
+        codebase — `CANCELLED_STATUSES` — and the string `created job from estimate`
+        appears nowhere in it. It is a job-conversion label, and letting it stand in for a
+        customer's approval would mean HCP's own workflow bookkeeping deciding what counts
+        as revenue.
+      - The two happen to agree, which is exactly what makes the shortcut tempting: all 28
+        `created job from estimate` rows in that 200 independently carried an approved
+        option. Agreement in a sample is not a definition — cite the approval when
+        describing why an estimate is won, or the next reader wires up the label.
 - **The inbox is CONTACT-centric, not channel-centric.** One thread per person
   (`conversations`, unique on `contact_id`), holding every channel they've ever used.
   `contacts` + `contact_identifiers` are the identity spine: a form carrying both a phone

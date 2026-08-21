@@ -91,6 +91,12 @@ export const isCountableEstimate: SQL = and(
   // count. This arm only ever ADDS an estimate that closed, which lands in the
   // numerator and denominator alike — so the close rate moves by a fraction of a
   // point, and in exchange it becomes impossible for a sale to be invisible.
+  //
+  // `won` here is `hcp_estimates.won`, which `mapEstimate` sets from option
+  // `approval_status` alone — a customer (or the pro on their behalf) approving an
+  // option. It is deliberately NOT read off `work_status`: `created job from estimate`
+  // is HCP's job-conversion bookkeeping, and letting a workflow label stand in for an
+  // approval would put HCP's internal state in charge of what counts as revenue.
   or(isNotNull(hcpEstimates.scheduledStartHcp), eq(hcpEstimates.won, true)),
   // `status IS NULL OR status NOT IN (...)` — spelled out because SQL NULL is not
   // false, so a bare NOT IN would silently drop every estimate with no work_status.
