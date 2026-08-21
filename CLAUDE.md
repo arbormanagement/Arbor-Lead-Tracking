@@ -735,9 +735,10 @@ re-argued rather than assumed.
   - The canary identifies itself with `CRON_SECRET` via `x-arbor-canary` and is counted as
     `canary`, excluded from the rate — a magic visitor id would let anyone label traffic synthetic.
 - **`dni.canary` (hourly, `lib/sync/dni-canary.ts`) is the check that the swap still happens at
-  all.** Four assertions: the site serves HTML referencing our `track.js`, `track.js` is served and
+  all.** Five assertions: the site serves HTML referencing our `track.js`, the page holds something
+  the swap can REACH and no published number sits where it cannot, `track.js` is served and
   still calls `/api/dni/assign`, that endpoint answers a browser-shaped POST with a number, and the
-  number is a rotating POOL number rather than the static fallback. The fourth matters most —
+  number is a rotating POOL number rather than the static fallback. The pool one matters most —
   assign returns the static number rather than an error when the pool is dry, so a "successful"
   request can still mean every visitor is seeing a published number. **Being SYNTHETIC is the
   point:** it still fires when scripts are being blocked, which is exactly when a client-side
@@ -749,6 +750,32 @@ re-argued rather than assumed.
   a customer's number mid-visit. **It does NOT verify the number reached the screen** — that needs
   a headless browser on the `cron` service, deliberately deferred; the SPA re-render risk is real
   but is already defended by the MutationObserver in `app/track.js/route.ts`.
+  - **"References track.js" and "has anything to swap" are DIFFERENT failures, and the second is
+    the quiet one** (`lib/dni/swap-targets.ts`, 2026-08-21). `swapNumbers` rewrites exactly
+    `[data-arbor-phone]` and `a[href^="tel:"]`. A number rendered as plain text in a footer or a
+    non-anchor button is invisible to both — the snippet loads, assign succeeds, the pool hands out
+    a number, every server-side signal reads healthy, and the visitor still dials the published
+    number and is recorded as `direct`. It is a fact about the WEBSITE's markup, which changes on
+    the website's deploy schedule rather than ours, so nothing in this app could previously see it.
+  - **Audited across all 34 pages of arbor-mgmt.com 2026-08-21: clean.** Every page carries the
+    snippet and 1–4 `tel:` anchors (3 of the 4 are "Call Now" CTAs whose href swaps and whose label
+    is deliberately preserved), and NO page renders a published number in plain visible text. So
+    the check starts green — it is a regression detector, and its worth is its false-positive rate.
+  - **Meta tags and JSON-LD are deliberately excluded from that check.** The homepage carries the
+    published number in `<meta name="description">`, in two JSON-LD `telephone` fields and in an
+    HTML comment. Those SHOULD stay static forever — structured data feeds Google Business, and a
+    rotating pool number there would be actively wrong. Counting them would make the check
+    permanently red and it would be switched off within a week.
+  - **It samples rotating pages from the sitemap, not just the root** (2 per run, cursor in
+    `settings` under `dni.canary.pageCursor`, same pattern as `hcp.estimates.crawl`). Ad traffic
+    lands on `/services/*` and `/locations/*`; those templates drift independently, and a hardcoded
+    page list would quietly stop covering pages added later.
+  - **arbor-mgmt.com resets a connection now and then** — 2 failures in ~40 requests when measured.
+    So a sampled page that will not load is REPORTED, not thrown (`pagesUnreadable` in the run
+    stats), with one retry; only the root failing is fatal. A monitor that cries wolf gets switched
+    off. Worth knowing separately: when that flake hits `track.js` itself, the swap never happens
+    and that visitor reads the published number — a real, recurring source of `direct` that no
+    server-side signal can see.
 - DNI leasing draws only from pools flagged `pools.is_dni`, so a number provisioned for a mailer
   (default pool `reserved`) can't be handed to website visitors before it's marked static.
   `number_assignments_active_idx` is UNIQUE — one active lease per number — and `leaseNumber`

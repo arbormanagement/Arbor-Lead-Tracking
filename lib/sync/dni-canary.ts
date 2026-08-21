@@ -1,9 +1,11 @@
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { pools, trackingNumbers } from "@/lib/db/schema";
 import { releaseSessionLeases } from "@/lib/dni/assign";
+import { findSwapTargets } from "@/lib/dni/swap-targets";
 import { env } from "@/lib/env";
 import { trackingOrigins } from "@/lib/origin";
+import { getSetting, setSetting } from "@/lib/settings";
 import { withSyncRun } from "./run";
 
 /**
@@ -22,11 +24,13 @@ import { withSyncRun } from "./run";
  * back, so unlike any client-side measurement it still fires when the script is being
  * blocked — which is precisely when you need to hear about it.
  *
- * Four checks, cheapest first, each a hard failure:
+ * Five checks, cheapest first, each a hard failure:
  *   1. the site serves HTML and it references our track.js
- *   2. track.js is actually served, and still contains the assign call
- *   3. POST /api/dni/assign, exactly as the browser does, returns a number
- *   4. that number is a rotating POOL number, not a static one
+ *   2. the page holds something the swap can actually REACH, and no published number
+ *      sits in visible text where it cannot (see lib/dni/swap-targets.ts)
+ *   3. track.js is actually served, and still contains the assign call
+ *   4. POST /api/dni/assign, exactly as the browser does, returns a number
+ *   5. that number is a rotating POOL number, not a static one
  *
  * Check 4 is the one that catches a quietly exhausted pool: `/api/dni/assign` answers
  * with the static fallback rather than an error, so a request that "succeeded" can
@@ -58,6 +62,82 @@ function fetchWithTimeout(url: string, init?: RequestInit) {
   return fetch(url, { ...init, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS), cache: "no-store" });
 }
 
+interface PageCheck {
+  url: string;
+  error?: string;
+  referencesTrackJs?: boolean;
+  telAnchors?: number;
+  markedElements?: number;
+  unswappable?: string[];
+}
+
+/** Settings key holding the rotation cursor over the site's sitemap. */
+const PAGE_CURSOR_KEY = "dni.canary.pageCursor";
+/** Pages sampled per run, beyond the root. Two an hour walks a 34-page site in ~17h. */
+const SAMPLE_PAGES_PER_RUN = 2;
+
+/**
+ * Fetch one page and report what the swap could reach on it.
+ *
+ * Never throws — a page that will not load is a fact to report, not a reason to
+ * abandon the other checks. One retry, because the site resets a connection
+ * occasionally and a single blip is not a DNI fault.
+ */
+async function checkPage(url: string, trackJsUrl: string, published: string[]): Promise<PageCheck> {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const res = await fetchWithTimeout(url, { headers: { "user-agent": CANARY_UA } });
+      if (!res.ok) {
+        if (attempt === 0) continue;
+        return { url, error: `HTTP ${res.status}` };
+      }
+      const targets = findSwapTargets(await res.text(), trackJsUrl, published);
+      return { url, ...targets };
+    } catch (err) {
+      if (attempt === 0) continue;
+      return { url, error: err instanceof Error ? err.message : String(err) };
+    }
+  }
+  return { url, error: "unreachable" };
+}
+
+/**
+ * The next couple of pages to sample, walked from the site's own sitemap.
+ *
+ * Rotating rather than a fixed list: the pages that matter are the ad landing pages,
+ * they are added and renamed on the website's schedule, and a hardcoded list here
+ * would quietly stop covering the new ones. The cursor is stored the same way the
+ * HCP estimate crawl stores its own — see `hcp.estimates.crawl`.
+ *
+ * Returns nothing when there is no sitemap, which downgrades this to the
+ * root-only check it replaced rather than failing the run.
+ */
+async function nextSamplePages(site: string): Promise<string[]> {
+  let locs: string[] = [];
+  try {
+    const res = await fetchWithTimeout(new URL("/sitemap.xml", site).toString(), {
+      headers: { "user-agent": CANARY_UA },
+    });
+    if (!res.ok) return [];
+    const xml = await res.text();
+    locs = [...xml.matchAll(/<loc>([^<]+)<\/loc>/g)]
+      .map((m) => m[1]!.trim())
+      // The root is checked every run regardless; sampling it again wastes the slot.
+      .filter((u) => u.replace(/\/$/, "") !== site.replace(/\/$/, ""));
+  } catch {
+    return [];
+  }
+  if (locs.length === 0) return [];
+
+  const cursor = await getSetting<number>(PAGE_CURSOR_KEY, 0);
+  const picked: string[] = [];
+  for (let i = 0; i < Math.min(SAMPLE_PAGES_PER_RUN, locs.length); i++) {
+    picked.push(locs[(cursor + i) % locs.length]!);
+  }
+  await setSetting(PAGE_CURSOR_KEY, (cursor + picked.length) % locs.length);
+  return picked;
+}
+
 export async function runDniCanary() {
   return withSyncRun("dni.canary", async () => {
     if (!env.CRON_SECRET) {
@@ -71,11 +151,33 @@ export async function runDniCanary() {
     const appBase = env.APP_BASE_URL.replace(/\/$/, "");
     const trackJsUrl = `${appBase}/track.js`;
 
-    // 1. The site is up and still references our snippet.
-    const pageRes = await fetchWithTimeout(site, { headers: { "user-agent": CANARY_UA } });
-    if (!pageRes.ok) throw new Error(`site ${site} returned HTTP ${pageRes.status}`);
-    const html = await pageRes.text();
-    const snippetPresent = html.includes(trackJsUrl);
+    // The numbers a visitor must never be left reading: every static/published
+    // number we own. Pulled from the database rather than hardcoded, so a number
+    // promoted to static is covered by this check the moment it is configured.
+    const publishedRows = await db
+      .select({ phone: trackingNumbers.phoneNumber })
+      .from(trackingNumbers)
+      .where(and(eq(trackingNumbers.isStatic, true), eq(trackingNumbers.status, "active")));
+    const published = publishedRows.map((r) => r.phone);
+
+    // 1 + 2. The site is up, references our snippet, and has something swappable on
+    //        it. Checked on the root every run, plus a couple of rotating pages —
+    //        ad traffic lands on /services/* and /locations/*, not the homepage, and
+    //        a page template can drift on its own.
+    const pages = [site, ...(await nextSamplePages(site))];
+    const checked: PageCheck[] = [];
+    for (const url of pages) {
+      const check = await checkPage(url, trackJsUrl, published);
+      checked.push(check);
+    }
+
+    // The root is authoritative: if it cannot be read, the site is down and there is
+    // nothing to say about swapping. A sampled page that failed to load is reported
+    // but not fatal — arbor-mgmt.com resets a connection now and then (measured ~5%
+    // of requests on 2026-08-21), and a monitor that cries wolf gets switched off.
+    const root = checked[0]!;
+    if (root.error) throw new Error(`site ${site} could not be read: ${root.error}`);
+    const snippetPresent = root.referencesTrackJs === true;
     if (!snippetPresent) {
       throw new Error(
         `${site} does not reference ${trackJsUrl} — the tracking snippet is missing or points elsewhere, ` +
@@ -83,7 +185,29 @@ export async function runDniCanary() {
       );
     }
 
-    // 2. track.js is served and is still the real thing. A 200 that returns an error
+    // A published number sitting in visible text that no selector reaches. Every
+    // visitor to that page reads the untracked number, dials it, and is recorded as
+    // `direct` — with every server-side signal still reading healthy.
+    const stranded = checked.filter((c) => c.unswappable && c.unswappable.length > 0);
+    if (stranded.length > 0) {
+      throw new Error(
+        `a published number is rendered where track.js cannot swap it: ` +
+          stranded.map((c) => `${c.url} → ${c.unswappable!.join(", ")}`).join(" · ") +
+          ` — wrap it in <a href="tel:…"> or mark it data-arbor-phone`,
+      );
+    }
+
+    // Snippet present but nothing to rewrite. Not necessarily broken — a page may
+    // legitimately show no number — but it is on the root that this matters, since
+    // every check above would still pass while no visitor ever sees a swap.
+    if (root.telAnchors === 0 && root.markedElements === 0) {
+      throw new Error(
+        `${site} loads track.js but has no tel: link and no [data-arbor-phone] element — ` +
+          `there is nothing for the swap to rewrite`,
+      );
+    }
+
+    // 3. track.js is served and is still the real thing. A 200 that returns an error
     //    page would satisfy a status check, so assert on content.
     const scriptRes = await fetchWithTimeout(trackJsUrl, { headers: { "user-agent": CANARY_UA } });
     if (!scriptRes.ok) throw new Error(`${trackJsUrl} returned HTTP ${scriptRes.status}`);
@@ -92,7 +216,7 @@ export async function runDniCanary() {
       throw new Error(`${trackJsUrl} no longer calls /api/dni/assign — the swap is inert`);
     }
 
-    // 3. Ask for a number the way the page does, including the Origin header the
+    // 4. Ask for a number the way the page does, including the Origin header the
     //    endpoint requires. Any leftover lease from a run that died before its
     //    release is cleared first, so this always exercises a fresh assignment.
     await releaseSessionLeases(CANARY_SESSION_ID);
@@ -122,7 +246,7 @@ export async function runDniCanary() {
         throw new Error("/api/dni/assign returned no number — every visitor is keeping the published number");
       }
 
-      // 4. Is it a POOL number? The endpoint falls back to a static number when the
+      // 5. Is it a POOL number? The endpoint falls back to a static number when the
       //    pool is empty, so a number in hand is not yet proof of a working rotation.
       const [row] = await db
         .select({
@@ -143,7 +267,22 @@ export async function runDniCanary() {
         );
       }
 
-      return { site, snippetPresent, trackJsBytes: script.length, assigned, pool: row.pool };
+      return {
+        site,
+        snippetPresent,
+        trackJsBytes: script.length,
+        assigned,
+        pool: row.pool,
+        // What the swap had to work with, so a slow drift in the site's markup is
+        // visible in sync_runs history before it becomes a failure.
+        pagesChecked: checked.length,
+        pagesUnreadable: checked.filter((c) => c.error).map((c) => c.url),
+        swapTargets: checked.map((c) => ({
+          url: c.url,
+          tel: c.telAnchors ?? null,
+          marked: c.markedElements ?? null,
+        })),
+      };
     } finally {
       // Never hold a pool number between runs. Six numbers cannot spare one, and an
       // unreleased canary lease would itself push a real visitor onto the fallback —
