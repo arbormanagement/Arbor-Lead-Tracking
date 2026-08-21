@@ -1,4 +1,4 @@
-import { and, inArray, isNotNull, isNull, notInArray, or, sql, type SQL } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, isNull, notInArray, or, sql, type SQL } from "drizzle-orm";
 import { hcpEstimates } from "@/lib/db/schema";
 
 /**
@@ -71,12 +71,44 @@ export const isDeletedEstimate: SQL = sql`
 const notDeleted: SQL = sql`NOT (${isDeletedEstimate})`;
 
 export const isCountableEstimate: SQL = and(
-  isNotNull(hcpEstimates.scheduledStartHcp),
+  // Scheduled, **or won without ever being scheduled** (Justin, 2026-08-21).
+  //
+  // The `won` arm is a correction, not a loosening. The scheduled-only rule was
+  // aimed at estimates that went nowhere — created, never priced, never booked —
+  // and it is still right about those. It was never meant to reach a job the
+  // business actually SOLD, and it was: some estimates are settled entirely over
+  // the phone, so the crew never needs a calendar entry and `scheduled_start` stays
+  // null forever. Those were dropped from the close-rate denominator AND from
+  // `roi_daily`, so a won job earned real money that no ROI surface could see, and
+  // /estimates badged it `unscheduled` rather than `won`.
+  //
+  // Measured across three 200-estimate slices of HCP history (2026-08-21): 1, 1 and
+  // 2 won-but-never-scheduled per 200 — ~1.5–3% of all wins. Small, and entirely
+  // silent, which is why it survived this long.
+  //
+  // The Feb-2026 argument for the predicate is untouched: those 45 cancelled rows
+  // and the never-scheduled-never-priced ones are not won, so they still do not
+  // count. This arm only ever ADDS an estimate that closed, which lands in the
+  // numerator and denominator alike — so the close rate moves by a fraction of a
+  // point, and in exchange it becomes impossible for a sale to be invisible.
+  or(isNotNull(hcpEstimates.scheduledStartHcp), eq(hcpEstimates.won, true)),
   // `status IS NULL OR status NOT IN (...)` — spelled out because SQL NULL is not
   // false, so a bare NOT IN would silently drop every estimate with no work_status.
   or(isNull(hcpEstimates.status), notInArray(hcpEstimates.status, CANCELLED_STATUSES)),
   notDeleted,
 )!;
+
+/**
+ * When a countable estimate happened, for anything that has to bucket it by day and
+ * has no attributed contact to date it from.
+ *
+ * `scheduled_start` is the appointment and is the right answer whenever there is
+ * one. A won-but-never-scheduled estimate has none, so it falls back to creation —
+ * without this it would pass `isCountableEstimate` and then be silently dropped by
+ * every `scheduled_start >= window` filter, which is precisely the bug the `won` arm
+ * above exists to fix.
+ */
+export const countableEstimateDate: SQL = sql`coalesce(${hcpEstimates.scheduledStartHcp}, ${hcpEstimates.createdAtHcp})`;
 
 /**
  * The exact complement of `isCountableEstimate` within scheduled estimates: an
@@ -88,10 +120,15 @@ export const isCountableEstimate: SQL = and(
  * HCP estimates — two different populations presented as parts of one row, so the
  * pair could not be added up or compared.
  *
- * Deliberately still requires a scheduled start. A never-scheduled estimate is
- * excluded from the countable set too, and it is not a cancellation — nobody
- * called anything off. Cancelled + countable therefore partitions exactly the
- * estimates that had an appointment on the calendar.
+ * Deliberately still requires a scheduled start. A never-scheduled estimate that
+ * nobody won is excluded from the countable set too, and it is not a cancellation —
+ * nobody called anything off.
+ *
+ * Note this is no longer a strict partition: since 2026-08-21 `isCountableEstimate`
+ * also admits a won estimate that was never scheduled, which has no appointment to
+ * cancel and cannot be cancelled anyway (a cancelled work_status excludes it). The
+ * two predicates remain DISJOINT, which is what the /sources columns need — they
+ * simply no longer cover exactly "everything with an appointment" between them.
  */
 export const isCancelledEstimate: SQL = and(
   isNotNull(hcpEstimates.scheduledStartHcp),

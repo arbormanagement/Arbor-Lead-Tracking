@@ -10,17 +10,38 @@ Edwardsville + O'Fallon). WhatConverts-style. Single-tenant. Owner: Justin
   everything that came in on any channel — calls, texts, web forms, Facebook lead forms,
   later email — whether or not it turned out to be business. **Estimates** (`/estimates`) is
   the OPPORTUNITY list, counted from HousecallPro rather than from what we managed to track,
-  per the single predicate in `lib/estimates/countable.ts`: **scheduled, and not cancelled**.
+  per the single predicate in `lib/estimates/countable.ts`: **scheduled OR won, and not cancelled**.
   - **This replaced a lead-anchored `/leads` page (2026-08-14, P3), and the unit is the
     point.** That page listed `leads` rows passing `isQualifiedLead`, so it could only ever
     show opportunities that arrived through a TRACKED CONTACT — and ~41% of estimate
     customers have no lead on any channel (repeat business, referrals, canvassing, estimates
     written in the field). Those were absent, not merely unattributed. `/leads` now redirects;
     `/leads/[id]` still exists as contact detail and estimate rows link to it.
-  - **Conversion is computed off SCHEDULED estimates only** (confirmed by Justin
-    2026-08-14). Estimates created and never scheduled are excluded and are not a working
-    population — there were 34 in the last 30 days, none of them priced. `isQualifiedLead`
-    still exists for Inbox triage (the Lead/Not toggle) but **no metric reads it**.
+  - **Conversion is computed off SCHEDULED estimates — plus any that were WON without
+    ever being scheduled** (2026-08-14, amended by Justin 2026-08-21). Estimates created
+    and never scheduled are still excluded and are still not a working population: there
+    were 34 in the last 30 days, none of them priced. **But a WON estimate is an
+    opportunity by definition, whether or not anyone put it on the calendar** — some jobs
+    are settled entirely over the phone, so the crew never needs an appointment and
+    `scheduled_start` stays null forever. Excluding those dropped real sales out of the
+    close rate AND out of `roi_daily` revenue, and badged them `unscheduled` on
+    `/estimates` instead of `won`. Measured across three 200-estimate slices of HCP
+    history: 1, 1 and 2 won-but-never-scheduled per 200, i.e. **~1.5–3% of all wins** were
+    invisible. `isQualifiedLead` still exists for Inbox triage (the Lead/Not toggle) but
+    **no metric reads it**.
+    - **The old rule also mixed two populations in one fraction.** `/estimates` computed
+      won ÷ scheduled while the numerator counted every won estimate, including the
+      unscheduled ones — so the rate read slightly high. Both halves now come from
+      `isCountableEstimate`.
+    - **Anything windowing these rows must use `countableEstimateDate`**
+      (`coalesce(scheduled_start_hcp, created_at_hcp)`), not `scheduled_start` directly, or
+      it silently re-drops exactly the rows the `won` arm admits while the predicate still
+      claims they count.
+    - **`work_status` is NOT the test, and the two disagree constantly.** Filtering HCP on
+      `work_status = 'unscheduled'` returns only rows literally marked `needs scheduling`.
+      Of the 37 estimates with no `scheduled_start` in the most recent 200, only 9 were
+      `needs scheduling` — 27 were cancelled and 2 were `created job from estimate`, i.e.
+      won and converted. Measure the null column, never the label.
 - **The inbox is CONTACT-centric, not channel-centric.** One thread per person
   (`conversations`, unique on `contact_id`), holding every channel they've ever used.
   `contacts` + `contact_identifiers` are the identity spine: a form carrying both a phone

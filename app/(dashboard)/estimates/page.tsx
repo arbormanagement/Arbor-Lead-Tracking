@@ -91,7 +91,7 @@ interface Row {
 interface Agg {
   count: number;
   /** Denominator for every rate: SCHEDULED, not cancelled. Never `count`. */
-  scheduledCount: number;
+  countableCount: number;
   wonCount: number;
   lostCount: number;
   wonCents: number;
@@ -99,10 +99,11 @@ interface Agg {
 }
 
 function aggregate(rows: Row[]): Agg {
-  const a: Agg = { count: 0, scheduledCount: 0, wonCount: 0, lostCount: 0, wonCents: 0, quotedCents: 0 };
+  const a: Agg = { count: 0, countableCount: 0, wonCount: 0, lostCount: 0, wonCents: 0, quotedCents: 0 };
   for (const r of rows) {
     a.count++;
-    if (r.scheduled) a.scheduledCount++;
+    // Mirrors `isCountableEstimate`: an appointment, OR a win settled without one.
+    if (r.scheduled || r.outcome === "won") a.countableCount++;
     if (r.outcome === "won") {
       a.wonCount++;
       a.wonCents += r.approved || r.total || 0;
@@ -115,14 +116,20 @@ function aggregate(rows: Row[]): Agg {
 }
 
 /**
- * Won ÷ SCHEDULED, as a whole percent — the headline number the team runs on.
+ * Won ÷ COUNTABLE, as a whole percent — the headline number the team runs on.
  *
- * Never `a.count`. The list now includes estimates with no appointment, and dividing
- * by those would drag the rate down with records that were never opportunities —
- * which is exactly the 25%-vs-48% error this app was built to stop making.
+ * Never `a.count`. The list includes estimates with no appointment and dividing by
+ * those would drag the rate down with records that were never opportunities — the
+ * 25%-vs-48% error this app was built to stop making.
+ *
+ * The denominator is `isCountableEstimate`, not "has an appointment", and the two
+ * differ for a job settled over the phone. Dividing by scheduled-only put those wins
+ * in the NUMERATOR (they are `outcome = 'won'`) while leaving them out of the
+ * denominator, so the rate was computed across two different populations and read
+ * slightly high.
  */
 function closeRate(a: Agg): string {
-  return a.scheduledCount ? `${Math.round((a.wonCount / a.scheduledCount) * 100)}%` : "—";
+  return a.countableCount ? `${Math.round((a.wonCount / a.countableCount) * 100)}%` : "—";
 }
 
 /** Monday of the creation week in BUSINESS time — a stable key that also
@@ -138,7 +145,10 @@ function dimKey(r: Row, dim: Dim): string {
   switch (dim) {
     case "source": return r.sourceName ?? r.sourceKey ?? "Unattributed";
     case "campaign": return r.campaignName ?? "no campaign";
-    case "stage": return r.scheduled ? r.outcome : "unscheduled";
+    // Outcome first. `unscheduled` is a fact about the CALENDAR, not a stage, and
+    // letting it override the outcome filed a won job under "unscheduled" — which is
+    // what made a $2,100 priced estimate read as though nothing had happened to it.
+    case "stage": return r.outcome === "won" || r.outcome === "lost" ? r.outcome : r.scheduled ? "open" : "unscheduled";
     case "type": return r.leadType ?? "untracked";
     case "location": return r.location ?? "unknown";
     // Business-timezone buckets, so an estimate written in the evening cannot land
@@ -314,6 +324,10 @@ export default async function EstimatesPage({
   const [agg] = await db
     .select({
       total: sql<number>`count(*)::int`,
+      // The close-rate denominator, mirroring `isCountableEstimate`: an appointment,
+      // or a win settled without one. Counting scheduled-only here while the
+      // numerator counted every won estimate mixed two populations.
+      countable: sql<number>`count(*) filter (where ${hcpEstimates.scheduledStartHcp} is not null or ${hcpEstimates.outcome} = 'won')::int`,
       scheduled: sql<number>`count(*) filter (where ${hcpEstimates.scheduledStartHcp} is not null)::int`,
       won: sql<number>`count(*) filter (where ${hcpEstimates.outcome} = 'won')::int`,
       attributed: sql<number>`count(*) filter (where ${leads.id} is not null)::int`,
@@ -338,9 +352,10 @@ export default async function EstimatesPage({
   const total = agg?.total ?? 0;
   const preTracking = agg?.createdBeforeTracking ?? 0;
   const scheduled = agg?.scheduled ?? 0;
+  const countable = agg?.countable ?? 0;
   const won = agg?.won ?? 0;
-  // Off SCHEDULED, never off the listed total — see closeRate().
-  const rate = scheduled ? `${Math.round((won / scheduled) * 100)}%` : "—";
+  // Off COUNTABLE, never off the listed total — see closeRate().
+  const rate = countable ? `${Math.round((won / countable) * 100)}%` : "—";
 
   const estimateRow = (r: Row) => {
     const t = r.leadType ? (TYPE_META[r.leadType] ?? { ic: "•", label: r.leadType }) : null;
@@ -423,10 +438,25 @@ export default async function EstimatesPage({
           )}
         </td>
         <td>
-          {r.scheduled ? (
+          {/* The outcome is the stage; `unscheduled` sits BESIDE it rather than
+              replacing it. Showing only the calendar state hid what had actually
+              happened to the estimate — a won job, or a priced quote awaiting a
+              decision, both rendered as a bare "unscheduled". */}
+          {(r.outcome === "won" || r.outcome === "lost" || r.scheduled) && (
             <span className={stageClass(r.outcome)}>{r.outcome}</span>
-          ) : (
-            <span className="badge warn" title="Created in HousecallPro but no visit booked — not counted in the close rate">unscheduled</span>
+          )}
+          {!r.scheduled && (
+            <span
+              className="badge warn"
+              style={{ marginLeft: r.outcome === "won" || r.outcome === "lost" ? 4 : 0 }}
+              title={
+                r.outcome === "won"
+                  ? "Won without a booked visit — settled over the phone. Counted in the close rate."
+                  : "No visit booked yet — not counted in the close rate unless it is won."
+              }
+            >
+              unscheduled
+            </span>
           )}
         </td>
         <td className="mono" style={{ textAlign: "right" }}>
@@ -552,8 +582,10 @@ export default async function EstimatesPage({
           {total > 0 && (
             <p className="page-sub" style={{ marginTop: 2 }}>
               <span className="muted">
-                Close rate is won ÷ <strong>scheduled</strong>
-                {total > scheduled && <> — the {total - scheduled} with no appointment booked are listed but not counted</>}.
+                Close rate is won ÷ <strong>scheduled or won</strong>
+                {total > countable && (
+                  <> — the {total - countable} still open with no appointment booked are listed but not counted</>
+                )}.
                 {" "}{agg?.attributed ?? 0} of {total} traced to a tracked contact; the rest are repeat business,
                 referrals and estimates written in the field, shown as Unattributed.
               </span>

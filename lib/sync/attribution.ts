@@ -12,7 +12,7 @@ import {
   roiDaily,
   sources,
 } from "@/lib/db/schema";
-import { isCountableEstimate } from "@/lib/estimates/countable";
+import { countableEstimateDate, isCountableEstimate } from "@/lib/estimates/countable";
 import { getSetting } from "@/lib/settings";
 import { businessDate } from "@/lib/tz";
 import { withSyncRun } from "./run";
@@ -539,6 +539,10 @@ async function rebuildRoiDaily(windowDays: number): Promise<number> {
       approved: hcpEstimates.approvedAmountCents,
       total: hcpEstimates.totalAmountCents,
       scheduledStart: hcpEstimates.scheduledStartHcp,
+      // The fallback date for a won estimate that was never scheduled — see
+      // `countableEstimateDate`. Without it such a row reaches the loop below and
+      // dates itself off a NULL appointment.
+      createdAtHcp: hcpEstimates.createdAtHcp,
       estLocation: hcpEstimates.location,
       leadOccurredAt: leads.occurredAt,
       leadSourceId: leads.sourceId,
@@ -551,15 +555,28 @@ async function rebuildRoiDaily(windowDays: number): Promise<number> {
     // At most one lead per estimate — `matchLeadsToEstimates` claims each lead once,
     // so this cannot fan out and double-count revenue.
     .leftJoin(leads, and(eq(leads.hcpEstimateId, hcpEstimates.id), eq(leads.isSpam, false)))
-    .where(and(isCountableEstimate, gte(hcpEstimates.scheduledStartHcp, estimateScanFrom)));
+    // Windowed on `countableEstimateDate`, NOT on `scheduled_start` directly. A won
+    // estimate that was never scheduled has no appointment, so a bare
+    // `scheduled_start >= from` would re-drop exactly the rows `isCountableEstimate`
+    // was widened to admit — and silently, since the predicate would still say they
+    // count.
+    .where(and(isCountableEstimate, sql`${countableEstimateDate} >= ${estimateScanFrom}`));
 
   for (const e of estimateRows) {
     // Attributed → the CONTACT's day and channel, so an estimate lands on the same
     // row as the spend that produced it even when it was written weeks later.
     // Unattributed → its own appointment day, with no source. There is no spend to
-    // align with, and dating it anywhere else would be inventing a touch.
+    // align with, and dating it anywhere else would be inventing a touch. A won
+    // estimate settled over the phone has no appointment, so it falls back to
+    // creation — the same expression the window above filters on.
     const attributed = e.leadOccurredAt != null;
-    const date = businessDate(attributed ? e.leadOccurredAt! : e.scheduledStart!);
+    // `created_at_hcp` is nullable, so an unattributed estimate with neither an
+    // appointment nor a creation stamp cannot be placed on any day. Skipping is the
+    // only honest option — bucketing it on today would move an old row forward every
+    // time the rebuild runs.
+    const estimateDate = e.scheduledStart ?? e.createdAtHcp;
+    if (!attributed && !estimateDate) continue;
+    const date = businessDate(attributed ? e.leadOccurredAt! : estimateDate!);
     if (date < sinceDate) continue;
     // A recruiting campaign's estimates are as excluded as its spend and contacts.
     if (attributed && e.leadCampaignId && excluded.includes(e.leadCampaignId)) continue;
