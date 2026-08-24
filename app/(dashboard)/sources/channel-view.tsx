@@ -1,15 +1,8 @@
-import { and, desc, eq, gte, isNotNull, ne, sql, type SQL } from "drizzle-orm";
-import type { AnyPgColumn } from "drizzle-orm/pg-core";
 import Link from "next/link";
 import { Fragment } from "react";
-import { campaignNotExcluded, excludedCampaignIds } from "@/lib/campaigns";
-import { db } from "@/lib/db/client";
-import { hcpEstimates, leads, roiDaily, sources } from "@/lib/db/schema";
-import { isCancelledEstimate } from "@/lib/estimates/countable";
-import { landingPathSql } from "@/lib/landing-page";
 import { dollars } from "@/lib/format";
+import { sourceBreakdowns, sourcePerformance } from "@/lib/queries/sources";
 import { timeframeLabel } from "@/lib/timeframes";
-import { businessDate } from "@/lib/tz";
 import { estimateDrilldown } from "./drilldown";
 import type { TouchModel } from "@/lib/attribution/model";
 
@@ -18,62 +11,15 @@ const SRC_HUES = ["#2ea043", "#4c8dff", "#facc15", "#a371f7", "#e08a4c", "#8b98a
 /**
  * Channels — the default view of /sources, and the one the page was originally.
  *
- * Reads the `roi_daily` rollup, so every figure here is the same number the ROI
- * pipeline computed rather than a second count that could disagree with it.
+ * The numbers live in lib/queries/sources.ts, shared with the MCP `roi_summary`
+ * tool so the two surfaces cannot disagree. Every figure reads the `roi_daily`
+ * rollup — the same number the ROI pipeline computed, not a second count.
  */
 export async function ChannelView({ days, touch }: { days: number; touch: TouchModel }) {
-  // Two windows for the two shapes this view reads, and the names say which is
-  // which. `roi_daily.date` is a BUSINESS date (America/Chicago), so its edge must
-  // be one too — a UTC calendar date is a day ahead for most of the day, which
-  // silently shifts which boundary day is included and puts the roi_daily figures
-  // out of step with the lead counts beside them.
-  const windowStart = new Date(Date.now() - days * 86_400_000);
-  const sinceBusinessDate = businessDate(windowStart);
-  // Recruiting campaigns are not customer acquisition. roi_daily is built without
-  // them; the queries below read `leads` directly, so they filter here.
-  const excluded = await excludedCampaignIds();
-  const notRecruiting = campaignNotExcluded(leads.campaignId, excluded);
-
-  // Performance by source, from the rollup.
-  const rows = await db
-    .select({
-      key: sources.key,
-      name: sources.displayName,
-      contacts: sql<number>`coalesce(sum(${roiDaily.contactsCount}),0)::int`,
-      estimates: sql<number>`coalesce(sum(${roiDaily.estimatesCount}),0)::int`,
-      won: sql<number>`coalesce(sum(${roiDaily.wonCount}),0)::int`,
-      spend: sql<number>`coalesce(sum(${roiDaily.spendCents}),0)::int`,
-      revenue: sql<number>`coalesce(sum(${roiDaily.revenueCents}),0)::int`,
-    })
-    .from(roiDaily)
-    .leftJoin(sources, eq(roiDaily.sourceId, sources.id))
-    .where(and(gte(roiDaily.date, sinceBusinessDate), eq(roiDaily.touchType, touch)))
-    .groupBy(sources.key, sources.displayName)
-    .orderBy(desc(sql`coalesce(sum(${roiDaily.revenueCents}),0)`));
-
-  // The same rollup, split by location. `roi_daily` has keyed on location since it
-  // was built, so this is a read of data already stored — not a new measurement.
-  //
-  // It matters most for Google Business Profile, which is really TWO profiles:
-  // each tags its own website link (`utm_campaign=edwardsville` / `ofallon`) and
-  // has its own tracking number, so calls and clicks both land on the right one.
-  // Rolled up to a single GBP row, "which profile is working?" was unanswerable
-  // even though the answer was in the table.
-  const locationRows = await db
-    .select({
-      key: sources.key,
-      location: roiDaily.location,
-      contacts: sql<number>`coalesce(sum(${roiDaily.contactsCount}),0)::int`,
-      estimates: sql<number>`coalesce(sum(${roiDaily.estimatesCount}),0)::int`,
-      won: sql<number>`coalesce(sum(${roiDaily.wonCount}),0)::int`,
-      spend: sql<number>`coalesce(sum(${roiDaily.spendCents}),0)::int`,
-      revenue: sql<number>`coalesce(sum(${roiDaily.revenueCents}),0)::int`,
-    })
-    .from(roiDaily)
-    .leftJoin(sources, eq(roiDaily.sourceId, sources.id))
-    .where(and(gte(roiDaily.date, sinceBusinessDate), eq(roiDaily.touchType, touch)))
-    .groupBy(sources.key, roiDaily.location)
-    .orderBy(desc(sql`coalesce(sum(${roiDaily.revenueCents}),0)`));
+  const [{ rows, locationRows }, breakdowns] = await Promise.all([
+    sourcePerformance(days, touch),
+    sourceBreakdowns(days),
+  ]);
 
   // Sub-rows only where the split actually describes the SOURCE.
   //
@@ -89,7 +35,8 @@ export async function ChannelView({ days, touch }: { days: number; touch: TouchM
   // those named locations are most of the source. That is a property of the data
   // rather than a list of blessed sources, so a channel that starts distinguishing
   // locations later starts expanding on its own.
-  const byKeyLocation = new Map<string | null, typeof locationRows>();
+  type LocationRows = typeof locationRows;
+  const byKeyLocation = new Map<string | null, LocationRows>();
   for (const r of locationRows) {
     if (!r.contacts && !r.estimates && !r.spend && !r.revenue) continue;
     const list = byKeyLocation.get(r.key ?? null);
@@ -111,41 +58,12 @@ export async function ChannelView({ days, touch }: { days: number; touch: TouchM
     unknown: "Location unknown",
   };
 
-  // Cancelled per source. roi_daily holds only countable estimates, so this is the
-  // one figure on the page that must be counted directly — but it counts the SAME
-  // KIND OF THING as the column beside it. It used to count `leads` with status
-  // `cancelled` under the old lead predicate, so "Estimates 60 · Cancelled 4" put
-  // two unrelated populations in one row and neither summed nor compared.
-  //
-  // `isCancelledEstimate` is the exact complement of `isCountableEstimate` within
-  // scheduled estimates, and the join mirrors the rollup's opportunity pass: one
-  // lead per estimate (matchLeadsToEstimates claims each lead once, so this cannot
-  // fan out), attributed through that lead's source.
-  const cancelledRows = await db
-    .select({ key: sources.key, n: sql<number>`count(*)::int` })
-    .from(hcpEstimates)
-    .leftJoin(leads, and(eq(leads.hcpEstimateId, hcpEstimates.id), eq(leads.isSpam, false)))
-    .leftJoin(sources, eq(leads.sourceId, sources.id))
-    .where(
-      and(
-        isCancelledEstimate,
-        // Bucketed exactly as the rollup buckets estimates: the contact's day when
-        // we can attribute one, the appointment's day when we cannot. Using
-        // scheduled_start for both would put a cancelled estimate on a different
-        // day from the countable one beside it and quietly break the comparison.
-        gte(sql`coalesce(${leads.occurredAt}, ${hcpEstimates.scheduledStartHcp})`, windowStart),
-        notRecruiting,
-      ),
-    )
-    .groupBy(sources.key);
-  const cancelledByKey = new Map<string | null, number>(cancelledRows.map((c) => [c.key ?? null, c.n]));
-
   const totals = rows.reduce(
     (a, r) => ({
       contacts: a.contacts + r.contacts,
       estimates: a.estimates + r.estimates,
       won: a.won + r.won,
-      cancelled: a.cancelled + (cancelledByKey.get(r.key ?? null) ?? 0),
+      cancelled: a.cancelled + r.cancelled,
       spend: a.spend + r.spend,
       revenue: a.revenue + r.revenue,
     }),
@@ -153,40 +71,10 @@ export async function ChannelView({ days, touch }: { days: number; touch: TouchM
   );
   const maxRoas = Math.max(1, ...rows.map((r) => (r.spend > 0 ? r.revenue / r.spend : 0)));
 
-  // Breakdown dimensions: landing page + keyword (captured on the lead by track.js
-  // / click-id enrichment) and the caller's self-reported source from call
-  // transcripts — the DNI-invisible channels (referrals, yard signs, trucks).
-  //
-  // These follow the page's own timeframe now. They were pinned to 90 days while
-  // the table above them obeyed the pills, so changing the timeframe moved half the
-  // page and left the rest — with nothing on screen saying the two disagreed.
-  //
-  // Counting matches the table above too: contacts, not "qualified leads". The old
-  // `leadOnly` predicate (type != 'call' OR is_lead) is the lead-anchored model the
-  // rollup stopped using, so it is gone from this page entirely.
-  const breakdownOf = (col: AnyPgColumn, groupBy: SQL | AnyPgColumn = col) =>
-    db
-      .select({
-        value: sql<string | null>`${groupBy}`,
-        contacts: sql<number>`count(*)::int`,
-        estimates: sql<number>`count(*) filter (where ${leads.hcpEstimateId} is not null)::int`,
-        won: sql<number>`count(*) filter (where ${leads.status} = 'won')::int`,
-        revenue: sql<number>`coalesce(sum(${leads.salesValueCents}) filter (where ${leads.status} = 'won'), 0)::int`,
-      })
-      .from(leads)
-      .where(and(gte(leads.occurredAt, windowStart), eq(leads.isSpam, false), isNotNull(col), ne(col, ""), notRecruiting))
-      .groupBy(sql`${groupBy}`)
-      .orderBy(desc(sql`count(*)`))
-      .limit(8);
-
-  // Landing pages group by PATH, not the raw stored URL — see lib/landing-page.ts.
-  const landingPath = landingPathSql(leads.landingPage);
-
-  const [byLanding, byKeyword, bySelfReported] = await Promise.all([
-    breakdownOf(leads.landingPage, landingPath),
-    breakdownOf(leads.keyword),
-    breakdownOf(leads.selfReportedSource),
-  ]);
+  // Breakdown dimensions follow the page's own timeframe — they were once pinned to
+  // 90 days while the table obeyed the pills, with nothing on screen saying the two
+  // disagreed. See sourceBreakdowns for what they count and why.
+  const { landingPages: byLanding, keywords: byKeyword, selfReported: bySelfReported } = breakdowns;
 
   return (
     <>
@@ -213,7 +101,7 @@ export async function ChannelView({ days, touch }: { days: number; touch: TouchM
           </thead>
           <tbody>
             {rows.map((r, i) => {
-              const cancelled = cancelledByKey.get(r.key ?? null) ?? 0;
+              const cancelled = r.cancelled;
               // Spend ÷ ESTIMATES attributed to this source. Only estimates we can tie to a
               // channel can have that channel's spend divided into them, so this is a
               // smaller denominator — and a higher, honester number — than the old

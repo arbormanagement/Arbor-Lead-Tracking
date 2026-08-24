@@ -1,9 +1,6 @@
-import { and, desc, eq, gte, sql } from "drizzle-orm";
 import Link from "next/link";
-import { db } from "@/lib/db/client";
-import { campaigns, roiDaily, sources } from "@/lib/db/schema";
 import { dollars } from "@/lib/format";
-import { businessDate } from "@/lib/tz";
+import { campaignPerformance } from "@/lib/queries/sources";
 import { estimateDrilldown } from "./drilldown";
 import type { TouchModel } from "@/lib/attribution/model";
 
@@ -27,46 +24,9 @@ import type { TouchModel } from "@/lib/attribution/model";
  * these rows.
  */
 export async function CampaignView({ days, touch }: { days: number; touch: TouchModel }) {
-  // `roi_daily.date` is a BUSINESS date (America/Chicago), so its window edge must
-  // be one too — a UTC calendar date is a day ahead for most of the day and would
-  // quietly include or drop a boundary day.
-  const since = businessDate(new Date(Date.now() - days * 86_400_000));
-
-  // Reading BOTH touch models would double every figure, spend included — spend is
-  // written identically to both rows, since the money spent does not change with
-  // who gets credit for it.
-  const inWindow = and(gte(roiDaily.date, since), eq(roiDaily.touchType, touch));
-
-  const agg = {
-    contacts: sql<number>`coalesce(sum(${roiDaily.contactsCount}),0)::int`,
-    estimates: sql<number>`coalesce(sum(${roiDaily.estimatesCount}),0)::int`,
-    won: sql<number>`coalesce(sum(${roiDaily.wonCount}),0)::int`,
-    spend: sql<number>`coalesce(sum(${roiDaily.spendCents}),0)::int`,
-    revenue: sql<number>`coalesce(sum(${roiDaily.revenueCents}),0)::int`,
-  };
-
-  const [rows, byLocation] = await Promise.all([
-    db
-      .select({
-        campaignId: roiDaily.campaignId,
-        name: campaigns.name,
-        platform: campaigns.platform,
-        sourceName: sources.displayName,
-        ...agg,
-      })
-      .from(roiDaily)
-      .leftJoin(campaigns, eq(roiDaily.campaignId, campaigns.id))
-      .leftJoin(sources, eq(roiDaily.sourceId, sources.id))
-      .where(inWindow)
-      .groupBy(roiDaily.campaignId, campaigns.name, campaigns.platform, sources.displayName)
-      .orderBy(desc(sql`coalesce(sum(${roiDaily.spendCents}),0)`)),
-    db
-      .select({ location: roiDaily.location, ...agg })
-      .from(roiDaily)
-      .where(inWindow)
-      .groupBy(roiDaily.location)
-      .orderBy(desc(sql`coalesce(sum(${roiDaily.revenueCents}),0)`)),
-  ]);
+  // The numbers live in lib/queries/sources.ts, shared with the MCP `roi_summary`
+  // tool so the two surfaces cannot disagree.
+  const { rows, byLocation } = await campaignPerformance(days, touch);
 
   const totals = rows.reduce(
     (a, r) => ({

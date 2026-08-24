@@ -1,5 +1,16 @@
 # Generative UI: replacing the dashboard with an MCP tool layer
 
+**Status: Phases 0–1 BUILT (2026-08-24).** `lib/queries/` + `lib/api-contracts/`
+exist and every dashboard page reads through them; `/api/mcp` serves the 11-tool
+read-only catalog behind `MCP_API_TOKEN` (mcp-handler v1 + MCP SDK 1.26 — pinned
+because SDK v2 requires zod 4 and the app is on zod 3 via t3-env; revisit when
+t3-env moves). To go live: set `MCP_API_TOKEN` (≥24 chars) on the Railway `web`
+service, deploy, then add a claude.ai custom connector pointing at
+`https://<app>/api/mcp` with that bearer token. Verified locally: handshake +
+tools/list good; no token or wrong token never reaches a tool; a session cookie
+alone does not authorize. Next: Phase 2 (live with it), then the parity checks
+and write tools below.
+
 Plan of record (2026-08-23, Justin). Goal: stop maintaining fixed dashboard pages and
 work with the data through generative interfaces — Claude chat/artifacts first, a
 CopilotKit/AG-UI surface later. The app keeps everything that is not UI: webhooks, DNI,

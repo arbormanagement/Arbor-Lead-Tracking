@@ -1,10 +1,8 @@
-import { and, desc, eq, gte, sql, type SQL } from "drizzle-orm";
 import Link from "next/link";
-import { db } from "@/lib/db/client";
-import { contacts, conversations, hcpCustomers } from "@/lib/db/schema";
 import { dateTime } from "@/lib/format";
 import { CHANNEL_META, type ThreadChannel } from "@/lib/messaging/channels";
 import { formatPhoneDisplay } from "@/lib/phone";
+import { listThreads } from "@/lib/queries/inbox";
 import { pickDays, timeframeLabel } from "@/lib/timeframes";
 import { ChannelTabs } from "./channel-tabs";
 import { contactName } from "./contact-name";
@@ -19,6 +17,9 @@ const ROW_LIMIT = 200;
  * The inbox: one row per person, newest activity first — every way they've
  * reached us folded into a single thread. `/estimates` is the opportunity view of the
  * same underlying activity, showing only what turned out to be an estimate request.
+ *
+ * The query lives in lib/queries/inbox.ts, shared with the MCP `list_threads`
+ * tool so the two surfaces cannot disagree.
  */
 export default async function InboxPage({
   searchParams,
@@ -29,40 +30,8 @@ export default async function InboxPage({
   const channel = parseChannel(channelParam);
   const state = parseState(stateParam);
   const days = pickDays(daysParam, 30);
-  const since = new Date(Date.now() - days * 86_400_000);
 
-  const filters: SQL[] = [gte(conversations.lastActivityAt, since)];
-  if (channel) filters.push(sql`${channel} = any(${conversations.channels})`);
-  if (state === "open") filters.push(eq(conversations.state, "open"));
-
-  const [threads, counts] = await Promise.all([
-    db
-      .select({
-        id: conversations.id,
-        state: conversations.state,
-        channels: conversations.channels,
-        lastChannel: conversations.lastChannel,
-        lastDirection: conversations.lastDirection,
-        lastPreview: conversations.lastPreview,
-        lastActivityAt: conversations.lastActivityAt,
-        unreadCount: conversations.unreadCount,
-        name: contacts.displayName,
-        phone: contacts.primaryPhone,
-        email: contacts.primaryEmail,
-        optedOut: contacts.smsOptedOutAt,
-        // HousecallPro owns the customer record — read the name through the
-        // link rather than trusting whatever a web form happened to capture.
-        hcpFirst: hcpCustomers.firstName,
-        hcpLast: hcpCustomers.lastName,
-      })
-      .from(conversations)
-      .innerJoin(contacts, eq(conversations.contactId, contacts.id))
-      .leftJoin(hcpCustomers, eq(contacts.hcpCustomerId, hcpCustomers.id))
-      .where(and(...filters))
-      .orderBy(desc(conversations.lastActivityAt))
-      .limit(ROW_LIMIT),
-    channelCounts(since, state),
-  ]);
+  const { threads, counts } = await listThreads({ days, channel, state, limit: ROW_LIMIT });
 
   const unread = threads.reduce((n, t) => n + (t.unreadCount > 0 ? 1 : 0), 0);
 
@@ -182,24 +151,4 @@ function emptyMessage(channel: Channel | null, state: "open" | "all"): string {
   }
   if (state === "open") return "Nothing open in this window. Switch to All to see closed threads.";
   return "Nothing captured in this window.";
-}
-
-/** Per-channel thread counts for the tab badges. */
-async function channelCounts(since: Date, state: "open" | "all"): Promise<Record<Channel, number>> {
-  const scope: SQL[] = [gte(conversations.lastActivityAt, since)];
-  if (state === "open") scope.push(eq(conversations.state, "open"));
-
-  const has = (c: Channel) => sql<number>`count(*) filter (where ${c} = any(${conversations.channels}))::int`;
-  const [row] = await db
-    .select({
-      call: has("call"),
-      sms: has("sms"),
-      form: has("form"),
-      facebook: has("facebook"),
-      email: has("email"),
-    })
-    .from(conversations)
-    .where(and(...scope));
-
-  return row ?? { call: 0, sms: 0, form: 0, facebook: 0, email: 0 };
 }
