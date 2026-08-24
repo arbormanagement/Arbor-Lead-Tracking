@@ -1,0 +1,328 @@
+import { z } from "zod";
+
+/**
+ * Typed contracts for the MCP tool catalog served at /api/mcp.
+ *
+ * Inputs are what each tool accepts; outputs are the JSON shapes each tool
+ * returns (as stringified JSON in the tool result). Both halves live HERE, apart
+ * from the tool implementations, because they are the long-lived interface:
+ * a future generative frontend (CopilotKit/AG-UI component catalog) imports these
+ * output types as its component props, which is what turns a schema drift into a
+ * build error instead of a blank screen.
+ *
+ * Conventions, enforced by the query layer these wrap:
+ *  - Money is integer CENTS, named `*Cents` or documented on the field.
+ *  - Phones are E.164; dates are ISO-8601 strings in tool output.
+ *  - `none` is a real value on every estimate filter — it means "unattributed",
+ *    and ~18% of post-cutover estimates genuinely have no lead.
+ *
+ * This module must stay CLIENT-SAFE: zod and types only, no db imports (the
+ * same rule as lib/messaging/channels.ts).
+ */
+
+/** Mirrors leadTypeEnum / leadStatusEnum in lib/db/schema.ts exactly — a value
+ *  that isn't in the pg enum fails the query rather than matching nothing.
+ *  Defined HERE (db-free) so both the query layer and client code can import. */
+export const LEAD_TYPES = ["call", "web_form", "facebook_leadgen", "lsa", "manual", "sms", "email"] as const;
+export const LEAD_STATUSES = [
+  "new",
+  "working",
+  "qualified",
+  "quoted",
+  "won",
+  "lost",
+  "cancelled",
+  "spam",
+  "duplicate",
+] as const;
+
+const days = (def: number) =>
+  z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(365)
+    .default(def)
+    .describe("Window in days back from now. Windows over roi_daily use America/Chicago business dates.");
+
+const isoDate = z.string().describe("ISO-8601 timestamp");
+
+// ── funnel_overview ──────────────────────────────────────────────────────────
+export const FunnelOverviewInput = z.object({ days: days(30) });
+
+export const FunnelOverviewOutput = z.object({
+  touch: z.enum(["first", "last"]).describe("Attribution model these figures were read under"),
+  funnel: z.object({
+    contacts: z.number().int(),
+    calls: z.number().int(),
+    forms: z.number().int(),
+    estimates: z.number().int().describe("Countable estimates: scheduled or won, not cancelled"),
+    won: z.number().int(),
+  }),
+  daily: z.array(
+    z.object({
+      date: z.string().describe("Business date (America/Chicago), YYYY-MM-DD"),
+      spend: z.number().int().describe("cents"),
+      revenue: z.number().int().describe("cents"),
+    }),
+  ),
+  topSources: z.array(
+    z.object({
+      key: z.string().nullable(),
+      name: z.string().nullable(),
+      spend: z.number().int().describe("cents"),
+      revenue: z.number().int().describe("cents"),
+    }),
+  ),
+});
+export type FunnelOverview = z.infer<typeof FunnelOverviewOutput>;
+
+// ── roi_summary ──────────────────────────────────────────────────────────────
+export const RoiSummaryInput = z.object({
+  days: days(30),
+  grain: z
+    .enum(["channel", "campaign", "location"])
+    .default("channel")
+    .describe(
+      "channel = per source (google/cpc, gbp, direct, …); campaign = per ad campaign (the floor of money reporting); location = Edwardsville vs O'Fallon",
+    ),
+});
+
+export const RoiChannelRow = z.object({
+  key: z.string().nullable().describe("sources.key; null = unattributed"),
+  name: z.string().nullable(),
+  contacts: z.number().int(),
+  estimates: z.number().int(),
+  won: z.number().int(),
+  cancelled: z.number().int(),
+  spend: z.number().int().describe("cents"),
+  revenue: z.number().int().describe("cents"),
+});
+export const RoiCampaignRow = z.object({
+  campaignId: z.string().nullable().describe("null = not campaign-attributed"),
+  name: z.string().nullable(),
+  platform: z.string().nullable(),
+  sourceName: z.string().nullable(),
+  contacts: z.number().int(),
+  estimates: z.number().int(),
+  won: z.number().int(),
+  spend: z.number().int().describe("cents"),
+  revenue: z.number().int().describe("cents"),
+});
+export const RoiLocationRow = z.object({
+  location: z.string().nullable(),
+  contacts: z.number().int(),
+  estimates: z.number().int(),
+  won: z.number().int(),
+  spend: z.number().int().describe("cents"),
+  revenue: z.number().int().describe("cents"),
+});
+export type RoiChannel = z.infer<typeof RoiChannelRow>;
+export type RoiCampaign = z.infer<typeof RoiCampaignRow>;
+export type RoiLocation = z.infer<typeof RoiLocationRow>;
+
+// ── list_estimates / estimate_detail ─────────────────────────────────────────
+export const ListEstimatesInput = z.object({
+  days: days(7),
+  source: z.string().max(200).optional().describe('sources.key, or "none" for unattributed'),
+  campaign: z.string().max(200).optional().describe('campaigns.name, or "none"'),
+  page: z.string().max(200).optional().describe('Normalised landing path (e.g. "/services/tree-removal"), or "none"'),
+  location: z.enum(["edwardsville", "ofallon", "unknown"]).optional(),
+  type: z.string().max(50).optional().describe('Lead channel (call, web_form, sms, facebook_leadgen, …), or "none" for untracked'),
+  limit: z.coerce.number().int().min(1).max(1000).default(200),
+});
+
+export const EstimateRow = z.object({
+  id: z.string(),
+  outcome: z.string().describe("open | won | lost — won is decided by option APPROVAL, never work_status"),
+  scheduled: z.boolean().describe("False = no appointment in HCP (a won one was settled over the phone)"),
+  createdAt: isoDate.describe("When the estimate was written — what the window runs on"),
+  scheduledStart: isoDate.nullable(),
+  name: z.string().nullable(),
+  phone: z.string().nullable().describe("E.164"),
+  email: z.string().nullable(),
+  approved: z.number().int().nullable().describe("Approved-option amount, cents"),
+  total: z.number().int().nullable().describe("cents; HCP creates estimates UNPRICED (0) — pricing lands on options later"),
+  leadId: z.string().nullable().describe("null = no tracked contact matched (repeat business, referral, field estimate)"),
+  leadType: z.string().nullable(),
+  sourceKey: z.string().nullable(),
+  sourceName: z.string().nullable(),
+  campaignName: z.string().nullable(),
+  keyword: z.string().nullable(),
+  landingPage: z.string().nullable().describe("Normalised path"),
+  selfReportedSource: z.string().nullable().describe('Caller\'s own answer to "how did you hear about us"'),
+  location: z.string().nullable(),
+});
+export type Estimate = z.infer<typeof EstimateRow>;
+
+export const EstimateAgg = z.object({
+  total: z.number().int().describe("Everything listed (live estimates)"),
+  countable: z.number().int().describe("Close-rate denominator: scheduled OR won"),
+  scheduled: z.number().int(),
+  won: z.number().int(),
+  attributed: z.number().int(),
+  createdBeforeTracking: z.number().int().describe("Written before 2026-08-08 — unattributable whatever the matching does"),
+  wonCents: z.number().int(),
+});
+export type EstimateAggregate = z.infer<typeof EstimateAgg>;
+
+export const EstimateDetailInput = z.object({ id: z.string().max(64) });
+
+// ── landing_pages ────────────────────────────────────────────────────────────
+export const LandingPagesInput = z.object({ days: days(30) });
+
+export const LandingPageRow = z.object({
+  path: z.string(),
+  sessions: z.number().int().describe("Visits starting on this page, crawlers excluded"),
+  contacts: z.number().int(),
+  estimates: z.number().int(),
+  won: z.number().int(),
+  revenue: z.number().int().describe("cents"),
+});
+export type LandingPage = z.infer<typeof LandingPageRow>;
+
+// ── list_threads / get_thread ────────────────────────────────────────────────
+export const ListThreadsInput = z.object({
+  days: days(30),
+  channel: z
+    .enum(["call", "sms", "form", "facebook", "email"])
+    .optional()
+    .describe("Threads CONTAINING this channel — not threads whose newest activity is it"),
+  state: z.enum(["open", "all"]).default("open"),
+  limit: z.coerce.number().int().min(1).max(200).default(50),
+});
+
+export const ThreadRow = z.object({
+  id: z.string(),
+  state: z.string(),
+  channels: z.array(z.string()),
+  lastDirection: z.string().nullable(),
+  lastPreview: z.string().nullable(),
+  lastActivityAt: isoDate,
+  unreadCount: z.number().int(),
+  name: z.string().nullable(),
+  phone: z.string().nullable(),
+  email: z.string().nullable(),
+  smsOptedOut: z.boolean().describe("Replied STOP — outbound texting is blocked in code"),
+  hcpCustomer: z.boolean().describe("Linked to a HousecallPro customer record"),
+});
+export type Thread = z.infer<typeof ThreadRow>;
+
+export const GetThreadInput = z.object({ id: z.string().max(64) });
+
+// ── list_leads ───────────────────────────────────────────────────────────────
+export const ListLeadsInput = z.object({
+  q: z.string().max(200).optional().describe("Free text over name/email/phone/message"),
+  type: z.enum(LEAD_TYPES).optional(),
+  status: z.enum(LEAD_STATUSES).optional(),
+  isSpam: z.boolean().optional(),
+  hasClickId: z.boolean().optional().describe("true = carries gclid/gbraid/wbraid/fbclid; false = carries none"),
+  limit: z.coerce.number().int().min(1).max(200).default(50),
+});
+
+// ── spend_summary ────────────────────────────────────────────────────────────
+export const SpendSummaryInput = z.object({
+  days: days(30),
+  platform: z.enum(["googleads", "facebook"]).optional(),
+});
+
+export const SpendRow = z.object({
+  platform: z.string(),
+  campaignId: z.string().nullable(),
+  campaignName: z.string().nullable(),
+  excluded: z.boolean().describe("Recruiting/brand campaign — spend recorded but kept out of every ROI number"),
+  impressions: z.number().int(),
+  clicks: z.number().int(),
+  spend: z.number().int().describe("cents"),
+});
+export type Spend = z.infer<typeof SpendRow>;
+
+// ── diagnostics / attribution_health ─────────────────────────────────────────
+export const DiagnosticsInput = z.object({});
+export const AttributionHealthInput = z.object({ days: days(90) });
+
+// ── Phase 3 write tools ──────────────────────────────────────────────────────
+
+export const ReplyToThreadInput = z.object({
+  id: z.string().max(64).describe("Conversation (thread) id, from list_threads / get_thread"),
+  // Twilio splits at 1600 chars; refuse rather than silently truncate.
+  body: z.string().min(1).max(1600).describe("The text message to send. Plain text."),
+});
+
+export const SetThreadStateInput = z.object({
+  id: z.string().max(64),
+  state: z.enum(["open", "closed"]),
+});
+
+export const ClassifyLeadInput = z.object({
+  id: z.string().max(64).describe("Lead id, from list_leads or get_thread's enquiries"),
+  isLead: z
+    .boolean()
+    .nullable()
+    .describe(
+      "true/false sets a MANUAL verdict the auto-classifier will not overwrite; null clears the override and re-runs the classifier on the call transcript",
+    ),
+});
+
+/** Job names accepted by trigger_sync / POST /api/sync/[job]. Defined here
+ *  (db-free) so contracts stay client-safe; lib/sync/run-job.ts re-exports. */
+export const SYNC_JOBS = [
+  "spend",
+  "hcp",
+  "attribution",
+  "reaper",
+  "twilio-fallback",
+  "transcribe",
+  "classify-messages",
+  "thread-backfill",
+  "conversions",
+  "fbleads",
+  "all",
+] as const;
+export type SyncJob = (typeof SYNC_JOBS)[number];
+
+export const ListCampaignsInput = z.object({});
+
+export const SetCampaignExcludedInput = z.object({
+  campaignId: z.string().max(64).describe("Campaign id, from list_campaigns"),
+  excluded: z
+    .boolean()
+    .describe(
+      "true = non-customer-acquisition (recruiting/brand): kept out of every ROI number while its spend stays on record; false = counts normally",
+    ),
+});
+
+export const SetAttributionModelInput = z.object({
+  model: z
+    .enum(["last_touch", "first_touch"])
+    .describe("last_touch: which channel produced THIS estimate. first_touch: which channel ACQUIRED the customer."),
+  customerWindowDays: z.coerce
+    .number()
+    .int()
+    .min(0)
+    .max(365)
+    .optional()
+    .describe(
+      "How many days a repeat won estimate inherits the customer's original source. OMIT to leave unchanged; applies on the next attribution rebuild.",
+    ),
+});
+
+export const ReclassifySourcesInput = z.object({
+  apply: z
+    .boolean()
+    .default(false)
+    .describe("false (default) = dry run, reports what WOULD move; true = write the changes"),
+});
+
+export const TriggerSyncInput = z.object({
+  job: z.enum(SYNC_JOBS),
+  days: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(365)
+    .optional()
+    .describe(
+      "OMIT unless doing a deliberate historical backfill: each job owns its own window policy (rolling re-pulls, cold-start backfill), and an explicit window short-circuits it. Applies to spend, hcp, fbleads and the `all` chain only.",
+    ),
+});

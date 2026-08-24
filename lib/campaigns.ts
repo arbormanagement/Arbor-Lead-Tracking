@@ -51,3 +51,26 @@ export async function resolveCampaignIdByName(name: string | null | undefined): 
   const [c] = await db.select({ id: campaigns.id }).from(campaigns).where(eq(campaigns.name, name)).limit(1);
   return c?.id ?? null;
 }
+
+/**
+ * Flag or unflag ONE campaign as non-customer-acquisition — the MCP
+ * `set_campaign_excluded` tool. The settings page replaces the whole flagged set
+ * at once (right for a form); a conversational change is one campaign at a time,
+ * so this is deliberately a different write with the same meaning.
+ *
+ * Exclusion is applied when READING, never by refusing to record — the campaign's
+ * spend and any captured leads stay in the database as history.
+ *
+ * Returns the updated row, or null when the id matches no campaign.
+ */
+export async function setCampaignExcluded(
+  id: string,
+  excluded: boolean,
+): Promise<{ id: string; name: string | null; excluded: boolean } | null> {
+  const [row] = await db
+    .update(campaigns)
+    .set({ excluded })
+    .where(eq(campaigns.id, id))
+    .returning({ id: campaigns.id, name: campaigns.name, excluded: campaigns.excluded });
+  return row ?? null;
+}

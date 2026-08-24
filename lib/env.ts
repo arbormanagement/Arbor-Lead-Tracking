@@ -101,6 +101,13 @@ export const env = createEnv({
     // default) disables token auth entirely — session-only, as before.
     ADMIN_API_TOKEN: z.string().min(24).optional(),
 
+    // Bearer token for the MCP endpoint (/api/mcp) — the generative-UI read
+    // surface (see GENERATIVE-UI.md). Deliberately its OWN token rather than
+    // reusing ADMIN_API_TOKEN, so read-mostly generative access is revocable
+    // independently of the riskier admin routes. Unset (the default) disables
+    // the endpoint entirely — fail closed, same shape as ADMIN_API_TOKEN.
+    MCP_API_TOKEN: z.string().min(24).optional(),
+
     // Injected by Railway at build: the commit this container is running. Purely
     // informational, surfaced by /api/diagnostics so "is the fix actually live?"
     // is a fact you can read rather than something inferred from whether some
@@ -157,6 +164,7 @@ export const env = createEnv({
     FACEBOOK_VERIFY_TOKEN: process.env.FACEBOOK_VERIFY_TOKEN,
     CRON_SECRET: process.env.CRON_SECRET,
     ADMIN_API_TOKEN: process.env.ADMIN_API_TOKEN,
+    MCP_API_TOKEN: process.env.MCP_API_TOKEN,
   },
   // Allow `npm run build` / lint without a full env (skips validation when set).
   skipValidation:

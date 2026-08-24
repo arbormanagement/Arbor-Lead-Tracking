@@ -1,16 +1,11 @@
-import { and, desc, eq, gte, sql } from "drizzle-orm";
 import Link from "next/link";
 import type { ReactNode } from "react";
-import { campaignNotExcluded, excludedCampaignIds } from "@/lib/campaigns";
-import { db } from "@/lib/db/client";
-import { campaigns, hcpCustomers, hcpEstimates, leads, sources } from "@/lib/db/schema";
-import { isCountableEstimate, isLiveEstimate } from "@/lib/estimates/countable";
 import { dateTime, dollars } from "@/lib/format";
-import { landingPathSql } from "@/lib/landing-page";
 import { formatPhoneDisplay } from "@/lib/phone";
+import { listEstimates, type EstimateListRow } from "@/lib/queries/estimates";
 import { pickDays, timeframeLabel } from "@/lib/timeframes";
 import { businessDate } from "@/lib/tz";
-import { TRACKING_STARTED_AT, TRACKING_STARTED_LABEL } from "@/lib/tracking-coverage";
+import { TRACKING_STARTED_LABEL } from "@/lib/tracking-coverage";
 import { ViewControls } from "./view-controls";
 import { estimatesHref, FILTER_KEYS, filterLabel, filterSql, hasAnyFilter, parseFilters } from "./filters";
 import { DEFAULT_DAYS, DIMS, parseGroups, type Dim } from "./view";
@@ -61,32 +56,8 @@ export const dynamic = "force-dynamic";
 const STAGE_ORDER = ["unscheduled", "open", "won", "lost"];
 const DATE_DIMS: Dim[] = ["day", "week", "month"];
 
-interface Row {
-  id: string;
-  outcome: string;
-  /** False when HCP has no appointment for this estimate yet. */
-  scheduled: boolean;
-  /** When the estimate was written — what the page windows and groups on. */
-  createdAt: Date;
-  /** The booked visit, shown alongside. Null until someone schedules it. */
-  scheduledStart: Date | null;
-  name: string | null;
-  phone: string | null;
-  email: string | null;
-  approved: number | null;
-  total: number | null;
-  /** Null when no tracked contact could be matched — rendered as Unattributed. */
-  leadId: string | null;
-  leadType: string | null;
-  sourceKey: string | null;
-  sourceName: string | null;
-  campaignName: string | null;
-  keyword: string | null;
-  /** Normalised landing PATH, so it groups and filters the same way /sources does. */
-  landingPage: string | null;
-  selfReportedSource: string | null;
-  location: string | null;
-}
+/** The list row shape now lives with the query — see lib/queries/estimates.ts. */
+type Row = EstimateListRow;
 
 interface Agg {
   count: number;
@@ -229,125 +200,15 @@ export default async function EstimatesPage({
   const { g, days: daysParam } = sp;
   const groups = parseGroups(g);
   const days = pickDays(daysParam, DEFAULT_DAYS);
-  const since = new Date(Date.now() - days * 86_400_000);
   // Attribution filters, so a row on /sources can link straight to the estimates
-  // behind it. See ./filters.ts — `none` is a real value on every one of them.
+  // behind it. See lib/estimates/filters.ts — `none` is a real value on every one.
   const filters = parseFilters(sp);
   const hrefBase = { days, g, defaultDays: DEFAULT_DAYS };
 
-  // Recruiting/brand campaigns are not customer acquisition, so their estimates
-  // stay out of this list and its totals — the same exclusion roi_daily applies,
-  // or grouped-by-source figures here would not reconcile with /sources.
-  const excludedIds = await excludedCampaignIds();
-
-  // At most one lead per estimate: matchLeadsToEstimates claims each lead exactly
-  // once, so this join cannot fan out and double-count an estimate or its revenue.
-  // The LIST is every live estimate; the RATE below is scheduled-only.
-  //
-  // Windowed on CREATED. Every estimate has one, so an estimate with no appointment
-  // still appears — windowing on `scheduled_start` alone is precisely what hid 34 of
-  // them — and unlike `coalesce(scheduled, created)` the population does not change
-  // shape when someone books a visit: an estimate cannot leave this week's list by
-  // being scheduled for next month, which is what made the counts move on their own.
-  const scope = and(
-    isLiveEstimate,
-    gte(hcpEstimates.createdAtHcp, since),
-    campaignNotExcluded(leads.campaignId, excludedIds),
-    filterSql(filters),
-  );
-  const withLead = db
-    .select({
-      id: hcpEstimates.id,
-      outcome: hcpEstimates.outcome,
-      scheduledStart: hcpEstimates.scheduledStartHcp,
-      createdAtHcp: hcpEstimates.createdAtHcp,
-      approved: hcpEstimates.approvedAmountCents,
-      total: hcpEstimates.totalAmountCents,
-      // Name comes through the customer JOIN first: this app links to HousecallPro
-      // rather than storing customer data, so a name corrected in HCP shows up here
-      // immediately. The copy on the estimate is the fallback for a customer the
-      // sync has not reached yet.
-      custFirst: hcpCustomers.firstName,
-      custLast: hcpCustomers.lastName,
-      estName: hcpEstimates.customerName,
-      phone: hcpEstimates.customerPhoneE164,
-      email: hcpEstimates.customerEmailLc,
-      estLocation: hcpEstimates.location,
-      leadId: leads.id,
-      leadType: leads.type,
-      leadLocation: leads.location,
-      sourceKey: sources.key,
-      sourceName: sources.displayName,
-      campaignName: campaigns.name,
-      keyword: leads.keyword,
-      landingPage: landingPathSql(leads.landingPage),
-      selfReportedSource: leads.selfReportedSource,
-    })
-    .from(hcpEstimates)
-    .leftJoin(leads, and(eq(leads.hcpEstimateId, hcpEstimates.id), eq(leads.isSpam, false)))
-    .leftJoin(sources, eq(leads.sourceId, sources.id))
-    .leftJoin(campaigns, eq(leads.campaignId, campaigns.id))
-    .leftJoin(hcpCustomers, eq(hcpEstimates.hcpCustomerId, hcpCustomers.id));
-
-  const fetched = await withLead
-    .where(scope)
-    .orderBy(desc(hcpEstimates.createdAtHcp))
-    // Grouped views aggregate, so they get the full window; the flat list stays short.
-    .limit(groups.length ? 1000 : 200);
-
-  const rows: Row[] = fetched.map((r) => ({
-    id: r.id,
-    outcome: r.outcome,
-    scheduled: r.scheduledStart != null,
-    createdAt: r.createdAtHcp!,
-    scheduledStart: r.scheduledStart,
-    name: [r.custFirst, r.custLast].filter(Boolean).join(" ") || r.estName,
-    phone: r.phone,
-    email: r.email,
-    approved: r.approved,
-    total: r.total,
-    leadId: r.leadId,
-    leadType: r.leadType,
-    sourceKey: r.sourceKey,
-    sourceName: r.sourceName,
-    campaignName: r.campaignName,
-    keyword: r.keyword,
-    landingPage: r.landingPage,
-    selfReportedSource: r.selfReportedSource,
-    // The attributed contact's location when there is one, the estimate's own
-    // otherwise — the same precedence the rollup uses, so the two agree.
-    location: r.leadLocation ?? r.estLocation,
-  }));
-
-  // Counted over EXACTLY the population the table renders, so the subtitle can
-  // never disagree with the sum of the visible group counts.
-  const [agg] = await db
-    .select({
-      total: sql<number>`count(*)::int`,
-      // The close-rate denominator, mirroring `isCountableEstimate`: an appointment,
-      // or a win settled without one. Counting scheduled-only here while the
-      // numerator counted every won estimate mixed two populations.
-      countable: sql<number>`count(*) filter (where ${hcpEstimates.scheduledStartHcp} is not null or ${hcpEstimates.outcome} = 'won')::int`,
-      scheduled: sql<number>`count(*) filter (where ${hcpEstimates.scheduledStartHcp} is not null)::int`,
-      won: sql<number>`count(*) filter (where ${hcpEstimates.outcome} = 'won')::int`,
-      attributed: sql<number>`count(*) filter (where ${leads.id} is not null)::int`,
-      // Estimates WRITTEN before this app tracked anything. They could never have
-      // been attributed — the customer's call or form predates the CallRail cutover
-      // — so they land in Unattributed no matter how good the matching is.
-      //
-      // Now that the page windows on CREATED this can only be non-zero when the
-      // selected window itself reaches back past the cutover, so it agrees with the
-      // coverage notice by construction. Still counted rather than derived from the
-      // window: the honest statement is "N of these could not be attributed", and a
-      // day count cannot say that. It is also what stops the 90d and 12mo views from
-      // silently reporting a depressed attribution rate as if it were a matching
-      // failure. Retire it, and this whole notice, when CallRail history is imported.
-      createdBeforeTracking: sql<number>`count(*) filter (where ${hcpEstimates.createdAtHcp} < ${TRACKING_STARTED_AT})::int`,
-      wonCents: sql<number>`coalesce(sum(coalesce(nullif(${hcpEstimates.approvedAmountCents},0), ${hcpEstimates.totalAmountCents})) filter (where ${hcpEstimates.outcome} = 'won'), 0)::int`,
-    })
-    .from(hcpEstimates)
-    .leftJoin(leads, and(eq(leads.hcpEstimateId, hcpEstimates.id), eq(leads.isSpam, false)))
-    .where(scope);
+  // The list and its aggregate live in lib/queries/estimates.ts, shared with the
+  // MCP `list_estimates` tool so the two surfaces cannot disagree. Grouped views
+  // aggregate, so they get the full window; the flat list stays short.
+  const { rows, agg } = await listEstimates({ days, filters, limit: groups.length ? 1000 : 200 });
 
   const total = agg?.total ?? 0;
   const preTracking = agg?.createdBeforeTracking ?? 0;

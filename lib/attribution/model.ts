@@ -1,4 +1,4 @@
-import { getSetting } from "@/lib/settings";
+import { getSetting, setSetting } from "@/lib/settings";
 
 export type TouchModel = "first" | "last";
 
@@ -34,4 +34,24 @@ export async function selectedTouchModel(): Promise<TouchModel> {
 /** Human label for the active model, for surfacing on any page that reports numbers. */
 export function touchModelLabel(m: TouchModel): string {
   return m === "first" ? "First touch (acquiring channel)" : "Last touch (channel that produced the estimate)";
+}
+
+/**
+ * Switch the displayed model, and optionally the customer window — the MCP
+ * `set_attribution_model` tool. The settings route requires both fields (a form
+ * posts both); conversationally the model alone is the common ask, so the window
+ * only changes when explicitly given.
+ *
+ * Switching the model is instant and recomputes nothing (both models are stored
+ * side by side); a changed customer window applies on the next attribution
+ * rebuild — hourly, or via trigger_sync('attribution').
+ */
+export async function setAttributionOptions(opts: {
+  model: "last_touch" | "first_touch";
+  customerWindowDays?: number;
+}): Promise<void> {
+  await setSetting("attribution_model", opts.model);
+  if (opts.customerWindowDays !== undefined) {
+    await setSetting("customer_window_days", Math.round(opts.customerWindowDays));
+  }
 }

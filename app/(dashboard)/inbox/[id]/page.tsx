@@ -1,21 +1,9 @@
-import { asc, desc, eq } from "drizzle-orm";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { db } from "@/lib/db/client";
-import {
-  calls,
-  contacts,
-  conversations,
-  facebookLeads,
-  formSubmissions,
-  hcpCustomers,
-  leads,
-  messages,
-  sources,
-  trackingNumbers,
-} from "@/lib/db/schema";
+import type { calls, facebookLeads, formSubmissions, messages } from "@/lib/db/schema";
 import { dateTime, dollars, durationLabel } from "@/lib/format";
 import { markThreadRead } from "@/lib/messaging/thread";
+import { getThreadDetail } from "@/lib/queries/inbox";
 import { formatPhoneDisplay } from "@/lib/phone";
 import { LeadToggle } from "../../lead-toggle";
 import { stageClass } from "../../stage";
@@ -47,46 +35,14 @@ type Entry =
 export default async function ThreadPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
 
-  const [row] = await db
-    .select({
-      thread: conversations,
-      contact: contacts,
-      sourceKey: sources.key,
-      sourceName: sources.displayName,
-      numberLabel: trackingNumbers.friendlyName,
-      hcpFirst: hcpCustomers.firstName,
-      hcpLast: hcpCustomers.lastName,
-      hcpExternalId: hcpCustomers.hcpCustomerId,
-    })
-    .from(conversations)
-    .innerJoin(contacts, eq(conversations.contactId, contacts.id))
-    .leftJoin(sources, eq(conversations.sourceId, sources.id))
-    .leftJoin(trackingNumbers, eq(conversations.trackingNumberId, trackingNumbers.id))
-    .leftJoin(hcpCustomers, eq(contacts.hcpCustomerId, hcpCustomers.id))
-    .where(eq(conversations.id, id))
-    .limit(1);
-  if (!row) notFound();
+  // The reads live in lib/queries/inbox.ts, shared with the MCP `get_thread` tool.
+  // Marking read stays HERE: opening the page is what "read" means; a tool reading
+  // the thread is not the owner looking at it.
+  const detail = await getThreadDetail(id);
+  if (!detail) notFound();
 
-  const { thread, contact } = row;
-
-  const [callRows, messageRows, formRows, fbRows, leadRows] = await Promise.all([
-    // Join the tracking number so the card can say which of your numbers they
-    // actually dialed — that's the whole point of running ten of them.
-    db
-      .select({
-        call: calls,
-        dialedNumber: trackingNumbers.phoneNumber,
-        dialedName: trackingNumbers.friendlyName,
-      })
-      .from(calls)
-      .leftJoin(trackingNumbers, eq(calls.trackingNumberId, trackingNumbers.id))
-      .where(eq(calls.conversationId, thread.id))
-      .orderBy(asc(calls.createdAt)),
-    db.select().from(messages).where(eq(messages.conversationId, thread.id)).orderBy(asc(messages.occurredAt)),
-    db.select().from(formSubmissions).where(eq(formSubmissions.conversationId, thread.id)),
-    db.select().from(facebookLeads).where(eq(facebookLeads.conversationId, thread.id)),
-    db.select().from(leads).where(eq(leads.conversationId, thread.id)).orderBy(desc(leads.occurredAt)),
-  ]);
+  const { thread, contact, calls: callRows, messages: messageRows, forms: formRows, facebookLeads: fbRows, leads: leadRows } = detail;
+  const row = detail;
 
   // Opening the thread is what "read" means here.
   await markThreadRead(thread.id);
