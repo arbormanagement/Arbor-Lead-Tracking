@@ -10,17 +10,24 @@ import {
   FunnelOverviewInput,
   GetThreadInput,
   LandingPagesInput,
+  ListCampaignsInput,
   ListEstimatesInput,
   ListLeadsInput,
   ListThreadsInput,
+  ReclassifySourcesInput,
   ReplyToThreadInput,
   RoiSummaryInput,
+  SetAttributionModelInput,
+  SetCampaignExcludedInput,
   SetThreadStateInput,
   SpendSummaryInput,
   TriggerSyncInput,
 } from "@/lib/api-contracts/tools";
-import { selectedTouchModel } from "@/lib/attribution/model";
+import { selectedTouchModel, setAttributionOptions } from "@/lib/attribution/model";
+import { setCampaignExcluded } from "@/lib/campaigns";
 import { setLeadClassification } from "@/lib/leads/classify-override";
+import { listCampaignsWithVolume } from "@/lib/queries/campaigns";
+import { reclassifyUnmappedSources } from "@/lib/sources/reclassify";
 import { SendError, sendThreadSms } from "@/lib/messaging/send";
 import { setThreadState } from "@/lib/messaging/thread";
 import { runSyncJob } from "@/lib/sync/run-job";
@@ -393,6 +400,68 @@ const handler = createMcpHandler(
         annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
       },
       async ({ job, days }) => json({ ok: true, job, result: await runSyncJob(job, days) }),
+    );
+
+    server.registerTool(
+      "list_campaigns",
+      {
+        title: "List ad campaigns",
+        description:
+          "Every campaign the syncs have seen, with lifetime spend (cents), lead count, and the excluded flag. " +
+          "This is where campaignId values for set_campaign_excluded come from. Campaigns are created by the spend sync and Facebook ingest — never invented from URL text.",
+        inputSchema: ListCampaignsInput.shape,
+        annotations: { readOnlyHint: true },
+      },
+      async () => json({ campaigns: await listCampaignsWithVolume() }),
+    );
+
+    server.registerTool(
+      "set_campaign_excluded",
+      {
+        title: "Flag a campaign as recruiting/brand",
+        description:
+          "Marks one campaign as non-customer-acquisition (or unmarks it). Excluded campaigns are kept out of EVERY ROI number — roi_daily, the funnel, sources, estimates — " +
+          "while their spend stays on record; exclusion is applied when reading, never by deleting data. Flag a new recruiting campaign promptly, or its dollars land in a channel's ROAS denominator with no revenue behind them. " +
+          "Takes effect for stored aggregates on the next attribution rebuild (hourly, or trigger_sync('attribution')).",
+        inputSchema: SetCampaignExcludedInput.shape,
+        annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
+      },
+      async ({ campaignId, excluded }) => {
+        const row = await setCampaignExcluded(campaignId, excluded);
+        if (!row) return { ...json({ ok: false, error: "campaign not found", campaignId }), isError: true };
+        return json({ ok: true, ...row });
+      },
+    );
+
+    server.registerTool(
+      "set_attribution_model",
+      {
+        title: "Switch the attribution model",
+        description:
+          "Sets which single-touch model every surface reports under: last_touch (which channel produced this estimate — repeat customers show unattributed, by design) or " +
+          "first_touch (which channel acquired the customer). Both models are always stored side by side, so switching is an instant display filter — nothing is recomputed and switching back loses nothing. " +
+          "customerWindowDays (optional) changes how long a repeat won estimate inherits the original source, applied on the next attribution rebuild.",
+        inputSchema: SetAttributionModelInput.shape,
+        annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
+      },
+      async ({ model, customerWindowDays }) => {
+        await setAttributionOptions({ model, customerWindowDays });
+        return json({ ok: true, model, ...(customerWindowDays !== undefined ? { customerWindowDays } : {}) });
+      },
+    );
+
+    server.registerTool(
+      "reclassify_sources",
+      {
+        title: "Re-run source classification on unmapped leads",
+        description:
+          "After classifySource learns a new channel mapping, this moves leads currently sitting in `other` onto sources the classifier now recognises. " +
+          "It only ever moves a lead OFF `other` — never between mapped sources — so it cannot rewrite the source that earned a call. " +
+          "apply=false (the default) is a dry run reporting what WOULD move; run that first and show the user before calling with apply=true.",
+        inputSchema: ReclassifySourcesInput.shape,
+        annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
+      },
+      async ({ apply }) => json(await reclassifyUnmappedSources({ apply })),
     );
   },
   {

@@ -2,10 +2,14 @@
 
 **Status: Phases 0–1 and 3 BUILT (2026-08-24).** `lib/queries/` +
 `lib/api-contracts/` exist and every dashboard page reads through them;
-`/api/mcp` serves the full 15-tool catalog behind `MCP_API_TOKEN` — 11 reads
-(annotated `readOnlyHint`) plus the four Phase 3 writes (`reply_to_thread`,
-`set_thread_state`, `classify_lead`, `trigger_sync`), each wrapping the same
-lib function its route uses. (mcp-handler v1 + MCP SDK 1.26 — pinned because
+`/api/mcp` serves a 19-tool catalog behind `MCP_API_TOKEN` — 12 reads
+(annotated `readOnlyHint`, incl. `list_campaigns`) plus seven writes
+(`reply_to_thread`, `set_thread_state`, `classify_lead`, `trigger_sync`,
+`set_campaign_excluded`, `set_attribution_model`, `reclassify_sources` —
+dry-run by default), each wrapping the same lib function its route uses.
+Deliberately NOT tools: routing changes, number management, credentials,
+`conversions/reset`, lead deletion — rare + risky stays behind the session
+UI (see Phase 3 rationale below). (mcp-handler v1 + MCP SDK 1.26 — pinned because
 SDK v2 requires zod 4 and the app is on zod 3 via t3-env; revisit when t3-env
 moves.) **⚠️ With reply_to_thread present, `MCP_API_TOKEN` can text customers**
 — the reply ROUTE stays session-only, but the token is no longer a read-only

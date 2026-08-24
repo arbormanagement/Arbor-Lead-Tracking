@@ -281,6 +281,39 @@ export const SYNC_JOBS = [
 ] as const;
 export type SyncJob = (typeof SYNC_JOBS)[number];
 
+export const ListCampaignsInput = z.object({});
+
+export const SetCampaignExcludedInput = z.object({
+  campaignId: z.string().max(64).describe("Campaign id, from list_campaigns"),
+  excluded: z
+    .boolean()
+    .describe(
+      "true = non-customer-acquisition (recruiting/brand): kept out of every ROI number while its spend stays on record; false = counts normally",
+    ),
+});
+
+export const SetAttributionModelInput = z.object({
+  model: z
+    .enum(["last_touch", "first_touch"])
+    .describe("last_touch: which channel produced THIS estimate. first_touch: which channel ACQUIRED the customer."),
+  customerWindowDays: z.coerce
+    .number()
+    .int()
+    .min(0)
+    .max(365)
+    .optional()
+    .describe(
+      "How many days a repeat won estimate inherits the customer's original source. OMIT to leave unchanged; applies on the next attribution rebuild.",
+    ),
+});
+
+export const ReclassifySourcesInput = z.object({
+  apply: z
+    .boolean()
+    .default(false)
+    .describe("false (default) = dry run, reports what WOULD move; true = write the changes"),
+});
+
 export const TriggerSyncInput = z.object({
   job: z.enum(SYNC_JOBS),
   days: z.coerce
