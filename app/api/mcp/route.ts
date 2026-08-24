@@ -36,6 +36,7 @@ import { getThreadDetail, listThreads } from "@/lib/queries/inbox";
 import { searchLeads } from "@/lib/queries/leads";
 import { overviewData } from "@/lib/queries/overview";
 import { campaignPerformance, landingPagePerformance, sourceBreakdowns, sourcePerformance } from "@/lib/queries/sources";
+import { verifyAccessToken } from "@/lib/mcp-oauth";
 import { spendSummary } from "@/lib/queries/spend";
 import { secretEquals } from "@/lib/secret-compare";
 
@@ -483,19 +484,41 @@ const handler = createMcpHandler(
 );
 
 /**
- * Fail-closed bearer gate. MCP_API_TOKEN unset → every request 401s, so an
- * environment that never opted in exposes nothing. Timing-safe compare.
+ * Fail-closed bearer gate, two credentials in one header:
+ *  - the static MCP_API_TOKEN (machine callers: Claude Code --header, curl) —
+ *    unset means that path is off entirely;
+ *  - an OAuth access token minted by this app's own authorization flow
+ *    (claude.ai custom connectors authenticate via OAuth; see lib/mcp-oauth.ts).
+ *
+ * The 401 carries the WWW-Authenticate handshake Claude's connector flow keys
+ * on: 401 → resource metadata → authorization server → consent at /oauth/authorize.
  */
 function authorized(req: Request): boolean {
+  const header = req.headers.get("authorization");
+  if (!header?.startsWith("Bearer ")) return false;
+  const presented = header.slice(7);
+
   const configured = env.MCP_API_TOKEN;
-  if (!configured) return false;
-  return secretEquals(req.headers.get("authorization"), `Bearer ${configured}`);
+  if (configured && secretEquals(header, `Bearer ${configured}`)) return true;
+
+  return verifyAccessToken(presented) !== null;
+}
+
+function unauthorized(): Response {
+  const base = env.APP_BASE_URL.replace(/\/$/, "");
+  return Response.json(
+    { error: "unauthorized" },
+    {
+      status: 401,
+      headers: {
+        "WWW-Authenticate": `Bearer resource_metadata="${base}/.well-known/oauth-protected-resource"`,
+      },
+    },
+  );
 }
 
 async function guarded(req: Request): Promise<Response> {
-  if (!authorized(req)) {
-    return Response.json({ error: "unauthorized" }, { status: 401 });
-  }
+  if (!authorized(req)) return unauthorized();
   return handler(req);
 }
 

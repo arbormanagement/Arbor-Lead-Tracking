@@ -9,7 +9,25 @@
 dry-run by default), each wrapping the same lib function its route uses.
 Deliberately NOT tools: routing changes, number management, credentials,
 `conversions/reset`, lead deletion — rare + risky stays behind the session
-UI (see Phase 3 rationale below). (mcp-handler v1 + MCP SDK 1.26 — pinned because
+UI (see Phase 3 rationale below).
+
+**OAuth (2026-08-24):** `/api/mcp` is also an OAuth 2.1 protected resource,
+because claude.ai's custom-connector UI authenticates via OAuth (its
+`static_headers` bearer option is a gated beta this account doesn't have) and
+the artifact `mcp` capability rides the claude.ai connector. `lib/mcp-oauth.ts`
++ `/oauth/authorize` implement the whole flow — DCR (client_id is an
+HMAC-signed capsule of the redirect_uris; no clients table), redirect
+allowlist pinned to Claude's published callbacks, consent gated by the
+existing /login session, PKCE S256, single-use codes and rotating refresh
+tokens in `mcp_oauth_grants` (migration 0039), stateless 1h access tokens
+signed with COOKIE_SIGNING_SECRET (rotating that secret revokes MCP access
+too — intended). The static `MCP_API_TOKEN` path still works alongside for
+Claude Code (`--header`) and curl. Connecting from claude.ai is now just:
+add custom connector → URL `https://<app>/api/mcp` → leave client id/secret
+blank → approve on the consent page (log in with the admin login if asked).
+Verified end-to-end against a real Postgres: 20/20 checks incl. evil-redirect
+rejection, code replay, wrong-verifier, refresh rotation, and old-refresh
+refusal. (mcp-handler v1 + MCP SDK 1.26 — pinned because
 SDK v2 requires zod 4 and the app is on zod 3 via t3-env; revisit when t3-env
 moves.) **⚠️ With reply_to_thread present, `MCP_API_TOKEN` can text customers**
 — the reply ROUTE stays session-only, but the token is no longer a read-only
