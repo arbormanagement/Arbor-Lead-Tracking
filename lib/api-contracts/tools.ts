@@ -240,3 +240,56 @@ export type Spend = z.infer<typeof SpendRow>;
 // ── diagnostics / attribution_health ─────────────────────────────────────────
 export const DiagnosticsInput = z.object({});
 export const AttributionHealthInput = z.object({ days: days(90) });
+
+// ── Phase 3 write tools ──────────────────────────────────────────────────────
+
+export const ReplyToThreadInput = z.object({
+  id: z.string().max(64).describe("Conversation (thread) id, from list_threads / get_thread"),
+  // Twilio splits at 1600 chars; refuse rather than silently truncate.
+  body: z.string().min(1).max(1600).describe("The text message to send. Plain text."),
+});
+
+export const SetThreadStateInput = z.object({
+  id: z.string().max(64),
+  state: z.enum(["open", "closed"]),
+});
+
+export const ClassifyLeadInput = z.object({
+  id: z.string().max(64).describe("Lead id, from list_leads or get_thread's enquiries"),
+  isLead: z
+    .boolean()
+    .nullable()
+    .describe(
+      "true/false sets a MANUAL verdict the auto-classifier will not overwrite; null clears the override and re-runs the classifier on the call transcript",
+    ),
+});
+
+/** Job names accepted by trigger_sync / POST /api/sync/[job]. Defined here
+ *  (db-free) so contracts stay client-safe; lib/sync/run-job.ts re-exports. */
+export const SYNC_JOBS = [
+  "spend",
+  "hcp",
+  "attribution",
+  "reaper",
+  "twilio-fallback",
+  "transcribe",
+  "classify-messages",
+  "thread-backfill",
+  "conversions",
+  "fbleads",
+  "all",
+] as const;
+export type SyncJob = (typeof SYNC_JOBS)[number];
+
+export const TriggerSyncInput = z.object({
+  job: z.enum(SYNC_JOBS),
+  days: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(365)
+    .optional()
+    .describe(
+      "OMIT unless doing a deliberate historical backfill: each job owns its own window policy (rolling re-pulls, cold-start backfill), and an explicit window short-circuits it. Applies to spend, hcp, fbleads and the `all` chain only.",
+    ),
+});

@@ -4,6 +4,7 @@ import { diagnosticsReport } from "@/lib/diagnostics/report";
 import { env } from "@/lib/env";
 import {
   AttributionHealthInput,
+  ClassifyLeadInput,
   DiagnosticsInput,
   EstimateDetailInput,
   FunnelOverviewInput,
@@ -12,10 +13,17 @@ import {
   ListEstimatesInput,
   ListLeadsInput,
   ListThreadsInput,
+  ReplyToThreadInput,
   RoiSummaryInput,
+  SetThreadStateInput,
   SpendSummaryInput,
+  TriggerSyncInput,
 } from "@/lib/api-contracts/tools";
 import { selectedTouchModel } from "@/lib/attribution/model";
+import { setLeadClassification } from "@/lib/leads/classify-override";
+import { SendError, sendThreadSms } from "@/lib/messaging/send";
+import { setThreadState } from "@/lib/messaging/thread";
+import { runSyncJob } from "@/lib/sync/run-job";
 import { getEstimateDetail, listEstimates } from "@/lib/queries/estimates";
 import { getThreadDetail, listThreads } from "@/lib/queries/inbox";
 import { searchLeads } from "@/lib/queries/leads";
@@ -41,9 +49,15 @@ export const dynamic = "force-dynamic";
  * (fail closed, same shape as ADMIN_API_TOKEN). The middleware already passes
  * Bearer-carrying /api/* requests through to this handler.
  *
- * Read-only by design in v1 — no tool here writes anything, so a leaked token
- * reads dashboards, it does not text customers. Write tools (reply_to_thread,
- * classify_lead) are Phase 3 and will mirror existing gated routes.
+ * Eleven read tools plus four Phase 3 write tools, each write mirroring an
+ * existing gated route with the enforcement kept server-side (consent inside
+ * sendThreadSms, one-run-at-a-time inside withSyncRun).
+ *
+ * ⚠️ reply_to_thread means MCP_API_TOKEN can TEXT CUSTOMERS. The reply route
+ * itself is deliberately session-only and stays that way; exposing the same
+ * action here was a deliberate Phase 3 decision (GENERATIVE-UI.md) so the
+ * inbox is operable generatively. Treat the token accordingly: it is not a
+ * read-only credential any more, and rotating it is one env change.
  */
 
 /** Bound every tool result: a model client's context is the scarce resource. */
@@ -66,6 +80,7 @@ const handler = createMcpHandler(
           "Reads roi_daily (the aggregate of record) under the currently selected attribution model, with recruiting campaigns excluded. " +
           "All money is integer cents; daily dates are America/Chicago business dates.",
         inputSchema: FunnelOverviewInput.shape,
+        annotations: { readOnlyHint: true },
       },
       async ({ days }) => json(await overviewData(days)),
     );
@@ -80,6 +95,7 @@ const handler = createMcpHandler(
           "grain=campaign is the floor of money reporting — below it the sample is noise. " +
           "Windows are business-date (America/Chicago); estimates here bucket on the CONTACT date, so counts will not reconcile row-for-row with list_estimates (which windows on estimate creation). Both are correct for their own question.",
         inputSchema: RoiSummaryInput.shape,
+        annotations: { readOnlyHint: true },
       },
       async ({ days, grain }) => {
         const touch = await selectedTouchModel();
@@ -109,6 +125,7 @@ const handler = createMcpHandler(
           "The returned agg is computed over the whole filtered window, not just the returned rows. Close rate = won ÷ agg.countable (scheduled or won), NEVER ÷ agg.total — " +
           "dividing by the listed total is the 25%-vs-48% close-rate error this app exists to prevent. `outcome` is decided by customer option APPROVAL, never by HCP's work_status.",
         inputSchema: ListEstimatesInput.shape,
+        annotations: { readOnlyHint: true },
       },
       async ({ days, limit, ...filters }) => json(await listEstimates({ days, filters, limit })),
     );
@@ -121,6 +138,7 @@ const handler = createMcpHandler(
           "One estimate with its customer (read through the HousecallPro link — this app stores no customer data), its attribution chain, " +
           "and the tracked contact behind it (leadId + conversationId to follow into get_thread). Null attribution fields mean no tracked contact matched: repeat business, a referral, or an estimate written in the field.",
         inputSchema: EstimateDetailInput.shape,
+        annotations: { readOnlyHint: true },
       },
       async ({ id }) => {
         const detail = await getEstimateDetail(id);
@@ -137,6 +155,7 @@ const handler = createMcpHandler(
           "Reads raw session/lead timestamps, so totals will not reconcile with roi_summary at a window edge. Rates on under ~30 sessions are noise wearing a percent sign — suppress them when presenting. " +
           "unknownUa sessions carry no user-agent (recorded only from 2026-08-13) and are counted as human.",
         inputSchema: LandingPagesInput.shape,
+        annotations: { readOnlyHint: true },
       },
       async ({ days }) => json(await landingPagePerformance(days)),
     );
@@ -150,6 +169,7 @@ const handler = createMcpHandler(
           "Recruiting enquiries appear here by design (someone contacting the business is inbox-worthy) but never become leads, so they stay out of ROI. " +
           "smsOptedOut=true means outbound texting is blocked in code — the consent gate lives server-side.",
         inputSchema: ListThreadsInput.shape,
+        annotations: { readOnlyHint: true },
       },
       async ({ days, channel, state, limit }) => {
         const { threads, counts } = await listThreads({ days, channel, state, limit });
@@ -182,6 +202,7 @@ const handler = createMcpHandler(
           "and the separate enquiries (leads) this person has raised over time. Reading here does NOT mark the thread read — that happens only when the owner opens it. " +
           "replyFrom is the tracking number a reply must send from (replying from any other number would start a second thread on the customer's phone and break attribution).",
         inputSchema: GetThreadInput.shape,
+        annotations: { readOnlyHint: true },
       },
       async ({ id }) => {
         const d = await getThreadDetail(id);
@@ -250,6 +271,7 @@ const handler = createMcpHandler(
           '"did that call land with the right source?", "which callers to the static Google Ads number had no click id?". ' +
           "A lead is one tracked ENQUIRY, not a person (that is a thread) and not an opportunity (that is an estimate). selfReportedSource is the only field that can say what is inside the `direct` bucket.",
         inputSchema: ListLeadsInput.shape,
+        annotations: { readOnlyHint: true },
       },
       async (p) => json({ leads: await searchLeads(p) }),
     );
@@ -262,6 +284,7 @@ const handler = createMcpHandler(
           "What the platforms billed, by platform and campaign: impressions, clicks, spend in cents. Reads ad_spend directly, so EXCLUDED (recruiting/brand) campaigns are " +
           "visible here flagged excluded:true — they are kept out of every ROI number but their spend stays on record. Use roi_summary for return on this spend.",
         inputSchema: SpendSummaryInput.shape,
+        annotations: { readOnlyHint: true },
       },
       async ({ days, platform }) => json(await spendSummary({ days, platform })),
     );
@@ -274,6 +297,7 @@ const handler = createMcpHandler(
           "Is the machine healthy right now? Sync-job health, DNI pool state, swap coverage, conversion-export failures, estimate-sync drift vs HousecallPro, " +
           "credential presence (never values), and a warnings list where anything non-empty deserves a human. A fixed set of checks, deliberately not a query interface.",
         inputSchema: DiagnosticsInput.shape,
+        annotations: { readOnlyHint: true },
       },
       async () => {
         const { report } = await diagnosticsReport();
@@ -289,8 +313,86 @@ const handler = createMcpHandler(
           "Why are estimates unattributed? Splits the window's estimates into attributed / pre-tracking / reached-us-but-unlinked / never-reached-us. " +
           "Windows reaching past the 2026-08-08 CallRail cutover measure the cutover, not the tracking — prefer short windows for 'is matching working'.",
         inputSchema: AttributionHealthInput.shape,
+        annotations: { readOnlyHint: true },
       },
       async ({ days }) => json(await attributionBreakdown(days)),
+    );
+
+    // ── Phase 3 write tools ──────────────────────────────────────────────────
+    // Each mirrors an existing gated route; the enforcement lives in the shared
+    // lib functions, never in tool descriptions.
+
+    server.registerTool(
+      "reply_to_thread",
+      {
+        title: "Reply to a thread by text",
+        description:
+          "Sends an SMS to the thread's contact FROM the tracking number they contacted (replying from any other number would start a second thread on their phone and break attribution). " +
+          "This messages a real customer and cannot be unsent — confirm with the user before calling unless they just dictated the exact message. " +
+          "Consent is enforced server-side: an opted-out contact (STOP) fails with code opted_out no matter what is asked. Max 1600 chars (Twilio's split point).",
+        inputSchema: ReplyToThreadInput.shape,
+        annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
+      },
+      async ({ id, body }) => {
+        try {
+          const message = await sendThreadSms({ conversationId: id, body });
+          return json({ ok: true, id: message.id, status: message.status });
+        } catch (err) {
+          if (err instanceof SendError) {
+            // Consent/config refusals are state, not transport: report the code
+            // (opted_out, no_destination, no_sender, provider, empty) so the
+            // client can explain rather than retry.
+            return { ...json({ ok: false, error: err.message, code: err.code }), isError: true };
+          }
+          throw err;
+        }
+      },
+    );
+
+    server.registerTool(
+      "set_thread_state",
+      {
+        title: "Open or close a thread",
+        description:
+          "Mark a thread done (closed) or reopen it — the flag that lets the inbox drain. Nothing is deleted; a closed thread reopens automatically on new inbound activity.",
+        inputSchema: SetThreadStateInput.shape,
+        annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
+      },
+      async ({ id, state }) => {
+        await setThreadState(id, state);
+        return json({ ok: true, id, state });
+      },
+    );
+
+    server.registerTool(
+      "classify_lead",
+      {
+        title: "Mark a lead as lead / not a lead",
+        description:
+          "The Lead/Not toggle, for inbox triage only — NO metric reads is_lead any more (estimates are counted from HousecallPro), so this cannot move ROI numbers. " +
+          "A boolean sets a manual verdict the auto-classifier will not overwrite; null clears the override and re-runs the classifier on the call transcript.",
+        inputSchema: ClassifyLeadInput.shape,
+        annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
+      },
+      async ({ id, isLead }) => {
+        const row = await setLeadClassification(id, isLead);
+        if (!row) return { ...json({ ok: false, error: "lead not found", id }), isError: true };
+        return json({ ok: true, ...row });
+      },
+    );
+
+    server.registerTool(
+      "trigger_sync",
+      {
+        title: "Run a sync job now",
+        description:
+          "Kick a sync on demand, same as POST /api/sync/[job]: spend, hcp, attribution, transcribe, conversions, fbleads, reaper, twilio-fallback, classify-messages, thread-backfill, or `all` (the full chain, ingest before attribution). " +
+          "Safe to call — jobs are idempotent and withSyncRun refuses to interleave (a run already in progress returns skipped:true rather than doubling). " +
+          "OMIT days unless deliberately backfilling history: each job owns its own window policy, and an explicit window short-circuits it. Long jobs (hcp, all) can take minutes.",
+        inputSchema: TriggerSyncInput.shape,
+        annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+      },
+      async ({ job, days }) => json({ ok: true, job, result: await runSyncJob(job, days) }),
     );
   },
   {
