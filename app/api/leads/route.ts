@@ -24,6 +24,7 @@ const Query = z.object({
   isSpam: z.enum(["true", "false"]).optional(),
   hasClickId: z.enum(["true", "false"]).optional(),
   limit: z.coerce.number().int().min(1).max(200).default(50),
+  offset: z.coerce.number().int().min(0).default(0),
 });
 
 export async function GET(req: Request) {
@@ -35,14 +36,15 @@ export async function GET(req: Request) {
   if (!parsed.success) return Response.json({ error: "invalid query" }, { status: 400 });
   const p = parsed.data;
 
-  const rows = await searchLeads({
+  const { rows, total, hasMore, nextOffset } = await searchLeads({
     q: p.q,
     type: p.type,
     status: p.status,
     isSpam: p.isSpam === undefined ? undefined : p.isSpam === "true",
     hasClickId: p.hasClickId === undefined ? undefined : p.hasClickId === "true",
     limit: p.limit,
+    offset: p.offset,
   });
 
-  return Response.json({ ok: true, count: rows.length, leads: rows });
+  return Response.json({ ok: true, count: rows.length, total, hasMore, nextOffset, leads: rows });
 }

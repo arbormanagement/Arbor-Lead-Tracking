@@ -47,6 +47,17 @@ const days = (def: number) =>
 
 const isoDate = z.string().describe("ISO-8601 timestamp");
 
+/**
+ * Paging metadata every list tool returns alongside its rows. Without it a
+ * limited fetch is indistinguishable from a complete one — which is how a
+ * generated view silently reports partial data as if it were the whole set.
+ */
+export const PagingFields = {
+  total: z.number().int().describe("Rows matching the filters, across all pages"),
+  hasMore: z.boolean().describe("True when more rows exist beyond this page"),
+  nextOffset: z.number().int().nullable().describe("Pass as `offset` to fetch the next page; null when this is the last page"),
+};
+
 // ── funnel_overview ──────────────────────────────────────────────────────────
 export const FunnelOverviewInput = z.object({ days: days(30) });
 
@@ -129,7 +140,8 @@ export const ListEstimatesInput = z.object({
   page: z.string().max(200).optional().describe('Normalised landing path (e.g. "/services/tree-removal"), or "none"'),
   location: z.enum(["edwardsville", "ofallon", "unknown"]).optional(),
   type: z.string().max(50).optional().describe('Lead channel (call, web_form, sms, facebook_leadgen, …), or "none" for untracked'),
-  limit: z.coerce.number().int().min(1).max(1000).default(200),
+  limit: z.coerce.number().int().min(1).max(500).default(50),
+  offset: z.coerce.number().int().min(0).default(0).describe("Row offset for paging; use nextOffset from the previous response"),
 });
 
 export const EstimateRow = z.object({
@@ -190,6 +202,7 @@ export const ListThreadsInput = z.object({
     .describe("Threads CONTAINING this channel — not threads whose newest activity is it"),
   state: z.enum(["open", "all"]).default("open"),
   limit: z.coerce.number().int().min(1).max(200).default(50),
+  offset: z.coerce.number().int().min(0).default(0).describe("Row offset for paging; use nextOffset from the previous response"),
 });
 
 export const ThreadRow = z.object({
@@ -218,12 +231,16 @@ export const ListLeadsInput = z.object({
   isSpam: z.boolean().optional(),
   hasClickId: z.boolean().optional().describe("true = carries gclid/gbraid/wbraid/fbclid; false = carries none"),
   limit: z.coerce.number().int().min(1).max(200).default(50),
+  offset: z.coerce.number().int().min(0).default(0).describe("Row offset for paging; use nextOffset from the previous response"),
 });
 
 // ── spend_summary ────────────────────────────────────────────────────────────
 export const SpendSummaryInput = z.object({
   days: days(30),
-  platform: z.enum(["googleads", "facebook"]).optional(),
+  // Mirrors the `platform` pg enum exactly. A value outside it does not match
+  // nothing — Postgres rejects the cast and the whole call errors, so the wrong
+  // vocabulary here is a runtime failure rather than an empty result.
+  platform: z.enum(["google", "google_lsa", "facebook", "other"]).optional(),
 });
 
 export const SpendRow = z.object({
@@ -326,3 +343,139 @@ export const TriggerSyncInput = z.object({
       "OMIT unless doing a deliberate historical backfill: each job owns its own window policy (rolling re-pulls, cold-start backfill), and an explicit window short-circuits it. Applies to spend, hcp, fbleads and the `all` chain only.",
     ),
 });
+
+// ── Output schemas ───────────────────────────────────────────────────────────
+// Declared so tools return `structuredContent` (typed data a client can use
+// directly) alongside the text JSON, instead of a string every caller re-parses.
+// These are also the props contracts a future component catalog imports.
+//
+// Every date leaves the tools as an ISO-8601 STRING — the handlers pass results
+// through a JSON round-trip before validating, so a Date can never reach a
+// client (or fail validation) as an object.
+//
+// Deliberately NOT declared for the write tools, `diagnostics` and
+// `attribution_health`: their payloads are pass-throughs whose shape is owned
+// elsewhere (sync-job stats, the diagnostics report), and an outputSchema that
+// drifts from reality fails the call outright — worse than none at all.
+
+/**
+ * One ROI row. Metrics are precise; the identity fields are optional because a
+ * row identifies itself differently per grain (source key, campaign, location).
+ * All of them appear here so nothing is stripped during validation.
+ */
+export const RoiRow = z.object({
+  key: z.string().nullable().optional().describe("sources.key; null = unattributed"),
+  name: z.string().nullable().optional(),
+  campaignId: z.string().nullable().optional().describe("null = not campaign-attributed"),
+  platform: z.string().nullable().optional(),
+  sourceName: z.string().nullable().optional(),
+  location: z.string().nullable().optional(),
+  contacts: z.number().int(),
+  estimates: z.number().int().describe("Countable: scheduled or won, not cancelled"),
+  won: z.number().int(),
+  cancelled: z.number().int().optional().describe("channel grain only"),
+  spend: z.number().int().describe("cents"),
+  revenue: z.number().int().describe("cents"),
+});
+
+const BreakdownRow = z.object({
+  value: z.string().nullable(),
+  contacts: z.number().int(),
+  estimates: z.number().int(),
+  won: z.number().int(),
+  revenue: z.number().int().describe("cents"),
+});
+
+export const RoiSummaryOutput = z.object({
+  touch: z.enum(["first", "last"]),
+  grain: z.enum(["channel", "campaign", "location"]),
+  rows: z.array(RoiRow),
+  locationRows: z.array(RoiRow).optional().describe("channel grain: the same rollup split by location"),
+  breakdowns: z
+    .object({
+      landingPages: z.array(BreakdownRow),
+      keywords: z.array(BreakdownRow),
+      selfReported: z.array(BreakdownRow).describe('Callers\' own "how did you hear about us"'),
+    })
+    .optional(),
+});
+
+export const ListEstimatesOutput = z.object({
+  rows: z.array(EstimateRow),
+  agg: EstimateAgg.describe("Computed over the whole filtered window, not just this page"),
+  ...PagingFields,
+});
+
+export const EstimateDetailOutput = EstimateRow.extend({
+  status: z.string().nullable().describe("HCP work_status — NEVER the test for won"),
+  hcpEstimateId: z.string().nullable(),
+  hcpCustomerId: z.string().nullable(),
+  conversationId: z.string().nullable().describe("Follow into get_thread"),
+  leadOccurredAt: isoDate.nullable(),
+});
+
+export const LandingPagesOutput = z.object({
+  rows: z.array(LandingPageRow),
+  unknownUa: z.number().int().describe("Sessions with no user-agent recorded; counted as human, not bots"),
+});
+
+export const ListThreadsOutput = z.object({
+  counts: z.object({
+    call: z.number().int(),
+    sms: z.number().int(),
+    form: z.number().int(),
+    facebook: z.number().int(),
+    email: z.number().int(),
+  }),
+  threads: z.array(ThreadRow),
+  ...PagingFields,
+});
+
+export const LeadRowSchema = z.object({
+  id: z.string(),
+  type: z.string(),
+  status: z.string(),
+  name: z.string().nullable(),
+  phoneE164: z.string().nullable(),
+  emailLc: z.string().nullable(),
+  sourceKey: z.string().nullable(),
+  campaignName: z.string().nullable(),
+  medium: z.string().nullable(),
+  keyword: z.string().nullable(),
+  selfReportedSource: z.string().nullable(),
+  gclid: z.string().nullable(),
+  gbraid: z.string().nullable(),
+  wbraid: z.string().nullable(),
+  fbclid: z.string().nullable(),
+  landingPage: z.string().nullable(),
+  location: z.string().nullable(),
+  isSpam: z.boolean(),
+  isFirstTime: z.boolean().nullable(),
+  hcpEstimateId: z.string().nullable(),
+  occurredAt: isoDate,
+});
+
+export const ListLeadsOutput = z.object({
+  leads: z.array(LeadRowSchema),
+  ...PagingFields,
+});
+
+export const SpendSummaryOutput = z.object({
+  rows: z.array(SpendRow),
+  totals: z.object({
+    spend: z.number().int().describe("cents, including excluded campaigns"),
+    excludedSpend: z.number().int().describe("cents attributable to recruiting/brand campaigns"),
+  }),
+});
+
+export const CampaignRowSchema = z.object({
+  id: z.string(),
+  platform: z.string(),
+  externalCampaignId: z.string(),
+  name: z.string().nullable(),
+  excluded: z.boolean().describe("Recruiting/brand — kept out of every ROI number"),
+  spendCents: z.number().int(),
+  leadsCount: z.number().int(),
+});
+
+export const ListCampaignsOutput = z.object({ campaigns: z.array(CampaignRowSchema) });
