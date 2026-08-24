@@ -1001,6 +1001,32 @@ export const settings = pgTable("settings", {
   updatedAt: updatedAt(),
 });
 
+// ── MCP OAuth grants (authorization codes + refresh tokens) ──────────────────
+// Storage for the OAuth 2.1 flow in front of /api/mcp (see lib/mcp-oauth.ts).
+// Only the stateful halves live here: single-use authorization CODES and
+// rotating REFRESH tokens. Access tokens are stateless HMAC (nothing to store).
+// Secrets are stored as sha256 hashes — a database read never yields a usable
+// credential.
+export const mcpOauthGrants = pgTable(
+  "mcp_oauth_grants",
+  {
+    id: id(),
+    kind: text("kind").notNull(), // 'code' | 'refresh'
+    secretHash: text("secret_hash").notNull(),
+    clientId: text("client_id").notNull(),
+    // Codes only: the exact redirect_uri and PKCE challenge the code is bound to.
+    redirectUri: text("redirect_uri"),
+    codeChallenge: text("code_challenge"),
+    scope: text("scope"),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    // Set when a code is exchanged or a refresh token is rotated — presenting a
+    // consumed grant again is invalid_grant, never a second issuance.
+    consumedAt: timestamp("consumed_at", { withTimezone: true }),
+    createdAt: createdAt(),
+  },
+  (t) => [uniqueIndex("mcp_oauth_grants_secret_hash_uq").on(t.secretHash)],
+);
+
 // ── Integration credentials (envelope-encrypted; tenant_id reserved for MT) ───
 export const integrationCredentials = pgTable(
   "integration_credentials",

@@ -34,7 +34,16 @@ export function middleware(req: NextRequest) {
 
 export const config = {
   // Protect everything except public API surfaces, the snippet, login, and assets.
+  // OAuth additions: .well-known discovery + register/token are public by spec
+  // (nothing there grants access on its own); /oauth/authorize is EXCLUDED so it
+  // can do its own session check and send the login redirect with the request's
+  // query string intact — this presence gate sets `next` from the pathname only,
+  // which would strip the OAuth params and strand the flow after login.
+  // /api/mcp is excluded too: it is fully self-guarding (bearer/OAuth, fail
+  // closed), and Claude's connector discovery BEGINS with an unauthenticated
+  // request that must receive the handler's 401 + WWW-Authenticate — a redirect
+  // to /login here would strand the flow before it starts.
   matcher: [
-    "/((?!api/track|api/dni|api/twilio|api/webhooks|api/cron|api/admin|api/auth|api/health|track.js|dni-test|login|_next|favicon.ico).*)",
+    "/((?!api/track|api/dni|api/twilio|api/webhooks|api/cron|api/admin|api/auth|api/oauth|api/mcp|api/health|\\.well-known|oauth/authorize|track.js|dni-test|login|_next|favicon.ico).*)",
   ],
 };
