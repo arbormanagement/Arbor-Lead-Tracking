@@ -65,8 +65,15 @@ export async function listEstimates(opts: {
   days: number;
   filters?: EstimateFilters;
   limit?: number;
-}): Promise<{ rows: EstimateListRow[]; agg: EstimateListAgg }> {
-  const { days, filters = {}, limit = 200 } = opts;
+  offset?: number;
+}): Promise<{
+  rows: EstimateListRow[];
+  agg: EstimateListAgg;
+  total: number;
+  hasMore: boolean;
+  nextOffset: number | null;
+}> {
+  const { days, filters = {}, limit = 50, offset = 0 } = opts;
   const since = new Date(Date.now() - days * 86_400_000);
 
   // Recruiting/brand campaigns are not customer acquisition, so their estimates
@@ -122,7 +129,8 @@ export async function listEstimates(opts: {
     .leftJoin(hcpCustomers, eq(hcpEstimates.hcpCustomerId, hcpCustomers.id))
     .where(scope)
     .orderBy(desc(hcpEstimates.createdAtHcp))
-    .limit(limit);
+    .limit(limit)
+    .offset(offset);
 
   const rows: EstimateListRow[] = fetched.map((r) => ({
     id: r.id,
@@ -171,8 +179,21 @@ export async function listEstimates(opts: {
     .leftJoin(campaigns, eq(leads.campaignId, campaigns.id))
     .where(scope);
 
+  const total = agg?.total ?? 0;
+  const hasMore = offset + rows.length < total;
+
   return {
     rows,
+    // Paging metadata, so a caller can tell "these are all of them" from "this is
+    // the first page". Without it a limited fetch is indistinguishable from a
+    // complete one, which is how a generated view silently reports partial data.
+    //
+    // `total` is repeated here rather than left only on `agg`, so all three list
+    // tools carry the same paging shape — one contract a client can rely on
+    // without knowing which tool it called.
+    total,
+    hasMore,
+    nextOffset: hasMore ? offset + rows.length : null,
     agg: agg ?? {
       total: 0,
       countable: 0,

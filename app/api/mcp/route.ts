@@ -7,7 +7,16 @@ import {
   ClassifyLeadInput,
   DiagnosticsInput,
   EstimateDetailInput,
+  EstimateDetailOutput,
   FunnelOverviewInput,
+  FunnelOverviewOutput,
+  LandingPagesOutput,
+  ListCampaignsOutput,
+  ListEstimatesOutput,
+  ListLeadsOutput,
+  ListThreadsOutput,
+  RoiSummaryOutput,
+  SpendSummaryOutput,
   GetThreadInput,
   LandingPagesInput,
   ListCampaignsInput,
@@ -61,16 +70,35 @@ export const dynamic = "force-dynamic";
  * existing gated route with the enforcement kept server-side (consent inside
  * sendThreadSms, one-run-at-a-time inside withSyncRun).
  *
- * ⚠️ reply_to_thread means MCP_API_TOKEN can TEXT CUSTOMERS. The reply route
+ * ⚠️ arbor_reply_to_thread means MCP_API_TOKEN can TEXT CUSTOMERS. The reply route
  * itself is deliberately session-only and stays that way; exposing the same
  * action here was a deliberate Phase 3 decision (GENERATIVE-UI.md) so the
  * inbox is operable generatively. Treat the token accordingly: it is not a
  * read-only credential any more, and rotating it is one env change.
  */
 
-/** Bound every tool result: a model client's context is the scarce resource. */
-const json = (value: unknown) => ({
-  content: [{ type: "text" as const, text: JSON.stringify(value) }],
+/**
+ * Tool result: the same payload twice — text JSON for clients that read content,
+ * and `structuredContent` for clients that want typed data without re-parsing.
+ *
+ * The JSON round-trip is load-bearing, not decoration: the query layer returns
+ * `Date` objects, and a Date would fail an `outputSchema` expecting an ISO
+ * string. Serializing first guarantees what is validated is exactly what a
+ * client receives.
+ */
+const json = (value: unknown) => {
+  const payload = JSON.parse(JSON.stringify(value));
+  return { content: [{ type: "text" as const, text: JSON.stringify(payload) }], structuredContent: payload };
+};
+
+/**
+ * A failed call, reported as an error rather than as data. Every message says
+ * what to do next: a model that cannot tell "no such row" from "row with no
+ * fields" will happily report the absence as a finding.
+ */
+const fail = (error: string, nextStep: string) => ({
+  content: [{ type: "text" as const, text: JSON.stringify({ error, nextStep }) }],
+  isError: true as const,
 });
 
 /** Long free text (transcripts, bodies) is clipped, with a marker, not dropped. */
@@ -80,7 +108,7 @@ const clip = (s: string | null, max = 4000): string | null =>
 const handler = createMcpHandler(
   (server) => {
     server.registerTool(
-      "funnel_overview",
+      "arbor_funnel_overview",
       {
         title: "Funnel overview",
         description:
@@ -88,21 +116,23 @@ const handler = createMcpHandler(
           "Reads roi_daily (the aggregate of record) under the currently selected attribution model, with recruiting campaigns excluded. " +
           "All money is integer cents; daily dates are America/Chicago business dates.",
         inputSchema: FunnelOverviewInput.shape,
+        outputSchema: FunnelOverviewOutput.shape,
         annotations: { readOnlyHint: true },
       },
       async ({ days }) => json(await overviewData(days)),
     );
 
     server.registerTool(
-      "roi_summary",
+      "arbor_roi_summary",
       {
         title: "ROI by channel, campaign, or location",
         description:
           "Marketing performance from roi_daily: contacts, estimates (countable: scheduled or won, not cancelled), won, spend and revenue in cents. " +
           "grain=channel adds a cancelled column (counted via isCancelledEstimate, the exact complement of countable) and per-source location splits. " +
           "grain=campaign is the floor of money reporting — below it the sample is noise. " +
-          "Windows are business-date (America/Chicago); estimates here bucket on the CONTACT date, so counts will not reconcile row-for-row with list_estimates (which windows on estimate creation). Both are correct for their own question.",
+          "Windows are business-date (America/Chicago); estimates here bucket on the CONTACT date, so counts will not reconcile row-for-row with arbor_list_estimates (which windows on estimate creation). Both are correct for their own question.",
         inputSchema: RoiSummaryInput.shape,
+        outputSchema: RoiSummaryOutput.shape,
         annotations: { readOnlyHint: true },
       },
       async ({ days, grain }) => {
@@ -124,7 +154,7 @@ const handler = createMcpHandler(
     );
 
     server.registerTool(
-      "list_estimates",
+      "arbor_list_estimates",
       {
         title: "List estimates",
         description:
@@ -133,43 +163,52 @@ const handler = createMcpHandler(
           "The returned agg is computed over the whole filtered window, not just the returned rows. Close rate = won ÷ agg.countable (scheduled or won), NEVER ÷ agg.total — " +
           "dividing by the listed total is the 25%-vs-48% close-rate error this app exists to prevent. `outcome` is decided by customer option APPROVAL, never by HCP's work_status.",
         inputSchema: ListEstimatesInput.shape,
+        outputSchema: ListEstimatesOutput.shape,
         annotations: { readOnlyHint: true },
       },
-      async ({ days, limit, ...filters }) => json(await listEstimates({ days, filters, limit })),
+      async ({ days, limit, offset, ...filters }) => json(await listEstimates({ days, filters, limit, offset })),
     );
 
     server.registerTool(
-      "estimate_detail",
+      "arbor_estimate_detail",
       {
         title: "Estimate detail",
         description:
           "One estimate with its customer (read through the HousecallPro link — this app stores no customer data), its attribution chain, " +
-          "and the tracked contact behind it (leadId + conversationId to follow into get_thread). Null attribution fields mean no tracked contact matched: repeat business, a referral, or an estimate written in the field.",
+          "and the tracked contact behind it (leadId + conversationId to follow into arbor_get_thread). Null attribution fields mean no tracked contact matched: repeat business, a referral, or an estimate written in the field.",
         inputSchema: EstimateDetailInput.shape,
+        outputSchema: EstimateDetailOutput.shape,
         annotations: { readOnlyHint: true },
       },
       async ({ id }) => {
         const detail = await getEstimateDetail(id);
-        return json(detail ?? { error: "not_found", id });
+        if (!detail) {
+          return fail(
+            `No estimate with id '${id}'.`,
+            "Ids come from arbor_list_estimates (the `id` field), not from HousecallPro's own estimate number. If you have a customer name or phone instead, find the estimate with arbor_list_estimates and read its id.",
+          );
+        }
+        return json(detail);
       },
     );
 
     server.registerTool(
-      "landing_pages",
+      "arbor_landing_pages",
       {
         title: "Landing-page performance",
         description:
           "CRO view: sessions (crawlers excluded), contacts, conversion, estimates, won and revenue per landing path. Deliberately has NO spend — money attaches to campaigns, not pages. " +
-          "Reads raw session/lead timestamps, so totals will not reconcile with roi_summary at a window edge. Rates on under ~30 sessions are noise wearing a percent sign — suppress them when presenting. " +
+          "Reads raw session/lead timestamps, so totals will not reconcile with arbor_roi_summary at a window edge. Rates on under ~30 sessions are noise wearing a percent sign — suppress them when presenting. " +
           "unknownUa sessions carry no user-agent (recorded only from 2026-08-13) and are counted as human.",
         inputSchema: LandingPagesInput.shape,
+        outputSchema: LandingPagesOutput.shape,
         annotations: { readOnlyHint: true },
       },
       async ({ days }) => json(await landingPagePerformance(days)),
     );
 
     server.registerTool(
-      "list_threads",
+      "arbor_list_threads",
       {
         title: "List inbox threads",
         description:
@@ -177,12 +216,16 @@ const handler = createMcpHandler(
           "Recruiting enquiries appear here by design (someone contacting the business is inbox-worthy) but never become leads, so they stay out of ROI. " +
           "smsOptedOut=true means outbound texting is blocked in code — the consent gate lives server-side.",
         inputSchema: ListThreadsInput.shape,
+        outputSchema: ListThreadsOutput.shape,
         annotations: { readOnlyHint: true },
       },
-      async ({ days, channel, state, limit }) => {
-        const { threads, counts } = await listThreads({ days, channel, state, limit });
+      async ({ days, channel, state, limit, offset }) => {
+        const { threads, counts, total, hasMore, nextOffset } = await listThreads({ days, channel, state, limit, offset });
         return json({
           counts,
+          total,
+          hasMore,
+          nextOffset,
           threads: threads.map((t) => ({
             id: t.id,
             state: t.state,
@@ -202,7 +245,7 @@ const handler = createMcpHandler(
     );
 
     server.registerTool(
-      "get_thread",
+      "arbor_get_thread",
       {
         title: "Get one thread",
         description:
@@ -214,7 +257,12 @@ const handler = createMcpHandler(
       },
       async ({ id }) => {
         const d = await getThreadDetail(id);
-        if (!d) return json({ error: "not_found", id });
+        if (!d) {
+          return fail(
+            `No thread with id '${id}'.`,
+            "Thread ids come from arbor_list_threads (the `id` field). An estimate's linked thread is on arbor_estimate_detail as `conversationId`.",
+          );
+        }
         return json({
           thread: {
             id: d.thread.id,
@@ -271,7 +319,7 @@ const handler = createMcpHandler(
     );
 
     server.registerTool(
-      "list_leads",
+      "arbor_list_leads",
       {
         title: "Search leads",
         description:
@@ -279,28 +327,33 @@ const handler = createMcpHandler(
           '"did that call land with the right source?", "which callers to the static Google Ads number had no click id?". ' +
           "A lead is one tracked ENQUIRY, not a person (that is a thread) and not an opportunity (that is an estimate). selfReportedSource is the only field that can say what is inside the `direct` bucket.",
         inputSchema: ListLeadsInput.shape,
+        outputSchema: ListLeadsOutput.shape,
         annotations: { readOnlyHint: true },
       },
-      async (p) => json({ leads: await searchLeads(p) }),
+      async (p) => {
+        const { rows, total, hasMore, nextOffset } = await searchLeads(p);
+        return json({ leads: rows, total, hasMore, nextOffset });
+      },
     );
 
     server.registerTool(
-      "spend_summary",
+      "arbor_spend_summary",
       {
         title: "Ad spend",
         description:
           "What the platforms billed, by platform and campaign: impressions, clicks, spend in cents. Reads ad_spend directly, so EXCLUDED (recruiting/brand) campaigns are " +
-          "visible here flagged excluded:true — they are kept out of every ROI number but their spend stays on record. Use roi_summary for return on this spend.",
+          "visible here flagged excluded:true — they are kept out of every ROI number but their spend stays on record. Use arbor_roi_summary for return on this spend.",
         inputSchema: SpendSummaryInput.shape,
+        outputSchema: SpendSummaryOutput.shape,
         annotations: { readOnlyHint: true },
       },
       async ({ days, platform }) => json(await spendSummary({ days, platform })),
     );
 
     server.registerTool(
-      "diagnostics",
+      "arbor_diagnostics",
       {
-        title: "Operational diagnostics",
+        title: "Operational arbor_diagnostics",
         description:
           "Is the machine healthy right now? Sync-job health, DNI pool state, swap coverage, conversion-export failures, estimate-sync drift vs HousecallPro, " +
           "credential presence (never values), and a warnings list where anything non-empty deserves a human. A fixed set of checks, deliberately not a query interface.",
@@ -314,7 +367,7 @@ const handler = createMcpHandler(
     );
 
     server.registerTool(
-      "attribution_health",
+      "arbor_attribution_health",
       {
         title: "Attribution health",
         description:
@@ -331,7 +384,7 @@ const handler = createMcpHandler(
     // lib functions, never in tool descriptions.
 
     server.registerTool(
-      "reply_to_thread",
+      "arbor_reply_to_thread",
       {
         title: "Reply to a thread by text",
         description:
@@ -347,10 +400,18 @@ const handler = createMcpHandler(
           return json({ ok: true, id: message.id, status: message.status });
         } catch (err) {
           if (err instanceof SendError) {
-            // Consent/config refusals are state, not transport: report the code
-            // (opted_out, no_destination, no_sender, provider, empty) so the
-            // client can explain rather than retry.
-            return { ...json({ ok: false, error: err.message, code: err.code }), isError: true };
+            // Consent/config refusals are state, not transport — retrying cannot
+            // help, so each says what would actually change the outcome.
+            const nextStep = {
+              opted_out:
+                "This contact replied STOP. Texting them is blocked in code and cannot be overridden here — reach them another way.",
+              no_destination: "This thread has no phone number to reply to. Check the contact in arbor_get_thread.",
+              no_sender:
+                "No tracking number is recorded for this thread, so there is nothing to send from. Replying from another number would break attribution.",
+              provider: "Twilio rejected the send. Check arbor_diagnostics for credential and number health, then retry.",
+              empty: "The message body was empty after trimming.",
+            }[err.code];
+            return fail(err.message, nextStep ?? "Check arbor_diagnostics for service health.");
           }
           throw err;
         }
@@ -358,7 +419,7 @@ const handler = createMcpHandler(
     );
 
     server.registerTool(
-      "set_thread_state",
+      "arbor_set_thread_state",
       {
         title: "Open or close a thread",
         description:
@@ -373,7 +434,7 @@ const handler = createMcpHandler(
     );
 
     server.registerTool(
-      "classify_lead",
+      "arbor_classify_lead",
       {
         title: "Mark a lead as lead / not a lead",
         description:
@@ -384,13 +445,18 @@ const handler = createMcpHandler(
       },
       async ({ id, isLead }) => {
         const row = await setLeadClassification(id, isLead);
-        if (!row) return { ...json({ ok: false, error: "lead not found", id }), isError: true };
+        if (!row) {
+          return fail(
+            `No lead with id '${id}'.`,
+            "Lead ids come from arbor_list_leads, or from arbor_get_thread's `enquiries` array. A lead id is not an estimate id.",
+          );
+        }
         return json({ ok: true, ...row });
       },
     );
 
     server.registerTool(
-      "trigger_sync",
+      "arbor_trigger_sync",
       {
         title: "Run a sync job now",
         description:
@@ -404,20 +470,21 @@ const handler = createMcpHandler(
     );
 
     server.registerTool(
-      "list_campaigns",
+      "arbor_list_campaigns",
       {
         title: "List ad campaigns",
         description:
           "Every campaign the syncs have seen, with lifetime spend (cents), lead count, and the excluded flag. " +
-          "This is where campaignId values for set_campaign_excluded come from. Campaigns are created by the spend sync and Facebook ingest — never invented from URL text.",
+          "This is where campaignId values for arbor_set_campaign_excluded come from. Campaigns are created by the spend sync and Facebook ingest — never invented from URL text.",
         inputSchema: ListCampaignsInput.shape,
+        outputSchema: ListCampaignsOutput.shape,
         annotations: { readOnlyHint: true },
       },
       async () => json({ campaigns: await listCampaignsWithVolume() }),
     );
 
     server.registerTool(
-      "set_campaign_excluded",
+      "arbor_set_campaign_excluded",
       {
         title: "Flag a campaign as recruiting/brand",
         description:
@@ -429,13 +496,18 @@ const handler = createMcpHandler(
       },
       async ({ campaignId, excluded }) => {
         const row = await setCampaignExcluded(campaignId, excluded);
-        if (!row) return { ...json({ ok: false, error: "campaign not found", campaignId }), isError: true };
+        if (!row) {
+          return fail(
+            `No campaign with id '${campaignId}'.`,
+            "Campaign ids come from arbor_list_campaigns. Campaigns are created by the spend sync and Facebook ingest — a campaign absent there has not been pulled yet, so run arbor_trigger_sync with job 'spend' first.",
+          );
+        }
         return json({ ok: true, ...row });
       },
     );
 
     server.registerTool(
-      "set_attribution_model",
+      "arbor_set_attribution_model",
       {
         title: "Switch the attribution model",
         description:
@@ -452,7 +524,7 @@ const handler = createMcpHandler(
     );
 
     server.registerTool(
-      "reclassify_sources",
+      "arbor_reclassify_sources",
       {
         title: "Re-run source classification on unmapped leads",
         description:
@@ -468,10 +540,11 @@ const handler = createMcpHandler(
   {
     serverInfo: { name: "arbor-lead-tracking", version: "1.0.0" },
     instructions:
-      "Read-only tools over Arbor Management's lead-tracking and ROI data. " +
-      "Money is integer cents. Two window shapes exist: roi_summary/funnel_overview bucket on America/Chicago business dates by CONTACT date; " +
-      "list_estimates windows on estimate CREATION; landing_pages uses raw timestamps. Totals across shapes will not reconcile at window edges — that is documented behavior, not a data bug. " +
-      "Close rates always divide by countable estimates (scheduled or won), never by everything listed.",
+      "Tools over Arbor Management's lead-tracking and ROI data: twelve reads plus seven writes (replying to customers, triage, settings, syncs). " +
+      "Money is integer cents. Two window shapes exist: roi_summary/arbor_funnel_overview bucket on America/Chicago business dates by CONTACT date; " +
+      "arbor_list_estimates windows on estimate CREATION; arbor_landing_pages uses raw timestamps. Totals across shapes will not reconcile at window edges — that is documented behavior, not a data bug. " +
+      "Close rates always divide by countable estimates (scheduled or won), never by everything listed. " +
+      "List tools page: they return total/hasMore/nextOffset — never present a page as the whole set, and follow nextOffset when the question needs all of them.",
   },
   {
     // Route lives at /api/mcp; basePath derives the streamable-HTTP endpoint.

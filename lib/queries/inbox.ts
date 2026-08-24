@@ -54,15 +54,22 @@ export async function listThreads(opts: {
   channel?: ThreadChannel | null;
   state?: ThreadStateFilter;
   limit?: number;
-}): Promise<{ threads: ThreadListRow[]; counts: Record<ThreadChannel, number> }> {
-  const { days, channel = null, state = "open", limit = 200 } = opts;
+  offset?: number;
+}): Promise<{
+  threads: ThreadListRow[];
+  counts: Record<ThreadChannel, number>;
+  total: number;
+  hasMore: boolean;
+  nextOffset: number | null;
+}> {
+  const { days, channel = null, state = "open", limit = 50, offset = 0 } = opts;
   const since = new Date(Date.now() - days * 86_400_000);
 
   const filters: SQL[] = [gte(conversations.lastActivityAt, since)];
   if (channel) filters.push(sql`${channel} = any(${conversations.channels})`);
   if (state === "open") filters.push(eq(conversations.state, "open"));
 
-  const [threads, counts] = await Promise.all([
+  const [threads, counts, [counted]] = await Promise.all([
     db
       .select({
         id: conversations.id,
@@ -85,11 +92,18 @@ export async function listThreads(opts: {
       .leftJoin(hcpCustomers, eq(contacts.hcpCustomerId, hcpCustomers.id))
       .where(and(...filters))
       .orderBy(desc(conversations.lastActivityAt))
-      .limit(limit),
+      .limit(limit)
+      .offset(offset),
     channelCounts(since, state),
+    // Total under the SAME filters, so a caller can distinguish "that is all of
+    // them" from "that is the first page".
+    db.select({ n: sql<number>`count(*)::int` }).from(conversations).where(and(...filters)),
   ]);
 
-  return { threads, counts };
+  const total = counted?.n ?? 0;
+  const hasMore = offset + threads.length < total;
+
+  return { threads, counts, total, hasMore, nextOffset: hasMore ? offset + threads.length : null };
 }
 
 /** Per-channel thread counts (for the tab badges and the tool's summary). */

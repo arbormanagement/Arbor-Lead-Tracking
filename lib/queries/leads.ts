@@ -1,4 +1,4 @@
-import { and, desc, eq, ilike, isNotNull, not, or, type SQL } from "drizzle-orm";
+import { and, desc, eq, ilike, isNotNull, not, or, sql, type SQL } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { campaigns, leads, sources } from "@/lib/db/schema";
 
@@ -25,6 +25,7 @@ export interface LeadSearch {
   /** true = carries any of gclid/gbraid/wbraid/fbclid; false = carries none. */
   hasClickId?: boolean;
   limit?: number;
+  offset?: number;
 }
 
 export interface LeadRow {
@@ -53,7 +54,9 @@ export interface LeadRow {
   occurredAt: Date;
 }
 
-export async function searchLeads(p: LeadSearch): Promise<LeadRow[]> {
+export async function searchLeads(
+  p: LeadSearch,
+): Promise<{ rows: LeadRow[]; total: number; hasMore: boolean; nextOffset: number | null }> {
   const where: SQL[] = [];
   if (p.type) where.push(eq(leads.type, p.type));
   if (p.status) where.push(eq(leads.status, p.status));
@@ -84,7 +87,16 @@ export async function searchLeads(p: LeadSearch): Promise<LeadRow[]> {
     where.push(p.hasClickId ? anyClickId : not(anyClickId));
   }
 
-  return db
+  const where_ = where.length ? and(...where) : undefined;
+  const limit = p.limit ?? 50;
+  const offset = p.offset ?? 0;
+
+  // Counted over the same predicate as the page, so "showing N of M" is honest
+  // rather than a description of whatever the fetch happened to return.
+  const [counted] = await db.select({ n: sql<number>`count(*)::int` }).from(leads).where(where_);
+  const total = counted?.n ?? 0;
+
+  const rows = await db
     .select({
       id: leads.id,
       type: leads.type,
@@ -111,7 +123,11 @@ export async function searchLeads(p: LeadSearch): Promise<LeadRow[]> {
     .from(leads)
     .leftJoin(sources, eq(sources.id, leads.sourceId))
     .leftJoin(campaigns, eq(campaigns.id, leads.campaignId))
-    .where(where.length ? and(...where) : undefined)
+    .where(where_)
     .orderBy(desc(leads.occurredAt))
-    .limit(p.limit ?? 50);
+    .limit(limit)
+    .offset(offset);
+
+  const hasMore = offset + rows.length < total;
+  return { rows, total, hasMore, nextOffset: hasMore ? offset + rows.length : null };
 }

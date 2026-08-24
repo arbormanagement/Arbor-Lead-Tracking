@@ -11,6 +11,27 @@ Deliberately NOT tools: routing changes, number management, credentials,
 `conversions/reset`, lead deletion — rare + risky stays behind the session
 UI (see Phase 3 rationale below).
 
+**API-quality pass (2026-08-24), audited against Anthropic's MCP server
+guidance:** every list tool now pages (`offset` in, `total`/`hasMore`/
+`nextOffset` out — a limited fetch was previously indistinguishable from a
+complete one, which is how a generated view silently reports partial data);
+default limits cut to 50 (`list_estimates` was 200 ≈ 25k tokens and 200
+customers' contact details per call); the read tools declare `outputSchema` and
+return `structuredContent`, wired from the contracts that already existed in
+`lib/api-contracts/tools.ts` (a JSON round-trip in the result helper guarantees
+Dates leave as ISO strings, so what validates is exactly what a client gets);
+every tool is prefixed `arbor_*` (the account runs Gmail/Calendar/GitHub
+connectors alongside — a bare `list_threads` next to Gmail's threads is a
+coin-flip); and failures return `isError` with a `nextStep` naming where valid
+ids come from. Deliberately unschema'd: the write tools, `arbor_diagnostics`
+and `arbor_attribution_health` — pass-through payloads whose shape is owned
+elsewhere, where a drifting schema fails the call outright. **Found by testing
+against a seeded Postgres, not by reading:** `spend_summary`'s platform filter
+declared `googleads`, but the pg enum is `google|google_lsa|facebook|other`, so
+that filter would have errored on every call in production. The unattributed
+row keeps its null key/name — it is a real and expected population (pre-tracking
+history + repeat business), not a display defect to paper over.
+
 **OAuth (2026-08-24):** `/api/mcp` is also an OAuth 2.1 protected resource,
 because claude.ai's custom-connector UI authenticates via OAuth (its
 `static_headers` bearer option is a gated beta this account doesn't have) and
