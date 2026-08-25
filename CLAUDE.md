@@ -76,7 +76,9 @@ Edwardsville + O'Fallon). WhatConverts-style. Single-tenant. Owner: Justin
   points at the voice agent).
 - **Web/form tracking** via first-party `track.js` on arbor-mgmt.com.
 - **Facebook lead-gen** via the MCP webhook.
-- **ROI = attributed HousecallPro won-estimate revenue ÷ ad spend**, per source/campaign/location. Revenue event = a customer-approved (won) estimate, valued at the approved-option amount (`hcp_estimates`); completed jobs are still synced (`hcp_jobs`) for secondary completed/invoiced visibility.
+- **ROI = attributed HousecallPro won-estimate revenue ÷ ad spend**, per source/campaign/location. Revenue event = a customer-approved (won) estimate, valued at the approved-option amount (`hcp_estimates`).
+- **Four money numbers exist and must never be blended** (jobs + invoices + customers landed 2026-08-25): estimate APPROVED value (the only ROI revenue), job QUOTED total, invoice BILLED, invoice COLLECTED. `roi_daily` reads the first and only the first — an estimate is approved the moment the customer says yes, which is when the marketing did its job, while an invoice is written days or weeks later and paid later still. Re-anchoring ROI on invoices would move every historical figure and lag the channel that earned it. Jobs and invoices answer "was the work done and did we get paid", never "did the ads work". Justin chose this explicitly (2026-08-25) over a second ROI lens or a replacement.
+- **All four HCP collections are synced COMPLETE, not windowed** — ~10.7k customers, ~10.8k jobs, ~15.5k estimates, ~10.6k invoices. Each gets a hot pass (recent rows, every run) plus a cold crawl (a cursor walking the whole collection, 2 pages/run, wrapping forever). The crawls are the reason this is complete: before them, jobs were bounded to a 180-day schedule window and customers to whatever the incremental window reached, so most of the account was simply absent. A cold start fills in ~1.1 days with no manual backfill.
 - **Read path is DIRECT to each platform API** (decision 2026-06-26): a background sync needs clean typed data + reliability, so we don't route it through the LLM-oriented MCP gateway. All spend/revenue access is behind `lib/integrations` (`SpendProvider`/`RevenueProvider`) so any provider can be swapped — including back to an MCP-backed impl. The MCP client (`lib/mcp/client.ts`) is retained as an optional per-platform fallback.
 - Direct providers: `lib/integrations/housecallpro.ts` (API key), `google-ads.ts` (OAuth refresh → GAQL searchStream), `facebook.ts` (Graph insights). Sync jobs in `lib/sync/{spend,hcp}.ts`, recorded in `sync_runs`; admin trigger `POST /api/sync/{spend|hcp}`, scheduled by the `cron` worker (`scripts/cron.ts`) hitting `GET /api/cron/{job}`.
 
@@ -118,6 +120,7 @@ Edwardsville + O'Fallon). WhatConverts-style. Single-tenant. Owner: Justin
 - `lib/db/schema.ts` — full data model (visitors, web_sessions, tracking_numbers, number_assignments, sources, campaigns, ad_spend, hcp_customers, hcp_jobs, leads, conversations, calls, messages, form_submissions, facebook_leads, attributions, roi_daily, …).
 - `app/api/twilio/voice/route.ts` — inbound call: resolve tracking number → assignment → source, spam check, persist call+lead, return forward TwiML. **Must respond <3s** — fallback-forwards on any error so no call is lost.
 - `app/api/twilio/sms/route.ts` — inbound text. Same resolution as `/voice` (shared in `lib/twilio/inbound.ts`) but fails **CLOSED** on an unverifiable signature: dead air loses a customer, an unverified write just lets someone forge leads. Idempotent on `MessageSid`.
+- `lib/queries/hcp.ts` — jobs, invoices and customers (`arbor_list_jobs` / `arbor_list_invoices` / `arbor_list_customers`). Money totals there exclude **voided and canceled** invoices everywhere — a re-issued invoice would otherwise count twice — so `agg.live`, never `agg.total`, is the financial denominator. `scripts/verify-hcp-queries.ts` (`npm run verify:hcp`) exercises this SQL against a scratch Postgres; there is no test runner, and `tsc` cannot see inside a `sql` template.
 - `lib/estimates/countable.ts` — the ONE definition of an opportunity (`isCountableEstimate`: scheduled, not cancelled), plus `isCancelledEstimate` as its exact complement so "Estimates" and "Cancelled" on `/sources` cannot drift. Copied from `arbor-reporting`, not invented: the same wins give a 25% close rate without it and 48% with it.
 - `lib/leads/qualified.ts` — Inbox triage only. No metric reads it any more (P2/P3); it survives so the Lead/Not toggle keeps working.
 - `lib/landing-page.ts` — `landingPathSql`, so `/sources` and `/pages` cannot disagree about what a page is. SQL rather than TS on purpose: grouping and display must use the same value, and normalising only at render is exactly how they came apart.
@@ -127,6 +130,30 @@ Edwardsville + O'Fallon). WhatConverts-style. Single-tenant. Owner: Justin
 - `lib/messaging/send.ts` — outbound SMS, consent-gated. **A2P 10DLC: brand `BNaaa7ccb11b86fc05a110ef1441fc0025`, campaign `CZPD8CT` (VERIFIED, LOW_VOLUME) on messaging service `MG2fea0b23db4aa369705393147cc857ba`.** A number only sends under that campaign once it's in the service's sender pool — as of 2026-08-09 **all 12 local numbers are in it**. (The unused toll-free `+18334791834` was released the same day; toll-free uses a separate verification track, not 10DLC.) The service has `use_inbound_webhook_on_number: true`, which is what keeps inbound texts arriving at each number's own `smsUrl` rather than being hijacked to the service.
 - `lib/mcp/client.ts` — `executeTool`/`executeTools` over MCP JSON-RPC.
 - `lib/attribution/classify.ts` — click-id/utm/referrer → source key + DNI pool.
+
+## HousecallPro API traps (verified 2026-08-25)
+
+- **Invoices carry NO `created_at` and NO `updated_at`** — not on `GET /invoices`, not on
+  `GET /invoices/{id}`; the two key sets are identical and contain neither. Both are still
+  accepted as `sort_by` values and `created_at_min/max` filters correctly server-side. So an
+  invoice pull can be ORDERED by recency but no row can be dated from what comes back, and
+  `paginate`'s early stop has nothing to read. That is why `listInvoices` uses
+  `paginateFixed` (a page count) rather than a date window.
+- **A job's `original_estimate_uuids` / `original_estimate_id` are OPTION ids, not estimate
+  ids.** They are `est_…` values; an estimate's own id is `csr_…`, and `GET /estimates/est_…`
+  returns 404. The job → estimate join therefore matches `hcp_estimates.options[].id` (GIN
+  indexed), never `hcp_estimate_id`. Getting this wrong looks like "no job ever came from an
+  estimate".
+- **HCP offers no server-side `updated_at` filter on any collection** — customers, jobs,
+  estimates and invoices alike. This is the single fact that shapes the whole sync: no window
+  of any width keeps aged rows current, so every collection needs a crawl.
+- **`/jobs` DOES carry a parseable `updated_at`** (contradicting an older code comment written
+  from a 2026-08-10 observation). The `scheduled_start_min` floor is kept anyway — it bounds
+  the pull server-side regardless of payload shape — and the crawl now covers history properly,
+  so this is no longer load-bearing.
+- Invoice payment/refund `status` vocabulary is `succeeded` | `failed`. Only `succeeded` counts
+  toward collected. Discounts come back as NEGATIVE amounts; `discount_amount_cents` stores the
+  positive magnitude. "Credit Card Processing Fee" is modelled by HCP as a TAX line.
 
 ## Inbox channels
 Each channel keeps its own rich table and carries a `conversation_id`; the thread view
