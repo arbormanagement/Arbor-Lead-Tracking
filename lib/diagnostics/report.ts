@@ -6,7 +6,10 @@ import { db } from "@/lib/db/client";
 import {
   calls,
   conversionExports,
+  hcpCustomers,
   hcpEstimates,
+  hcpInvoices,
+  hcpJobs,
   leads,
   numberAssignments,
   pools,
@@ -283,28 +286,64 @@ export async function diagnosticsReport(): Promise<{ httpStatus: number; report:
   //            history. This is the "coverage is slipping" signal: the crawl is
   //            fault-tolerant by design, so a persistent failure shows up here as a
   //            stalling number rather than as a failed sync run.
-  const crawl = await getSetting<{
+  //
+  // Reported for all four synced collections, not just estimates. Jobs, customers
+  // and invoices each got a crawl of their own, and a stalled cursor is exactly as
+  // invisible on any of them as it was on estimates.
+  const CRAWL_STATE_DEFAULT = { nextPage: 1, passes: 0, lastCompletedPassAt: null, totalItems: null };
+  type CrawlStateShape = {
     nextPage: number;
     passes: number;
     lastCompletedPassAt: string | null;
     totalItems: number | null;
-  }>("hcp.estimates.crawl", { nextPage: 1, passes: 0, lastCompletedPassAt: null, totalItems: null });
-
-  const [estCount] = await db.select({ n: sql<number>`count(*)::int` }).from(hcpEstimates);
-  const ourEstimates = estCount?.n ?? 0;
-  const passAgeHours = crawl.lastCompletedPassAt
-    ? Number(((now.getTime() - new Date(crawl.lastCompletedPassAt).getTime()) / 3_600_000).toFixed(1))
-    : null;
-
-  const estimateSync = {
-    ours: ourEstimates,
-    housecallPro: crawl.totalItems,
-    drift: crawl.totalItems == null ? null : ourEstimates - crawl.totalItems,
-    crawlPage: crawl.nextPage,
-    completedPasses: crawl.passes,
-    lastCompletedPassAt: crawl.lastCompletedPassAt,
-    passAgeHours,
   };
+
+  const [estCount, jobCount, custCount, invCount] = await Promise.all([
+    db.select({ n: sql<number>`count(*)::int` }).from(hcpEstimates),
+    db.select({ n: sql<number>`count(*)::int` }).from(hcpJobs),
+    db.select({ n: sql<number>`count(*)::int` }).from(hcpCustomers),
+    db.select({ n: sql<number>`count(*)::int` }).from(hcpInvoices),
+  ]);
+
+  const [estCrawl, jobCrawl, custCrawl, invCrawl] = await Promise.all([
+    getSetting<CrawlStateShape>("hcp.estimates.crawl", CRAWL_STATE_DEFAULT),
+    getSetting<CrawlStateShape>("hcp.jobs.crawl", CRAWL_STATE_DEFAULT),
+    getSetting<CrawlStateShape>("hcp.customers.crawl", CRAWL_STATE_DEFAULT),
+    getSetting<CrawlStateShape>("hcp.invoices.crawl", CRAWL_STATE_DEFAULT),
+  ]);
+
+  function collectionSync(ours: number, crawl: CrawlStateShape) {
+    const ageHours = crawl.lastCompletedPassAt
+      ? Number(((now.getTime() - new Date(crawl.lastCompletedPassAt).getTime()) / 3_600_000).toFixed(1))
+      : null;
+    // Drift is only meaningful once a full pass has landed. Before that the crawl is
+    // still filling — a cold start reads under-count by thousands for about a day —
+    // and reporting that as drift would fire a warning for every collection on every
+    // fresh deploy, which is how a real drift warning stops being believed.
+    const backfilling = crawl.passes === 0;
+    return {
+      ours,
+      housecallPro: crawl.totalItems,
+      drift: backfilling || crawl.totalItems == null ? null : ours - crawl.totalItems,
+      backfilling,
+      crawlPage: crawl.nextPage,
+      completedPasses: crawl.passes,
+      lastCompletedPassAt: crawl.lastCompletedPassAt,
+      passAgeHours: ageHours,
+    };
+  }
+
+  const hcpSync = {
+    estimates: collectionSync(estCount[0]?.n ?? 0, estCrawl),
+    jobs: collectionSync(jobCount[0]?.n ?? 0, jobCrawl),
+    customers: collectionSync(custCount[0]?.n ?? 0, custCrawl),
+    invoices: collectionSync(invCount[0]?.n ?? 0, invCrawl),
+  };
+
+  // Kept as its own key: it is what /api/diagnostics has always exposed and what
+  // existing readers (and the project notes) look for.
+  const estimateSync = hcpSync.estimates;
+  const passAgeHours = estimateSync.passAgeHours;
 
   // ── Configuration sanity ────────────────────────────────────────────────────
   // Credentials resolve from env only (the DB store was removed 2026-08-12), so a field is
@@ -358,18 +397,22 @@ export async function diagnosticsReport(): Promise<{ httpStatus: number; report:
   // all is a gap. Warned in both directions: fewer than HCP means we are missing
   // estimates, more means something vanished there and we should find out why before
   // deciding whether to tombstone it.
-  if (estimateSync.drift != null && estimateSync.drift !== 0) {
-    warnings.push(
-      `estimate count differs from HousecallPro by ${estimateSync.drift} ` +
-        `(ours ${estimateSync.ours}, HCP ${estimateSync.housecallPro})`,
-    );
-  }
-  // ~2 full passes at the configured crawl rate. Slower than that means the crawl is
-  // erroring or the cursor is stuck, and old estimates are drifting out of sync.
-  if (passAgeHours != null && passAgeHours > 96) {
-    warnings.push(
-      `estimate history crawl has not completed a full pass in ${passAgeHours}h — coverage of older estimates is stale`,
-    );
+  for (const [name, state] of Object.entries(hcpSync)) {
+    if (state.drift != null && state.drift !== 0) {
+      warnings.push(
+        `${name} count differs from HousecallPro by ${state.drift} ` +
+          `(ours ${state.ours}, HCP ${state.housecallPro})`,
+      );
+    }
+    // ~2 full passes at the configured crawl rate. Slower than that means the crawl
+    // is erroring or the cursor is stuck, and aged rows are drifting out of sync.
+    // Estimates walk the longest history (77 pages), so its rate sets the threshold
+    // for all four.
+    if (state.passAgeHours != null && state.passAgeHours > 96) {
+      warnings.push(
+        `${name} history crawl has not completed a full pass in ${state.passAgeHours}h — coverage of older ${name} is stale`,
+      );
+    }
   }
   // Stated before any capacity tuning: an unreleased-lease backlog looks exactly
   // like heavy traffic from the pool's side, and only this tells the two apart.
@@ -447,6 +490,7 @@ export async function diagnosticsReport(): Promise<{ httpStatus: number; report:
       swapCoverage,
       volume: { ...vol, ...callVol },
       estimateSync,
+      hcpSync,
       credentials: creds,
     },
   };

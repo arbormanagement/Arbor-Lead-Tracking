@@ -33,6 +33,8 @@ export interface HcpCustomerDTO {
   /** Every number on the record (mobile, home, work), unnormalized, in that order. */
   phones?: string[];
   addresses?: unknown;
+  createdAtHcp?: Date | null;
+  updatedAtHcp?: Date | null;
   raw?: unknown;
 }
 
@@ -42,10 +44,62 @@ export interface HcpJobDTO {
   workStatus?: string | null;
   scheduledStart?: Date | null;
   totalAmountCents: number;
+  subtotalCents: number;
   outstandingBalanceCents: number;
-  invoiceTotalCents: number;
+  invoiceNumber?: string | null;
+  description?: string | null;
+  /** `work_timestamps.completed_at` — when the crew actually finished. */
+  completedAtHcp?: Date | null;
+  canceledAtHcp?: Date | null;
+  deletedAtHcp?: Date | null;
+  updatedAtHcp?: Date | null;
+  jobType?: string | null;
+  tags?: string[] | null;
+  assignedEmployees?: unknown;
+  /** `original_estimate_uuids` — OPTION ids (`est_…`), not estimate ids (`csr_…`). */
+  estimateOptionIds?: string[] | null;
+  /** HCP's `lead_source`. Never usable as attribution — see hcpEstimates.leadSourceRaw. */
+  leadSourceRaw?: string | null;
   address?: unknown;
   createdAtHcp?: Date | null;
+  raw?: unknown;
+}
+
+/**
+ * An HCP invoice. What was BILLED — never the ROI revenue event, which stays the
+ * won estimate. Invoices carry no customer of their own; `hcpJobIdHcp` is the only
+ * link the payload gives, and the customer is resolved through the job.
+ *
+ * ⚠️ The invoice payload has NO `created_at` or `updated_at` (verified against both
+ * the list and the single-invoice endpoint, 2026-08-25) even though both are
+ * accepted as `sort_by` values and `created_at_min/max` filter correctly
+ * server-side. So an invoice pull can be ORDERED by recency but cannot early-stop
+ * on it — which is why the sync reads a fixed hot page count plus a full crawl.
+ */
+export interface HcpInvoiceDTO {
+  hcpInvoiceId: string;
+  invoiceNumber?: string | null;
+  hcpJobIdHcp?: string | null;
+  status?: string | null;
+  amountCents: number;
+  subtotalCents: number;
+  dueAmountCents: number;
+  /** Sum of `payments[]` with status `succeeded` — what was collected. */
+  paidAmountCents: number;
+  refundedAmountCents: number;
+  taxAmountCents: number;
+  discountAmountCents: number;
+  paymentMethods?: string[] | null;
+  invoiceDate?: Date | null;
+  serviceDate?: Date | null;
+  dueAt?: Date | null;
+  paidAt?: Date | null;
+  sentAt?: Date | null;
+  items?: unknown;
+  taxes?: unknown;
+  discounts?: unknown;
+  payments?: unknown;
+  refunds?: unknown;
   raw?: unknown;
 }
 
@@ -91,6 +145,22 @@ export interface HcpEstimateDTO {
  * forgot its position on every deploy would re-read the oldest pages forever and
  * never reach the newer ones.
  */
+/**
+ * One slice of a cursor walk over an entire HCP collection. Generic in the row
+ * type so customers, jobs, estimates and invoices share one cursor contract —
+ * they share one reason for existing (no server-side `updated_at` filter) and one
+ * failure mode (a cursor that stalls), so they should not drift apart.
+ */
+export interface HcpCrawlPage<T> {
+  rows: T[];
+  /** Page to resume from next run. Resets to 1 when `wrapped`. */
+  nextPage: number;
+  /** The crawl ran off the end of the collection — a full pass just completed. */
+  wrapped: boolean;
+  /** The provider's own total count, from the last response seen. */
+  totalItems: number | null;
+}
+
 export interface HcpEstimateCrawlPage {
   estimates: HcpEstimateDTO[];
   /** Page to resume from next run. Resets to 1 when `wrapped`. */
@@ -128,4 +198,13 @@ export interface RevenueProvider {
    * because the provider's change rate never decays to zero with age.
    */
   crawlEstimates(opts: { startPage: number; pages: number }): Promise<HcpEstimateCrawlPage>;
+  /** Invoices ordered newest-touched-first — a fixed page count, because the
+   *  payload carries no timestamp to early-stop on. See `HcpInvoiceDTO`. */
+  listInvoices(opts: { sinceDays: number }): Promise<HcpInvoiceDTO[]>;
+  /** Cold-zone cursor walks. Same contract as `crawlEstimates`, one per collection:
+   *  every one of these endpoints lacks a server-side `updated_at` filter, so a
+   *  window of any width leaves aged rows uncovered and only a walk closes it. */
+  crawlCustomers(opts: { startPage: number; pages: number }): Promise<HcpCrawlPage<HcpCustomerDTO>>;
+  crawlJobs(opts: { startPage: number; pages: number }): Promise<HcpCrawlPage<HcpJobDTO>>;
+  crawlInvoices(opts: { startPage: number; pages: number }): Promise<HcpCrawlPage<HcpInvoiceDTO>>;
 }

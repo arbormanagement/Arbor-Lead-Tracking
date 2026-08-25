@@ -342,6 +342,12 @@ export const hcpCustomers = pgTable(
     // reads keep working; new matching should use this.
     phonesE164: text("phones_e164").array(),
     addresses: jsonb("addresses"),
+    // HCP's own timestamps. `createdAt` above is when WE first saw the row, which is
+    // a fact about the sync, not about the customer — windowing "customers acquired
+    // this month" on it would date the whole back catalogue to the day of the
+    // backfill.
+    createdAtHcp: timestamp("created_at_hcp", { withTimezone: true }),
+    updatedAtHcp: timestamp("updated_at_hcp", { withTimezone: true }),
     raw: jsonb("raw"),
     syncedAt: timestamp("synced_at", { withTimezone: true }).notNull().defaultNow(),
     createdAt: createdAt(),
@@ -349,6 +355,7 @@ export const hcpCustomers = pgTable(
   },
   (t) => [
     uniqueIndex("hcp_customers_hcp_id_uq").on(t.hcpCustomerId),
+    index("hcp_customers_created_hcp_idx").on(t.createdAtHcp),
     index("hcp_customers_phone_idx").on(t.phoneE164),
     index("hcp_customers_email_idx").on(t.emailLc),
     // GIN, because every query against this asks "does the array CONTAIN this
@@ -366,8 +373,43 @@ export const hcpJobs = pgTable(
     workStatus: text("work_status"),
     scheduledStart: timestamp("scheduled_start", { withTimezone: true }),
     totalAmountCents: integer("total_amount_cents").default(0),
+    subtotalCents: integer("subtotal_cents").default(0),
     outstandingBalanceCents: integer("outstanding_balance_cents").default(0),
+    // ── Invoice rollup ────────────────────────────────────────────────────────
+    // Derived from `hcp_invoices` after each sync, NOT read off the job payload.
+    //
+    // This column used to be mapped from `j.invoice_total ?? j.total_amount`, and
+    // /jobs carries no `invoice_total` — so it silently held a copy of
+    // `total_amount` on every row and "invoiced" and "quoted" were the same number
+    // wearing two names. Now that invoices are synced in their own right it is a
+    // real rollup: the sum of live (not voided/canceled) invoices on the job.
     invoiceTotalCents: integer("invoice_total_cents").default(0),
+    invoicePaidCents: integer("invoice_paid_cents").default(0),
+    invoiceDueCents: integer("invoice_due_cents").default(0),
+    invoiceCount: integer("invoice_count").default(0),
+    invoiceNumber: text("invoice_number"),
+    description: text("description"),
+    // HCP's `work_timestamps.completed_at` — when the crew finished. The honest
+    // answer to "what did we actually DO in this window", as distinct from what was
+    // sold (estimates) or billed (invoices).
+    completedAtHcp: timestamp("completed_at_hcp", { withTimezone: true }),
+    canceledAtHcp: timestamp("canceled_at_hcp", { withTimezone: true }),
+    deletedAtHcp: timestamp("deleted_at_hcp", { withTimezone: true }),
+    updatedAtHcp: timestamp("updated_at_hcp", { withTimezone: true }),
+    jobType: text("job_type"),
+    tags: text("tags").array(),
+    assignedEmployees: jsonb("assigned_employees"),
+    // HCP's `original_estimate_uuids` — the estimate this job was created from.
+    //
+    // ⚠️ These are OPTION ids, not estimate ids, despite the field name: they are
+    // `est_…` values, while an estimate's own id is `csr_…` (verified 2026-08-25 —
+    // GET /estimates/est_… returns 404). So the join to `hcp_estimates` is against
+    // `options[].id`, never against `hcp_estimate_id`. Stored as an array because a
+    // job can be created from several options at once.
+    estimateOptionIds: text("estimate_option_ids").array(),
+    // HCP's `lead_source`, verbatim and **NOT usable as attribution** — see the long
+    // note on `hcpEstimates.leadSourceRaw`. Same field, same trap.
+    leadSourceRaw: text("lead_source_raw"),
     address: jsonb("address"),
     location: locationEnum("location").default("unknown"),
     createdAtHcp: timestamp("created_at_hcp", { withTimezone: true }),
@@ -379,6 +421,11 @@ export const hcpJobs = pgTable(
   (t) => [
     uniqueIndex("hcp_jobs_hcp_id_uq").on(t.hcpJobId),
     index("hcp_jobs_customer_idx").on(t.hcpCustomerId),
+    index("hcp_jobs_created_hcp_idx").on(t.createdAtHcp),
+    index("hcp_jobs_completed_hcp_idx").on(t.completedAtHcp),
+    index("hcp_jobs_work_status_idx").on(t.workStatus),
+    // GIN: the job → estimate join asks "does this array contain that option id".
+    index("hcp_jobs_estimate_options_idx").using("gin", t.estimateOptionIds),
   ],
 );
 
@@ -462,6 +509,97 @@ export const hcpEstimates = pgTable(
     // full-table scan as estimates accumulate.
     index("hcp_estimates_created_hcp_idx").on(t.createdAtHcp),
     index("hcp_estimates_updated_hcp_idx").on(t.updatedAtHcp),
+    // GIN: the job → estimate join asks "which estimate has an option with THIS id"
+    // (`options @> [{"id": …}]`). A job's `original_estimate_uuids` are option ids,
+    // so this is the only path from billed work back to the attributed opportunity.
+    // Without the index it is a sequential scan of the whole estimate history per
+    // job row.
+    index("hcp_estimates_options_idx").using("gin", t.options),
+  ],
+);
+
+// HCP invoices — what was actually BILLED, as distinct from what was sold.
+//
+// Deliberately NOT a revenue source for ROI. `roi_daily` is anchored on the won
+// estimate (approved-option amount) and stays that way: an estimate is approved the
+// moment the customer says yes, which is when the marketing that produced them did
+// its job, while an invoice is written days or weeks later and paid later still.
+// Re-anchoring ROI on invoices would move every historical figure and lag the
+// channel that earned it. These rows exist so "booked vs billed vs collected" is
+// answerable at all — a second lens, not a replacement. See docs/estimate-anchored-model.md.
+//
+// One job can carry SEVERAL invoices (progress billing, a second visit), which is
+// why this is its own table rather than columns on `hcp_jobs`; the per-job rollup
+// lives on `hcp_jobs.invoice_*` and is derived from here.
+export const hcpInvoices = pgTable(
+  "hcp_invoices",
+  {
+    id: id(),
+    hcpInvoiceId: text("hcp_invoice_id").notNull(),
+    /** Human-facing number, e.g. "10036008". NOT unique — HCP suffixes re-issues
+     *  ("10035706-1"), and the arbor-general books notes record that trap. */
+    invoiceNumber: text("invoice_number"),
+    /** Our `hcp_jobs.id`. Null until the job itself has been synced. */
+    hcpJobId: text("hcp_job_id").references(() => hcpJobs.id),
+    /**
+     * HCP's OWN job id (`job_…`), kept alongside the resolved FK.
+     *
+     * The invoice payload carries `job_id` and nothing else — no customer, no
+     * address — so this is the only link the API hands us. Storing it raw means an
+     * invoice whose job has not been crawled yet still lands, and is re-linked by
+     * the self-heal pass on a later run, instead of being dropped or blocking the
+     * insert.
+     */
+    hcpJobIdHcp: text("hcp_job_id_hcp"),
+    /** Resolved through the job — invoices carry no customer of their own. */
+    hcpCustomerId: text("hcp_customer_id").references(() => hcpCustomers.id),
+    /** open | pending_payment | paid | voided | uncollectible | canceled. Text, not
+     *  an enum: HCP owns this vocabulary and a new value must not fail the sync. */
+    status: text("status"),
+    amountCents: integer("amount_cents").default(0),
+    subtotalCents: integer("subtotal_cents").default(0),
+    dueAmountCents: integer("due_amount_cents").default(0),
+    /** Sum of `payments[]` with status `succeeded` — what was actually collected. */
+    paidAmountCents: integer("paid_amount_cents").default(0),
+    refundedAmountCents: integer("refunded_amount_cents").default(0),
+    taxAmountCents: integer("tax_amount_cents").default(0),
+    discountAmountCents: integer("discount_amount_cents").default(0),
+    /**
+     * Distinct `payments[].payment_method` values.
+     *
+     * Worth a column of its own because payment method is how the QuickBooks side
+     * finds trouble: HCP's payout sync silently skips payouts containing Klarna
+     * (`bnpl`) or mobile-check-deposit lines, and `bnpl` is not even in HCP's
+     * documented filter enum — so scanning this array is the way to find them.
+     */
+    paymentMethods: text("payment_methods").array(),
+    /** HCP's `invoice_date` — the billing date, and what a money window should run
+     *  on. Note the API exposes no `created_at`/`updated_at` on invoices at all. */
+    invoiceDate: timestamp("invoice_date", { withTimezone: true }),
+    serviceDate: timestamp("service_date", { withTimezone: true }),
+    dueAt: timestamp("due_at", { withTimezone: true }),
+    paidAt: timestamp("paid_at", { withTimezone: true }),
+    sentAt: timestamp("sent_at", { withTimezone: true }),
+    items: jsonb("items"),
+    taxes: jsonb("taxes"),
+    discounts: jsonb("discounts"),
+    payments: jsonb("payments"),
+    refunds: jsonb("refunds"),
+    raw: jsonb("raw"),
+    syncedAt: timestamp("synced_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    uniqueIndex("hcp_invoices_hcp_id_uq").on(t.hcpInvoiceId),
+    index("hcp_invoices_job_idx").on(t.hcpJobId),
+    // The self-heal pass filters on this, and it is how an invoice finds its job.
+    index("hcp_invoices_job_hcp_idx").on(t.hcpJobIdHcp),
+    index("hcp_invoices_customer_idx").on(t.hcpCustomerId),
+    index("hcp_invoices_status_idx").on(t.status),
+    index("hcp_invoices_invoice_date_idx").on(t.invoiceDate),
+    index("hcp_invoices_paid_at_idx").on(t.paidAt),
+    index("hcp_invoices_number_idx").on(t.invoiceNumber),
   ],
 );
 
@@ -1136,9 +1274,21 @@ export const messagesRelations = relations(messages, ({ one }) => ({
   lead: one(leads, { fields: [messages.leadId], references: [leads.id] }),
 }));
 
-export const hcpJobsRelations = relations(hcpJobs, ({ one }) => ({
+export const hcpJobsRelations = relations(hcpJobs, ({ one, many }) => ({
   customer: one(hcpCustomers, {
     fields: [hcpJobs.hcpCustomerId],
+    references: [hcpCustomers.id],
+  }),
+  invoices: many(hcpInvoices),
+}));
+
+export const hcpInvoicesRelations = relations(hcpInvoices, ({ one }) => ({
+  job: one(hcpJobs, {
+    fields: [hcpInvoices.hcpJobId],
+    references: [hcpJobs.id],
+  }),
+  customer: one(hcpCustomers, {
+    fields: [hcpInvoices.hcpCustomerId],
     references: [hcpCustomers.id],
   }),
 }));

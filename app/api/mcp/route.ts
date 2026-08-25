@@ -20,7 +20,13 @@ import {
   GetThreadInput,
   LandingPagesInput,
   ListCampaignsInput,
+  ListCustomersInput,
+  ListCustomersOutput,
   ListEstimatesInput,
+  ListInvoicesInput,
+  ListInvoicesOutput,
+  ListJobsInput,
+  ListJobsOutput,
   ListLeadsInput,
   ListThreadsInput,
   ReclassifySourcesInput,
@@ -41,6 +47,7 @@ import { SendError, sendThreadSms } from "@/lib/messaging/send";
 import { setThreadState } from "@/lib/messaging/thread";
 import { runSyncJob } from "@/lib/sync/run-job";
 import { getEstimateDetail, listEstimates } from "@/lib/queries/estimates";
+import { listCustomers, listInvoices, listJobs } from "@/lib/queries/hcp";
 import { getThreadDetail, listThreads } from "@/lib/queries/inbox";
 import { searchLeads } from "@/lib/queries/leads";
 import { overviewData } from "@/lib/queries/overview";
@@ -190,6 +197,61 @@ const handler = createMcpHandler(
         }
         return json(detail);
       },
+    );
+
+    server.registerTool(
+      "arbor_list_jobs",
+      {
+        title: "List jobs",
+        description:
+          "Work actually SOLD AND DONE, from HousecallPro — the counterpart to arbor_list_estimates, which is the opportunity list. " +
+          "Each row carries its invoice rollup (invoiced / collected / due, voided and canceled invoices excluded) and `estimateId`, the link back " +
+          "to the estimate and therefore to its attribution chain. " +
+          "⚠️ Choose `dateField` deliberately: `created` is when the job was written, `completed` is when the crew finished — 'what did we DO in July' is `completed`. " +
+          "None of this money is ROI revenue: roi_daily is anchored on the won estimate, because that is when the marketing did its job. Booked, billed and collected are three different numbers. " +
+          "`leadSourceRaw` is HCP's own lead_source and is NOT attribution — it records how the record was typed in.",
+        inputSchema: ListJobsInput.shape,
+        outputSchema: ListJobsOutput.shape,
+        annotations: { readOnlyHint: true },
+      },
+      async ({ days, dateField, limit, offset, ...filters }) =>
+        json(await listJobs({ days, dateField, filters, limit, offset })),
+    );
+
+    server.registerTool(
+      "arbor_list_invoices",
+      {
+        title: "List invoices",
+        description:
+          "What was BILLED and what was COLLECTED. Every money total excludes voided and canceled invoices — a re-issued invoice would otherwise count twice — " +
+          "so read `agg.live`, not `agg.total`, as the denominator for anything financial. " +
+          "`paidCents` counts succeeded payments only; `dueCents` is the collections number. " +
+          "One job can carry several invoices (progress billing, a second visit), and `invoiceNumber` is NOT unique — HCP suffixes re-issues (\"10035706-1\"). " +
+          "Filter `paymentMethod: bnpl` to find Klarna lines, which are the known poison pill for HCP's QuickBooks payout sync. " +
+          "This is not ROI revenue: roi_daily stays anchored on the won estimate.",
+        inputSchema: ListInvoicesInput.shape,
+        outputSchema: ListInvoicesOutput.shape,
+        annotations: { readOnlyHint: true },
+      },
+      async ({ days, dateField, limit, offset, ...filters }) =>
+        json(await listInvoices({ days, dateField, filters, limit, offset })),
+    );
+
+    server.registerTool(
+      "arbor_list_customers",
+      {
+        title: "List customers",
+        description:
+          "The customer book from HousecallPro, with lifetime rollups: jobs, estimates, and billed / collected / still-owed. " +
+          "`days` is OPTIONAL here and windows on HCP's own created_at ('customers acquired since') — omit it to search the whole book, which is the usual case. " +
+          "`phones` holds EVERY number on the record, not just the primary: people call from whichever handset they are holding, and matching on the primary alone " +
+          "is what used to leave estimates unattributed while two real calls from the same household sat on file. " +
+          "`tracked: false` finds customers who never reached us on a tracked channel — referrals, walk-ins, and anyone predating tracking.",
+        inputSchema: ListCustomersInput.shape,
+        outputSchema: ListCustomersOutput.shape,
+        annotations: { readOnlyHint: true },
+      },
+      async ({ days, limit, offset, ...filters }) => json(await listCustomers({ days, filters, limit, offset })),
     );
 
     server.registerTool(
@@ -540,9 +602,12 @@ const handler = createMcpHandler(
   {
     serverInfo: { name: "arbor-lead-tracking", version: "1.0.0" },
     instructions:
-      "Tools over Arbor Management's lead-tracking and ROI data: twelve reads plus seven writes (replying to customers, triage, settings, syncs). " +
-      "Money is integer cents. Two window shapes exist: roi_summary/arbor_funnel_overview bucket on America/Chicago business dates by CONTACT date; " +
-      "arbor_list_estimates windows on estimate CREATION; arbor_landing_pages uses raw timestamps. Totals across shapes will not reconcile at window edges — that is documented behavior, not a data bug. " +
+      "Tools over Arbor Management's lead-tracking and ROI data: fifteen reads plus seven writes (replying to customers, triage, settings, syncs). " +
+      "Money is integer cents. Window shapes differ by tool: roi_summary/arbor_funnel_overview bucket on America/Chicago business dates by CONTACT date; " +
+      "arbor_list_estimates windows on estimate CREATION; arbor_list_jobs and arbor_list_invoices take an explicit `dateField` (created/scheduled/completed, invoice/service/paid); " +
+      "arbor_landing_pages uses raw timestamps. Totals across shapes will not reconcile at window edges — that is documented behavior, not a data bug. " +
+      "FOUR different money numbers live here and must not be blended: estimate APPROVED value (the only ROI revenue), job QUOTED total, invoice BILLED, and invoice COLLECTED. " +
+      "roi_summary and arbor_funnel_overview are the only revenue surfaces; jobs and invoices answer 'was the work done and did we get paid', never 'did the ads work'. " +
       "Close rates always divide by countable estimates (scheduled or won), never by everything listed. " +
       "List tools page: they return total/hasMore/nextOffset — never present a page as the whole set, and follow nextOffset when the question needs all of them.",
   },

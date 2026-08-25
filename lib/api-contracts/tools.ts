@@ -493,3 +493,234 @@ export const CampaignRowSchema = z.object({
 });
 
 export const ListCampaignsOutput = z.object({ campaigns: z.array(CampaignRowSchema) });
+
+// ── list_jobs / list_invoices / list_customers ───────────────────────────────
+//
+// The HousecallPro side of the business: what was DONE, what was BILLED, and who
+// the customer is. Deliberately kept apart from the estimate tools and from
+// `roi_daily` — booked, billed and collected are three different numbers, and ROI
+// stays anchored on the won estimate. Money here answers "did we get paid", never
+// "did the ads work".
+
+export const JOB_DATE_FIELDS = ["created", "scheduled", "completed"] as const;
+export const INVOICE_DATE_FIELDS = ["invoice", "service", "paid"] as const;
+export const INVOICE_STATUSES = [
+  "open",
+  "pending_payment",
+  "paid",
+  "voided",
+  "uncollectible",
+  "canceled",
+] as const;
+export const PAYMENT_METHODS = [
+  "credit_card",
+  "ach",
+  "external",
+  "mobile_check_deposit",
+  "consumer_financing",
+  "bnpl",
+] as const;
+
+export const ListJobsInput = z.object({
+  days: days(30),
+  dateField: z
+    .enum(JOB_DATE_FIELDS)
+    .default("created")
+    .describe(
+      "Which date the window runs on: created (when the job was written), scheduled (the booked visit), or completed (when the crew finished). " +
+        "Pick deliberately — 'what did we DO in July' is `completed`, not `created`.",
+    ),
+  q: z.string().max(200).optional().describe("Free text over customer name/phone/email, job description, and invoice number"),
+  workStatus: z
+    .string()
+    .max(50)
+    .optional()
+    .describe(
+      'HCP work_status, matched exactly. ⚠️ HCP has TWO vocabularies: jobs REPORT "complete rated" / "needs scheduling" / "user canceled", ' +
+        "which is what this matches — not the filter words HCP's own API takes.",
+    ),
+  city: z.string().max(200).optional().describe("Service-address city, case-insensitive"),
+  tag: z.string().max(200).optional().describe('Job tag, exact (e.g. "Treezilla", "Wet weather work")'),
+  jobType: z.string().max(200).optional().describe("HCP job-type name, substring match"),
+  invoiced: z.boolean().optional().describe("true = has at least one live invoice; false = never invoiced"),
+  unpaid: z.boolean().optional().describe("true = money still owed on this job's invoices"),
+  limit: z.coerce.number().int().min(1).max(500).default(50),
+  offset: z.coerce.number().int().min(0).default(0).describe("Row offset for paging; use nextOffset from the previous response"),
+});
+
+export const JobRow = z.object({
+  id: z.string(),
+  hcpJobId: z.string().nullable().describe("HCP's own id (job_…)"),
+  invoiceNumber: z.string().nullable(),
+  description: z.string().nullable(),
+  workStatus: z.string().nullable().describe("As HCP reports it, e.g. 'complete rated'"),
+  jobType: z.string().nullable(),
+  tags: z.array(z.string()).nullable(),
+  createdAt: isoDate.nullable(),
+  scheduledStart: isoDate.nullable(),
+  completedAt: isoDate.nullable().describe("work_timestamps.completed_at — when the crew finished"),
+  canceledAt: isoDate.nullable(),
+  totalCents: z.number().int().nullable().describe("The job's own quoted total"),
+  outstandingCents: z.number().int().nullable().describe("HCP's own outstanding_balance on the job"),
+  invoicedCents: z.number().int().nullable().describe("Rolled up from live invoices — voided/canceled excluded"),
+  collectedCents: z.number().int().nullable().describe("Succeeded payments across those invoices"),
+  dueCents: z.number().int().nullable(),
+  invoiceCount: z.number().int().nullable(),
+  assignedTo: z.string().nullable().describe("Assigned employee(s), comma-joined"),
+  street: z.string().nullable(),
+  city: z.string().nullable(),
+  state: z.string().nullable(),
+  zip: z.string().nullable(),
+  customerId: z.string().nullable(),
+  customerName: z.string().nullable(),
+  customerPhone: z.string().nullable(),
+  customerEmail: z.string().nullable(),
+  estimateId: z
+    .string()
+    .nullable()
+    .describe("The estimate this job came from — follow into arbor_estimate_detail for its attribution chain"),
+  estimateOutcome: z.string().nullable(),
+  estimateOptionIds: z
+    .array(z.string())
+    .nullable()
+    .describe("HCP's original_estimate_uuids. These are OPTION ids (est_…), NOT estimate ids (csr_…)"),
+  leadSourceRaw: z
+    .string()
+    .nullable()
+    .describe("HCP's own lead_source. NOT attribution — it records how the record was typed into HCP. Never bill a channel from this"),
+});
+
+export const JobAgg = z.object({
+  total: z.number().int(),
+  completed: z.number().int(),
+  canceled: z.number().int(),
+  quotedCents: z.coerce.number().int().describe("Sum of the jobs' own totals"),
+  invoicedCents: z.coerce.number().int(),
+  collectedCents: z.coerce.number().int(),
+  dueCents: z.coerce.number().int(),
+  uninvoiced: z.number().int().describe("Jobs with no live invoice at all"),
+});
+
+export const ListJobsOutput = z.object({
+  rows: z.array(JobRow),
+  agg: JobAgg.describe("Computed over the whole filtered window, not just this page"),
+  dateField: z.enum(JOB_DATE_FIELDS).describe("Which date the window actually ran on"),
+  ...PagingFields,
+});
+
+export const ListInvoicesInput = z.object({
+  days: days(30),
+  dateField: z
+    .enum(INVOICE_DATE_FIELDS)
+    .default("invoice")
+    .describe("Which date the window runs on: invoice (billing date), service, or paid (when collected)"),
+  q: z.string().max(200).optional().describe("Free text over customer name/phone/email and invoice number"),
+  status: z.enum(INVOICE_STATUSES).optional(),
+  paymentMethod: z
+    .enum(PAYMENT_METHODS)
+    .optional()
+    .describe("Matches any succeeded payment on the invoice. 'bnpl' is Klarna — the line HCP's QuickBooks payout sync silently skips"),
+  unpaid: z.boolean().optional().describe("true = still owed money"),
+  limit: z.coerce.number().int().min(1).max(500).default(50),
+  offset: z.coerce.number().int().min(0).default(0).describe("Row offset for paging; use nextOffset from the previous response"),
+});
+
+export const InvoiceRow = z.object({
+  id: z.string(),
+  hcpInvoiceId: z.string().nullable(),
+  invoiceNumber: z.string().nullable().describe('Not unique — HCP suffixes re-issues ("10035706-1")'),
+  status: z.string().nullable(),
+  amountCents: z.number().int().nullable(),
+  subtotalCents: z.number().int().nullable(),
+  dueCents: z.number().int().nullable(),
+  paidCents: z.number().int().nullable().describe("Succeeded payments only"),
+  refundedCents: z.number().int().nullable(),
+  taxCents: z.number().int().nullable().describe('Includes HCP-modelled fees such as "Credit Card Processing Fee"'),
+  discountCents: z.number().int().nullable().describe("Positive magnitude; HCP reports discounts as negative"),
+  paymentMethods: z.array(z.string()).nullable(),
+  invoiceDate: isoDate.nullable(),
+  serviceDate: isoDate.nullable(),
+  dueAt: isoDate.nullable(),
+  paidAt: isoDate.nullable(),
+  sentAt: isoDate.nullable(),
+  jobId: z.string().nullable().describe("Our hcp_jobs.id — null only while the job has not been synced yet"),
+  hcpJobId: z.string().nullable().describe("HCP's own job id (job_…) — the only link the invoice payload carries"),
+  jobWorkStatus: z.string().nullable(),
+  jobCompletedAt: isoDate.nullable(),
+  customerId: z.string().nullable(),
+  customerName: z.string().nullable(),
+  customerPhone: z.string().nullable(),
+  customerEmail: z.string().nullable(),
+  services: z.string().nullable().describe("Distinct line-item names, comma-joined"),
+  itemCount: z.number().int(),
+});
+
+export const InvoiceAgg = z.object({
+  total: z.number().int().describe("Everything listed, voided and canceled included"),
+  live: z.number().int().describe("Not voided or canceled — the population every money total below uses"),
+  paid: z.number().int(),
+  billedCents: z.coerce.number().int(),
+  collectedCents: z.coerce.number().int(),
+  dueCents: z.coerce.number().int(),
+  refundedCents: z.coerce.number().int(),
+  unlinked: z.number().int().describe("Invoices whose job has not been synced yet; their customer is unknown until it is"),
+});
+
+export const ListInvoicesOutput = z.object({
+  rows: z.array(InvoiceRow),
+  agg: InvoiceAgg.describe("Computed over the whole filtered window, not just this page"),
+  dateField: z.enum(INVOICE_DATE_FIELDS),
+  ...PagingFields,
+});
+
+export const ListCustomersInput = z.object({
+  days: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(3650)
+    .optional()
+    .describe("Optional: only customers CREATED in HousecallPro this recently. Omit to search the whole book, which is the usual case"),
+  q: z.string().max(200).optional().describe("Free text over name, email, and every phone on the record"),
+  city: z.string().max(200).optional(),
+  hasJobs: z.boolean().optional(),
+  tracked: z
+    .boolean()
+    .optional()
+    .describe("true = linked to a tracked inbox contact; false = never reached us on a tracked channel (referral, walk-in, or predates tracking)"),
+  limit: z.coerce.number().int().min(1).max(500).default(50),
+  offset: z.coerce.number().int().min(0).default(0).describe("Row offset for paging; use nextOffset from the previous response"),
+});
+
+export const CustomerRow = z.object({
+  id: z.string(),
+  hcpCustomerId: z.string().nullable().describe("HCP's own id (cus_…)"),
+  name: z.string().nullable(),
+  firstName: z.string().nullable(),
+  lastName: z.string().nullable(),
+  email: z.string().nullable(),
+  phone: z.string().nullable().describe("E.164 primary"),
+  phones: z.array(z.string()).nullable().describe("EVERY number on the record — people call from whichever handset they are holding"),
+  createdAt: isoDate.nullable().describe("HCP's own created_at, not when we first synced them"),
+  updatedAt: isoDate.nullable(),
+  city: z.string().nullable(),
+  zip: z.string().nullable(),
+  contactId: z.string().nullable().describe("The tracked inbox contact, when they have one"),
+  conversationId: z.string().nullable().describe("Follow into arbor_get_thread"),
+  jobCount: z.number().int(),
+  lastJobAt: isoDate.nullable(),
+  estimateCount: z.number().int(),
+  wonEstimateCount: z.number().int(),
+  billedCents: z.number().int().describe("Lifetime, live invoices only"),
+  collectedCents: z.number().int(),
+  dueCents: z.number().int().describe("Still owed — the collections number"),
+});
+
+export const ListCustomersOutput = z.object({
+  rows: z.array(CustomerRow),
+  agg: z.object({
+    total: z.number().int(),
+    tracked: z.number().int().describe("How many are linked to a tracked contact"),
+  }),
+  ...PagingFields,
+});

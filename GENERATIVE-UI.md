@@ -2,8 +2,9 @@
 
 **Status: Phases 0–1 and 3 BUILT (2026-08-24).** `lib/queries/` +
 `lib/api-contracts/` exist and every dashboard page reads through them;
-`/api/mcp` serves a 19-tool catalog behind `MCP_API_TOKEN` — 12 reads
-(annotated `readOnlyHint`, incl. `list_campaigns`) plus seven writes
+`/api/mcp` serves a 22-tool catalog behind `MCP_API_TOKEN` — 15 reads
+(annotated `readOnlyHint`, incl. `list_campaigns` and the HousecallPro trio
+`list_jobs` / `list_invoices` / `list_customers`, added 2026-08-25) plus seven writes
 (`reply_to_thread`, `set_thread_state`, `classify_lead`, `trigger_sync`,
 `set_campaign_excluded`, `set_attribution_model`, `reclassify_sources` —
 dry-run by default), each wrapping the same lib function its route uses.

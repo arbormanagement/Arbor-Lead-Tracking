@@ -2,9 +2,11 @@ import { getPlatformCreds } from "@/lib/credentials";
 import { env } from "@/lib/env";
 import { fetchWithRetry } from "./http";
 import type {
+  HcpCrawlPage,
   HcpCustomerDTO,
   HcpEstimateCrawlPage,
   HcpEstimateDTO,
+  HcpInvoiceDTO,
   HcpJobDTO,
   RevenueProvider,
 } from "./types";
@@ -54,6 +56,23 @@ const JOBS_MIN_WINDOW_DAYS = 180;
  * cost is the thing this number exists to control.
  */
 const ESTIMATE_HOT_PAGES = 7;
+
+/**
+ * The invoice "hot zone": pages of newest-TOUCHED-first invoices re-read every run.
+ *
+ * A page count rather than a date window for a harder reason than the estimate
+ * case. HCP's invoice payload carries no `created_at` and no `updated_at` at all —
+ * verified 2026-08-25 against both `GET /invoices` and `GET /invoices/{id}`, whose
+ * key sets are identical and contain neither — even though both are accepted as
+ * `sort_by` values and `created_at_min` filters correctly server-side. So the list
+ * can be ORDERED by recency but no row can be dated from what comes back, and
+ * `paginate`'s early stop has nothing to read. `paginateFixed` is the honest tool.
+ *
+ * 5 pages is ~1,000 invoices. The account writes ~1,180 invoices a year, so this
+ * covers roughly the last year of *any* change (an invoice being sent, paid, voided)
+ * every single run. Everything beyond it is the crawl's job.
+ */
+const INVOICE_HOT_PAGES = 5;
 
 /** Page ceiling for a routine pull. 50 pages x 200 = 10,000 rows. */
 const DEFAULT_MAX_PAGES = 50;
@@ -348,13 +367,26 @@ class HousecallProProvider implements RevenueProvider {
    * timeout: a full 77-page pass is ~9 minutes, against a 10-minute budget shared with
    * customers and jobs. That is why this is a cursor and not a nightly full sweep.
    */
-  async crawlEstimates({
-    startPage,
-    pages,
-  }: {
-    startPage: number;
-    pages: number;
-  }): Promise<HcpEstimateCrawlPage> {
+  /**
+   * The shared cold-zone walk: read `pages` pages of a collection from `startPage`,
+   * ascending on `created_at`, and report where to resume.
+   *
+   * Ascending is the load-bearing part, for every collection. `created_at` is
+   * immutable, so new rows append at the END and a page cursor stays valid across
+   * runs; crawling descending while rows are inserted at the front shifts records
+   * between pages mid-pass and skips them silently.
+   *
+   * Generic because customers, jobs, estimates and invoices all need this for the
+   * same reason — HCP offers no server-side `updated_at` filter on any of them, so
+   * no window of any width keeps aged rows in sync — and they should not drift
+   * into four subtly different walks.
+   */
+  private async crawlCollection<T>(
+    path: string,
+    listKey: string,
+    map: (row: Record<string, unknown>) => T,
+    { startPage, pages }: { startPage: number; pages: number },
+  ): Promise<HcpCrawlPage<T>> {
     const cfg = await this.config();
     const out: Array<Record<string, unknown>> = [];
     let page = Math.max(1, startPage);
@@ -362,13 +394,13 @@ class HousecallProProvider implements RevenueProvider {
     let totalItems: number | null = null;
 
     for (let i = 0; i < pages; i++) {
-      const body = await this.get<Record<string, unknown>>(cfg, "/estimates", {
+      const body = await this.get<Record<string, unknown>>(cfg, path, {
         page,
         page_size: HCP_MAX_PAGE_SIZE,
         sort_by: "created_at",
         sort_direction: "asc",
       });
-      const items = (body.estimates as Array<Record<string, unknown>>) ?? [];
+      const items = (body[listKey] as Array<Record<string, unknown>>) ?? [];
       // `total_items` rides along on every response and is the authority for the
       // reconciliation check. Read from the LAST page fetched so a pass records the
       // freshest count it saw.
@@ -385,12 +417,56 @@ class HousecallProProvider implements RevenueProvider {
       page++;
     }
 
+    return { rows: out.map(map), nextPage: page, wrapped, totalItems };
+  }
+
+  async crawlEstimates(opts: { startPage: number; pages: number }): Promise<HcpEstimateCrawlPage> {
+    const page = await this.crawlCollection("/estimates", "estimates", mapEstimate, opts);
+    // Keeps its own named field rather than the generic `rows`: this shape predates
+    // the generic walk and `lib/sync/hcp.ts` reads `.estimates`.
     return {
-      estimates: out.map(mapEstimate),
-      nextPage: page,
-      wrapped,
-      totalItems,
+      estimates: page.rows,
+      nextPage: page.nextPage,
+      wrapped: page.wrapped,
+      totalItems: page.totalItems,
     };
+  }
+
+  crawlCustomers(opts: { startPage: number; pages: number }): Promise<HcpCrawlPage<HcpCustomerDTO>> {
+    return this.crawlCollection("/customers", "customers", mapCustomer, opts);
+  }
+
+  crawlJobs(opts: { startPage: number; pages: number }): Promise<HcpCrawlPage<HcpJobDTO>> {
+    return this.crawlCollection("/jobs", "jobs", mapJob, opts);
+  }
+
+  crawlInvoices(opts: { startPage: number; pages: number }): Promise<HcpCrawlPage<HcpInvoiceDTO>> {
+    return this.crawlCollection("/invoices", "invoices", mapInvoice, opts);
+  }
+
+  /**
+   * The invoice HOT zone: the most recently touched invoices, every run.
+   *
+   * Ordered `updated_at desc` so a payment landing on a months-old invoice is seen
+   * within the hour — but read as a FIXED page count, because the rows carry no
+   * timestamp to stop on (see `INVOICE_HOT_PAGES`). An explicit `sinceDays` widens
+   * the zone rather than narrowing it: a caller asking for a backfill wants more
+   * invoices re-read, not fewer.
+   *
+   * ~3.2 invoices/day at current volume ≈ 62 days per 200-row page; the /30 divisor
+   * deliberately over-reads rather than risking a short pull.
+   */
+  async listInvoices({ sinceDays }: { sinceDays: number }): Promise<HcpInvoiceDTO[]> {
+    const cfg = await this.config();
+    const hotPages = Math.max(INVOICE_HOT_PAGES, Math.ceil(sinceDays / 30));
+    const rows = await this.paginateFixed(
+      cfg,
+      "/invoices",
+      "invoices",
+      { sort_by: "updated_at", sort_direction: "desc" },
+      hotPages,
+    );
+    return rows.map(mapInvoice);
   }
 }
 
@@ -441,23 +517,106 @@ function mapCustomer(c: Record<string, unknown>): HcpCustomerDTO {
       (v): v is string => typeof v === "string" && v.trim() !== "",
     ),
     addresses: c.addresses ?? null,
+    createdAtHcp: parseDate(c.created_at),
+    updatedAtHcp: parseDate(c.updated_at ?? c.updated_at_iso),
     raw: c,
   };
 }
 
 function mapJob(j: Record<string, unknown>): HcpJobDTO {
   const customer = j.customer as Record<string, unknown> | undefined;
+  const timestamps = (j.work_timestamps as Record<string, unknown> | undefined) ?? {};
+  const fields = (j.job_fields as Record<string, unknown> | undefined) ?? {};
+  const jobType = fields.job_type as Record<string, unknown> | string | null | undefined;
   return {
     hcpJobId: String(j.id),
     hcpCustomerId: customer?.id ? String(customer.id) : (j.customer_id ? String(j.customer_id) : null),
     workStatus: (j.work_status as string) ?? null,
     scheduledStart: parseDate((j.schedule as Record<string, unknown>)?.scheduled_start ?? j.scheduled_start),
     totalAmountCents: cents(j.total_amount),
+    subtotalCents: cents(j.subtotal ?? j.total_amount),
     outstandingBalanceCents: cents(j.outstanding_balance),
-    invoiceTotalCents: cents(j.invoice_total ?? j.total_amount),
+    // NOTE: no `invoiceTotalCents` here on purpose. /jobs carries no `invoice_total`,
+    // so the old `j.invoice_total ?? j.total_amount` only ever produced a copy of
+    // the quote. The real figure is rolled up from `hcp_invoices` after the sync.
+    invoiceNumber: (j.invoice_number as string) ?? null,
+    description: (j.description as string) ?? null,
+    completedAtHcp: parseDate(timestamps.completed_at),
+    canceledAtHcp: parseDate(j.canceled_at),
+    deletedAtHcp: parseDate(j.deleted_at),
+    updatedAtHcp: parseDate(j.updated_at ?? j.updated_at_iso),
+    // `job_type` is an object ({id, name}) on some payloads and a bare string on
+    // others; take the name either way rather than stringifying an object into the
+    // column as "[object Object]".
+    jobType:
+      typeof jobType === "string"
+        ? jobType
+        : ((jobType as Record<string, unknown> | null | undefined)?.name as string) ?? null,
+    // Tags come back as plain name strings on the job (they are SET by tag_id — the
+    // two vocabularies do not match; `list_tags` is the only bridge).
+    tags: Array.isArray(j.tags) ? (j.tags as unknown[]).map(String) : null,
+    assignedEmployees: j.assigned_employees ?? null,
+    // ⚠️ OPTION ids (`est_…`), not estimate ids (`csr_…`) — see the schema comment
+    // on `hcpJobs.estimateOptionIds`. Falls back to the singular field, which holds
+    // the same kind of value.
+    estimateOptionIds: Array.isArray(j.original_estimate_uuids)
+      ? (j.original_estimate_uuids as unknown[]).map(String)
+      : j.original_estimate_id
+        ? [String(j.original_estimate_id)]
+        : null,
+    leadSourceRaw: (j.lead_source as string) ?? null,
     address: j.address ?? null,
     createdAtHcp: parseDate(j.created_at),
     raw: j,
+  };
+}
+
+/** Rows of `{amount}` objects, summed defensively. */
+function sumAmounts(v: unknown, keep: (row: Record<string, unknown>) => boolean = () => true): number {
+  if (!Array.isArray(v)) return 0;
+  return (v as Array<Record<string, unknown>>).reduce((total, row) => {
+    if (!row || typeof row !== "object" || !keep(row)) return total;
+    return total + cents(row.amount);
+  }, 0);
+}
+
+/** A payment/refund line HCP actually put through. The live vocabulary is
+ *  `succeeded` | `failed` (verified across 200 invoices, 2026-08-25); anything
+ *  unrecognised is excluded, so an unknown future state cannot inflate collections. */
+const isSucceeded = (row: Record<string, unknown>): boolean =>
+  String(row.status ?? "").toLowerCase() === "succeeded";
+
+function mapInvoice(i: Record<string, unknown>): HcpInvoiceDTO {
+  const payments = Array.isArray(i.payments) ? (i.payments as Array<Record<string, unknown>>) : [];
+  return {
+    hcpInvoiceId: String(i.id),
+    invoiceNumber: (i.invoice_number as string) ?? null,
+    // The ONLY link the invoice payload carries — there is no customer on it.
+    hcpJobIdHcp: i.job_id ? String(i.job_id) : null,
+    status: (i.status as string) ?? null,
+    amountCents: cents(i.amount),
+    subtotalCents: cents(i.subtotal ?? i.amount),
+    dueAmountCents: cents(i.due_amount),
+    paidAmountCents: sumAmounts(i.payments, isSucceeded),
+    refundedAmountCents: sumAmounts(i.refunds, isSucceeded),
+    taxAmountCents: sumAmounts(i.taxes),
+    // HCP reports discounts as NEGATIVE amounts; stored as a positive magnitude so
+    // the column reads the way it is displayed ("Discounts: $700").
+    discountAmountCents: Math.abs(sumAmounts(i.discounts)),
+    paymentMethods: payments.length
+      ? [...new Set(payments.map((p) => p.payment_method).filter((m): m is string => typeof m === "string"))]
+      : null,
+    invoiceDate: parseDate(i.invoice_date),
+    serviceDate: parseDate(i.service_date),
+    dueAt: parseDate(i.due_at),
+    paidAt: parseDate(i.paid_at),
+    sentAt: parseDate(i.sent_at),
+    items: i.items ?? null,
+    taxes: i.taxes ?? null,
+    discounts: i.discounts ?? null,
+    payments: i.payments ?? null,
+    refunds: i.refunds ?? null,
+    raw: i,
   };
 }
 
