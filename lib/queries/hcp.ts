@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gte, ilike, inArray, isNotNull, isNull, or, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, gte, ilike, inArray, isNotNull, isNull, lte, or, sql, type SQL } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import {
   contacts,
@@ -8,6 +8,7 @@ import {
   hcpInvoices,
   hcpJobs,
 } from "@/lib/db/schema";
+import { resolveWindow, type WindowInput } from "@/lib/window";
 
 /**
  * Jobs, invoices and customers — the HousecallPro side of the business, read the
@@ -105,19 +106,20 @@ export interface JobFilters {
   unpaid?: boolean;
 }
 
-export async function listJobs(opts: {
-  days: number;
+export async function listJobs(opts: WindowInput & {
   dateField?: JobDateField;
   filters?: JobFilters;
   limit?: number;
   offset?: number;
 }) {
-  const { days, dateField = "created", filters = {}, limit = 50, offset = 0 } = opts;
-  const since = new Date(Date.now() - days * 86_400_000);
+  const { dateField = "created", filters = {}, limit = 50, offset = 0 } = opts;
+  const { since, until } = resolveWindow(opts, 30);
   const dateCol = JOB_DATE_COLUMN[dateField];
 
   const conds: (SQL | undefined)[] = [
     gte(dateCol, since),
+    // Only bounded when the caller named a fixed period; a rolling window runs to now.
+    until ? lte(dateCol, until) : undefined,
     // Soft-deleted jobs are still returned by HCP; they are not work.
     isNull(hcpJobs.deletedAtHcp),
   ];
@@ -212,18 +214,18 @@ export interface InvoiceFilters {
   unpaid?: boolean;
 }
 
-export async function listInvoices(opts: {
-  days: number;
+export async function listInvoices(opts: WindowInput & {
   dateField?: InvoiceDateField;
   filters?: InvoiceFilters;
   limit?: number;
   offset?: number;
 }) {
-  const { days, dateField = "invoice", filters = {}, limit = 50, offset = 0 } = opts;
-  const since = new Date(Date.now() - days * 86_400_000);
+  const { dateField = "invoice", filters = {}, limit = 50, offset = 0 } = opts;
+  const { since, until } = resolveWindow(opts, 30);
   const dateCol = INVOICE_DATE_COLUMN[dateField];
 
-  const conds: (SQL | undefined)[] = [gte(dateCol, since)];
+  // Only bounded when the caller named a fixed period; a rolling window runs to now.
+  const conds: (SQL | undefined)[] = [gte(dateCol, since), until ? lte(dateCol, until) : undefined];
   if (filters.q) {
     conds.push(or(customerTextMatch(filters.q), ilike(hcpInvoices.invoiceNumber, `%${filters.q}%`)));
   }

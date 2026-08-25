@@ -45,6 +45,59 @@ const days = (def: number) =>
     .default(def)
     .describe("Window in days back from now. Windows over roi_daily use America/Chicago business dates.");
 
+/**
+ * The window for tools that read the raw HousecallPro tables (estimates, jobs,
+ * invoices), which are synced back to 2017 and mean the same thing at any depth.
+ *
+ * Two differences from `days` above, both deliberate:
+ *
+ * - It reaches TEN YEARS rather than one. The 365 cap belongs to the roi_daily
+ *   tools, where a longer window puts complete ad spend beside attribution that
+ *   only starts 2026-08-08 and calls the quotient ROAS. No such hazard here.
+ * - It has NO default, so "the caller asked for `days`" is distinguishable from
+ *   "the caller asked for nothing" — which is what lets `start`/`end` and `days`
+ *   be rejected as a combination instead of one silently winning. The default is
+ *   applied in the query layer; each tool states it below.
+ */
+const historyDays = (def: number) =>
+  z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(3650)
+    .optional()
+    .describe(
+      `Rolling window in days back from now (default ${def}). ` +
+        "Alternative to `start`/`end` — passing both is an error. " +
+        "Reaches the full HousecallPro history; attribution fields are null before 2026-08-08, which `agg.createdBeforeTracking` counts where a tool reports it.",
+    );
+
+const ISO_OR_DATE = /^\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}(:\d{2})?(\.\d+)?(Z|[+-]\d{2}:?\d{2})?)?$/;
+
+/**
+ * A fixed period, for the questions `days` cannot ask: last August, the same week
+ * a year ago, a specific storm. A bare date means the WHOLE day in America/Chicago
+ * and both ends are INCLUSIVE — matching the HousecallPro tools, where reading a
+ * bare upper bound as midnight silently dropped the final day.
+ */
+const windowBound = (edge: "start" | "end") =>
+  z
+    .string()
+    .regex(ISO_OR_DATE, "Use YYYY-MM-DD or an ISO-8601 timestamp")
+    .optional()
+    .describe(
+      edge === "start"
+        ? "Fixed window START (inclusive). `YYYY-MM-DD` = from 00:00 that day in America/Chicago; a full ISO timestamp is used exactly. Use with `end` instead of `days`."
+        : "Fixed window END (INCLUSIVE — `2025-08-31` includes all of the 31st). A full ISO timestamp is used exactly, so `[start, end)` is still available. Use with `start` instead of `days`.",
+    );
+
+/** Spread into every raw-table list tool so the three cannot drift apart. */
+const windowFields = (def: number) => ({
+  days: historyDays(def),
+  start: windowBound("start"),
+  end: windowBound("end"),
+});
+
 const isoDate = z.string().describe("ISO-8601 timestamp");
 
 /**
@@ -134,7 +187,7 @@ export type RoiLocation = z.infer<typeof RoiLocationRow>;
 
 // ── list_estimates / estimate_detail ─────────────────────────────────────────
 export const ListEstimatesInput = z.object({
-  days: days(7),
+  ...windowFields(7),
   source: z.string().max(200).optional().describe('sources.key, or "none" for unattributed'),
   campaign: z.string().max(200).optional().describe('campaigns.name, or "none"'),
   page: z.string().max(200).optional().describe('Normalised landing path (e.g. "/services/tree-removal"), or "none"'),
@@ -522,7 +575,7 @@ export const PAYMENT_METHODS = [
 ] as const;
 
 export const ListJobsInput = z.object({
-  days: days(30),
+  ...windowFields(30),
   dateField: z
     .enum(JOB_DATE_FIELDS)
     .default("created")
@@ -609,7 +662,7 @@ export const ListJobsOutput = z.object({
 });
 
 export const ListInvoicesInput = z.object({
-  days: days(30),
+  ...windowFields(30),
   dateField: z
     .enum(INVOICE_DATE_FIELDS)
     .default("invoice")
