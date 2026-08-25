@@ -140,6 +140,8 @@ export const ListEstimatesInput = z.object({
   page: z.string().max(200).optional().describe('Normalised landing path (e.g. "/services/tree-removal"), or "none"'),
   location: z.enum(["edwardsville", "ofallon", "unknown"]).optional(),
   type: z.string().max(50).optional().describe('Lead channel (call, web_form, sms, facebook_leadgen, …), or "none" for untracked'),
+  arborist: z.string().max(200).optional().describe('Assigned employee, substring match (e.g. "Brooks"), or "none" for unassigned'),
+  city: z.string().max(200).optional().describe('Service-address city, case-insensitive, or "none" where HCP holds no address'),
   limit: z.coerce.number().int().min(1).max(500).default(50),
   offset: z.coerce.number().int().min(0).default(0).describe("Row offset for paging; use nextOffset from the previous response"),
 });
@@ -164,6 +166,20 @@ export const EstimateRow = z.object({
   landingPage: z.string().nullable().describe("Normalised path"),
   selfReportedSource: z.string().nullable().describe('Caller\'s own answer to "how did you hear about us"'),
   location: z.string().nullable(),
+
+  // The HousecallPro side of the estimate. Everything above answers "where did this
+  // come from"; these answer "what is it and who has it".
+  status: z.string().nullable().describe("HCP work_status — NEVER the test for won, which is option approval"),
+  hcpEstimateId: z.string().nullable().describe("HCP's own id (csr_…)"),
+  estimateNumber: z.string().nullable().describe('Human-facing estimate number, e.g. "15441"'),
+  assignedTo: z.string().nullable().describe("Assigned employee(s), comma-joined — the sales arborist. null = unassigned (~17%)"),
+  jobType: z.string().nullable().describe("HCP job-type name. Almost always null — barely set on estimates; check coverage before reporting on it"),
+  street: z.string().nullable(),
+  city: z.string().nullable(),
+  state: z.string().nullable(),
+  zip: z.string().nullable(),
+  optionCount: z.number().int().describe("Options on the estimate — why `total` is the highest option, not their sum"),
+  serviceNote: z.string().nullable().describe("First option note — in practice the description of the work"),
 });
 export type Estimate = z.infer<typeof EstimateRow>;
 
@@ -407,8 +423,6 @@ export const ListEstimatesOutput = z.object({
 });
 
 export const EstimateDetailOutput = EstimateRow.extend({
-  status: z.string().nullable().describe("HCP work_status — NEVER the test for won"),
-  hcpEstimateId: z.string().nullable(),
   hcpCustomerId: z.string().nullable(),
   conversationId: z.string().nullable().describe("Follow into get_thread"),
   leadOccurredAt: isoDate.nullable(),
