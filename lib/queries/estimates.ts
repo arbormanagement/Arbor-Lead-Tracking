@@ -3,6 +3,14 @@ import { campaignNotExcluded, excludedCampaignIds } from "@/lib/campaigns";
 import { db } from "@/lib/db/client";
 import { campaigns, conversations, hcpCustomers, hcpEstimates, leads, sources } from "@/lib/db/schema";
 import { filterSql, type EstimateFilters } from "@/lib/estimates/filters";
+import {
+  addressPartSql,
+  assignedToSql,
+  estimateNumberSql,
+  jobTypeSql,
+  optionCountSql,
+  serviceNoteSql,
+} from "@/lib/estimates/hcp-fields";
 import { isLiveEstimate } from "@/lib/estimates/countable";
 import { landingPathSql } from "@/lib/landing-page";
 import { TRACKING_STARTED_AT } from "@/lib/tracking-coverage";
@@ -47,6 +55,78 @@ export interface EstimateListRow {
   landingPage: string | null;
   selfReportedSource: string | null;
   location: string | null;
+
+  // ---- The HousecallPro side of the estimate ------------------------------
+  // Synced since the estimate sync existed, but projected only from 2026-08-25:
+  // they sat in `raw`, `address` and `options` where nothing above the query layer
+  // could reach them. Attribution answers "where did this come from"; these answer
+  // "what is it and who has it", which is the other half of working the list.
+
+  /** HCP `work_status`. NEVER the test for won — that is option approval. */
+  status: string | null;
+  /** HCP's own id (`csr_…`) — the key for looking the estimate up in HousecallPro. */
+  hcpEstimateId: string | null;
+  /** The human-facing estimate number (e.g. "15441"). */
+  estimateNumber: string | null;
+  /** Assigned employee(s), comma-joined. The sales arborist. Null = unassigned. */
+  assignedTo: string | null;
+  /** HCP job-type name. Almost always null — barely set on estimates. */
+  jobType: string | null;
+  street: string | null;
+  city: string | null;
+  state: string | null;
+  zip: string | null;
+  /** Options on the estimate — why `total` is the highest option, not their sum. */
+  optionCount: number;
+  /** First option note: in practice, the description of the work. */
+  serviceNote: string | null;
+}
+
+/**
+ * Projected identically by the list and the detail tool. Spread rather than repeated
+ * so the two cannot drift into meaning different things by `assignedTo`.
+ */
+const hcpFieldColumns = {
+  status: hcpEstimates.status,
+  hcpEstimateId: hcpEstimates.hcpEstimateId,
+  estimateNumber: estimateNumberSql,
+  assignedTo: assignedToSql,
+  jobType: jobTypeSql,
+  street: addressPartSql("street"),
+  city: addressPartSql("city"),
+  state: addressPartSql("state"),
+  zip: addressPartSql("zip"),
+  optionCount: optionCountSql,
+  serviceNote: serviceNoteSql,
+} as const;
+
+/** The same fields, copied onto the row. Keys match `hcpFieldColumns` exactly. */
+function hcpFieldValues(r: {
+  status: string | null;
+  hcpEstimateId: string | null;
+  estimateNumber: string | null;
+  assignedTo: string | null;
+  jobType: string | null;
+  street: string | null;
+  city: string | null;
+  state: string | null;
+  zip: string | null;
+  optionCount: number;
+  serviceNote: string | null;
+}) {
+  return {
+    status: r.status,
+    hcpEstimateId: r.hcpEstimateId,
+    estimateNumber: r.estimateNumber,
+    assignedTo: r.assignedTo,
+    jobType: r.jobType,
+    street: r.street,
+    city: r.city,
+    state: r.state,
+    zip: r.zip,
+    optionCount: r.optionCount ?? 0,
+    serviceNote: r.serviceNote,
+  };
 }
 
 export interface EstimateListAgg {
@@ -121,6 +201,7 @@ export async function listEstimates(opts: {
       keyword: leads.keyword,
       landingPage: landingPathSql(leads.landingPage),
       selfReportedSource: leads.selfReportedSource,
+      ...hcpFieldColumns,
     })
     .from(hcpEstimates)
     .leftJoin(leads, and(eq(leads.hcpEstimateId, hcpEstimates.id), eq(leads.isSpam, false)))
@@ -154,6 +235,7 @@ export async function listEstimates(opts: {
     // The attributed contact's location when there is one, the estimate's own
     // otherwise — the same precedence the rollup uses, so the two agree.
     location: r.leadLocation ?? r.estLocation,
+    ...hcpFieldValues(r),
   }));
 
   // Counted over EXACTLY the population the list renders (same scope), so a
@@ -207,8 +289,6 @@ export async function listEstimates(opts: {
 }
 
 export interface EstimateDetail extends EstimateListRow {
-  status: string | null;
-  hcpEstimateId: string | null;
   hcpCustomerId: string | null;
   /** The thread behind the attributed contact, when there is one. */
   conversationId: string | null;
@@ -221,8 +301,7 @@ export async function getEstimateDetail(id: string): Promise<EstimateDetail | nu
     .select({
       id: hcpEstimates.id,
       outcome: hcpEstimates.outcome,
-      status: hcpEstimates.status,
-      hcpEstimateId: hcpEstimates.hcpEstimateId,
+      ...hcpFieldColumns,
       hcpCustomerId: hcpEstimates.hcpCustomerId,
       scheduledStart: hcpEstimates.scheduledStartHcp,
       createdAtHcp: hcpEstimates.createdAtHcp,
@@ -259,8 +338,7 @@ export async function getEstimateDetail(id: string): Promise<EstimateDetail | nu
   return {
     id: r.id,
     outcome: r.outcome,
-    status: r.status,
-    hcpEstimateId: r.hcpEstimateId,
+    ...hcpFieldValues(r),
     hcpCustomerId: r.hcpCustomerId,
     scheduled: r.scheduledStart != null,
     createdAt: r.createdAtHcp!,

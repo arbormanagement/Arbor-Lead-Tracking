@@ -1,5 +1,6 @@
 import { and, eq, isNull, or, sql, type SQL } from "drizzle-orm";
 import { campaigns, hcpEstimates, leads, sources } from "@/lib/db/schema";
+import { assignedToSql } from "@/lib/estimates/hcp-fields";
 import { landingPathSql } from "@/lib/landing-page";
 
 /**
@@ -32,12 +33,21 @@ export interface EstimateFilters {
   location?: string;
   /** Lead channel: call, web_form, sms, facebook_leadgen… or "none" for untracked. */
   type?: string;
+  /**
+   * Assigned employee — the sales arborist — matched as a substring, or "none" for
+   * unassigned. Substring rather than equality because an estimate can carry more
+   * than one assignee and they are stored joined; "Brooks" must still find a visit
+   * Matt shared with someone.
+   */
+  arborist?: string;
+  /** Service-address city (case-insensitive), or "none" where HCP has no address. */
+  city?: string;
 }
 
 export const NONE = "none";
 
 /** Which of the params are actually set, in a stable order for rendering chips. */
-export const FILTER_KEYS = ["source", "campaign", "page", "location", "type"] as const;
+export const FILTER_KEYS = ["source", "campaign", "page", "location", "type", "arborist", "city"] as const;
 
 export function parseFilters(sp: Record<string, string | undefined>): EstimateFilters {
   const pick = (v: string | undefined) => {
@@ -50,6 +60,8 @@ export function parseFilters(sp: Record<string, string | undefined>): EstimateFi
     page: pick(sp.page),
     location: pick(sp.location),
     type: pick(sp.type),
+    arborist: pick(sp.arborist),
+    city: pick(sp.city),
   };
 }
 
@@ -92,6 +104,24 @@ export function filterSql(f: EstimateFilters): SQL | undefined {
   }
   if (f.type) {
     parts.push(f.type === NONE ? isNull(leads.id)! : eq(leads.type, f.type as never));
+  }
+  // These two filter the HCP side rather than the attribution chain — the first
+  // filters that need no lead at all. Both read the same expressions the columns
+  // are projected from, so a filter can never select a different set than the
+  // column it is named after displays.
+  if (f.arborist) {
+    parts.push(
+      f.arborist === NONE
+        ? sql`${assignedToSql} is null`
+        : sql`${assignedToSql} ilike ${"%" + f.arborist + "%"}`,
+    );
+  }
+  if (f.city) {
+    parts.push(
+      f.city === NONE
+        ? sql`nullif(trim(${hcpEstimates.address}->>'city'), '') is null`
+        : sql`lower(${hcpEstimates.address}->>'city') = lower(${f.city})`,
+    );
   }
 
   return parts.length ? and(...parts) : undefined;

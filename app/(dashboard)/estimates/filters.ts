@@ -23,9 +23,12 @@ export function filterLabel(key: (typeof FILTER_KEYS)[number], value: string): s
     page: "Landing page",
     location: "Location",
     type: "Channel",
+    arborist: "Arborist",
+    city: "City",
   }[key];
   if (value === NONE) {
-    return `${noun}: ${key === "type" ? "no tracked contact" : "none"}`;
+    const none = key === "type" ? "no tracked contact" : key === "arborist" ? "unassigned" : "none";
+    return `${noun}: ${none}`;
   }
   const pretty =
     key === "location" ? (value === "ofallon" ? "O'Fallon" : value === "edwardsville" ? "Edwardsville" : value) : value;
