@@ -44,18 +44,33 @@ const MAX_WINDOW_DAYS = 365;
 const CHUNK = 100; // rows per multi-row upsert — bounded so the raw jsonb payload stays under the HTTP-driver request limit
 
 /**
- * Pages of each cold-zone crawl to walk per run. Each page is ~7s against HCP, and
- * the four crawls share one job budget — so this is the knob that keeps them inside
- * the timeout. They run CONCURRENTLY, so the cost is one crawl's wall time, not four.
+ * Steady-state pages of each cold-zone crawl per run. Each page is ~7s against HCP,
+ * and the four crawls run CONCURRENTLY, so the cost is one crawl's wall time, not
+ * four.
  *
- * At 2 pages/run hourly: estimates (77 pages) verify every ~1.6 days; jobs (55),
+ * At 2 pages/run hourly: estimates (78 pages) verify every ~1.6 days; jobs (55),
  * customers (54) and invoices (53) every ~1.1 days. All are comfortably faster than
  * the measured background change rate of 1–3% per 30 days on aged records.
- *
- * This is also what fills a COLD START: a fresh database reaches full history in
- * about a day and a quarter without any manual backfill.
  */
 const CRAWL_PAGES_PER_RUN = 2;
+
+/**
+ * Cold-start pacing: how long a crawl that has NEVER completed a pass may keep
+ * reading in one run, and the page ceiling that bounds it regardless.
+ *
+ * A single constant was the wrong shape. 2 pages/run is right for keeping a known
+ * history fresh and badly wrong for filling an empty one: the 2026-08-25 deploy left
+ * jobs at 1,030 of 10,843 rows and invoices at 0, and the table would not have been
+ * complete for a day. Twelve manual triggers cleared it in thirteen minutes, which
+ * is the tell — the work was never expensive, the schedule was just pacing it for a
+ * problem it did not have.
+ *
+ * So while `passes === 0` the crawl reads until it wraps or the budget runs out,
+ * which finishes a cold start in one or two runs instead of ~28. Once a pass has
+ * landed it drops back to CRAWL_PAGES_PER_RUN and stays cheap forever after.
+ */
+const CRAWL_COLD_START_BUDGET_MS = 300_000;
+const CRAWL_COLD_START_MAX_PAGES = 120;
 
 /** `settings` keys holding the crawl cursors. Persisted so the walks survive deploys. */
 const CRAWL_KEYS = {
@@ -67,35 +82,68 @@ const CRAWL_KEYS = {
 
 type CrawlName = keyof typeof CRAWL_KEYS;
 
-interface CrawlState {
+export interface CrawlState {
   /** Page to read next, 1-based. */
   nextPage: number;
   /** Completed full passes — a monotonic counter, useful for spotting a stuck cursor. */
   passes: number;
   /** ISO timestamp of the last completed pass; null until the first one finishes. */
   lastCompletedPassAt: string | null;
+  /**
+   * When the last COMPLETED pass began. This is the cutoff that makes deletions
+   * detectable: every row HCP still lists was stamped at some point after this
+   * instant, so a row whose `crawl_seen_at` predates it is one HCP no longer
+   * returns. Without the START of the pass — not its end — the check would flag
+   * every row the crawl happened to read early in the lap.
+   */
+  lastCompletedPassStartedAt: string | null;
+  /** When the pass currently in flight began; null between passes. */
+  currentPassStartedAt: string | null;
   /** Provider's own total row count, from the last response seen. */
   totalItems: number | null;
 }
 
-const CRAWL_INITIAL: CrawlState = {
+export const CRAWL_INITIAL: CrawlState = {
   nextPage: 1,
   passes: 0,
   lastCompletedPassAt: null,
+  lastCompletedPassStartedAt: null,
+  currentPassStartedAt: null,
   totalItems: null,
 };
+
+/** Cold start = has never completed a lap, so it should read as much as it can. */
+export function crawlWindowFor(state: CrawlState): { startPage: number; pages: number; budgetMs?: number } {
+  return state.passes === 0
+    ? { startPage: state.nextPage, pages: CRAWL_COLD_START_MAX_PAGES, budgetMs: CRAWL_COLD_START_BUDGET_MS }
+    : { startPage: state.nextPage, pages: CRAWL_PAGES_PER_RUN };
+}
 
 /**
  * Advance a cursor after its rows are safely upserted. A crash between the two
  * would skip those pages until the next full pass came round, so the caller must
  * not persist this until the write has happened.
  */
-function advanceCrawl(before: CrawlState, page: HcpCrawlPage<unknown> | null): CrawlState {
+export function advanceCrawl(before: CrawlState, page: HcpCrawlPage<unknown> | null, runStartedAt: Date): CrawlState {
   if (!page) return before;
+  // A pass begins on the first run that reads for it and ends when the cursor wraps.
+  const passStartedAt = before.currentPassStartedAt ?? runStartedAt.toISOString();
+  if (!page.wrapped) {
+    return {
+      nextPage: page.nextPage,
+      passes: before.passes,
+      lastCompletedPassAt: before.lastCompletedPassAt,
+      lastCompletedPassStartedAt: before.lastCompletedPassStartedAt,
+      currentPassStartedAt: passStartedAt,
+      totalItems: page.totalItems ?? before.totalItems,
+    };
+  }
   return {
     nextPage: page.nextPage,
-    passes: before.passes + (page.wrapped ? 1 : 0),
-    lastCompletedPassAt: page.wrapped ? new Date().toISOString() : before.lastCompletedPassAt,
+    passes: before.passes + 1,
+    lastCompletedPassAt: new Date().toISOString(),
+    lastCompletedPassStartedAt: passStartedAt,
+    currentPassStartedAt: null,
     totalItems: page.totalItems ?? before.totalItems,
   };
 }
@@ -109,8 +157,34 @@ function crawlStats(before: CrawlState, after: CrawlState, page: HcpCrawlPage<un
     rows: page?.rows.length ?? 0,
     passes: after.passes,
     lastCompletedPassAt: after.lastCompletedPassAt,
+    lastCompletedPassStartedAt: after.lastCompletedPassStartedAt,
+    coldStart: before.passes === 0,
     totalItems: after.totalItems,
   };
+}
+
+/**
+ * Stamp `crawl_seen_at` on every row this crawl slice actually read.
+ *
+ * A narrow UPDATE keyed on HCP's own id, deliberately separate from the row upsert:
+ * the upsert's skip-if-unchanged guard means an unchanged row is never written, so
+ * folding the stamp into it would leave exactly the rows that did not move unstamped
+ * — and those are the ones this check is about. Chunked because a cold-start slice
+ * can carry twelve thousand ids.
+ */
+export async function markCrawlSeen(table: string, idColumn: string, hcpIds: string[]): Promise<void> {
+  const STAMP_CHUNK = 1_000;
+  for (let i = 0; i < hcpIds.length; i += STAMP_CHUNK) {
+    const batch = hcpIds.slice(i, i + STAMP_CHUNK);
+    // `IN (...)` with each id as its own bind, NOT `= ANY(${batch})`: drizzle's sql
+    // template flattens a JS array into separate parameters, so ANY() receives a
+    // parameter list rather than an array and Postgres rejects it ("op ANY/ALL
+    // (array) requires array on right side"). Caught by verify:hcp, invisible to tsc.
+    await db.execute(sql`
+      UPDATE ${sql.raw(table)} SET crawl_seen_at = now()
+      WHERE ${sql.raw(idColumn)} IN (${sql.join(batch.map((id) => sql`${id}`), sql`, `)})
+    `);
+  }
 }
 
 /**
@@ -167,8 +241,14 @@ export async function syncHcp(
     // window here would read every estimate once, at creation, and never see the
     // approval. `listEstimates` compensates with a rolling `created_at` re-read and
     // treats this value as a floor — see the comment there before narrowing it.
+    const runStartedAt = new Date();
+    // `minDays: 1` floors the hot window. Without it, re-triggering this job by hand
+    // walks the window toward zero (observed live: 0.122 → 0.084 across successive
+    // manual runs), narrowing the read at exactly the moment an operator is trying
+    // to force a catch-up.
     const windowDays =
-      sinceDays ?? (await incrementalWindowDays("hcp.sync.jobs", { overlapHours: 2, maxDays: MAX_WINDOW_DAYS }));
+      sinceDays ??
+      (await incrementalWindowDays("hcp.sync.jobs", { overlapHours: 2, maxDays: MAX_WINDOW_DAYS, minDays: 1 }));
 
     // Where each cold-zone crawl left off. Read before the fetch so the crawls can
     // ride along with the hot passes rather than adding a serial leg.
@@ -178,8 +258,6 @@ export async function syncHcp(
       getSetting<CrawlState>(CRAWL_KEYS.jobs, CRAWL_INITIAL),
       getSetting<CrawlState>(CRAWL_KEYS.invoices, CRAWL_INITIAL),
     ]);
-
-    const crawlWindow = { startPage: 0, pages: CRAWL_PAGES_PER_RUN };
 
     // Fetch every independent leg concurrently — read time is the slowest one, not
     // the sum. (Each still paginates 200/page internally.)
@@ -197,16 +275,10 @@ export async function syncHcp(
       provider.listJobs({ sinceDays: jobsSinceDays }),
       provider.listEstimates({ sinceDays: windowDays }),
       provider.listInvoices({ sinceDays: windowDays }),
-      provider
-        .crawlEstimates({ ...crawlWindow, startPage: estCrawlBefore.nextPage })
-        .catch(tolerate("estimates")),
-      provider
-        .crawlCustomers({ ...crawlWindow, startPage: custCrawlBefore.nextPage })
-        .catch(tolerate("customers")),
-      provider.crawlJobs({ ...crawlWindow, startPage: jobCrawlBefore.nextPage }).catch(tolerate("jobs")),
-      provider
-        .crawlInvoices({ ...crawlWindow, startPage: invCrawlBefore.nextPage })
-        .catch(tolerate("invoices")),
+      provider.crawlEstimates(crawlWindowFor(estCrawlBefore)).catch(tolerate("estimates")),
+      provider.crawlCustomers(crawlWindowFor(custCrawlBefore)).catch(tolerate("customers")),
+      provider.crawlJobs(crawlWindowFor(jobCrawlBefore)).catch(tolerate("jobs")),
+      provider.crawlInvoices(crawlWindowFor(invCrawlBefore)).catch(tolerate("invoices")),
     ]);
 
     // ── Customers ────────────────────────────────────────────────────────────
@@ -274,6 +346,12 @@ export async function syncHcp(
             OR ${hcpCustomers.updatedAtHcp} IS DISTINCT FROM excluded.updated_at_hcp
           `,
         }),
+    );
+
+    await markCrawlSeen(
+      "hcp_customers",
+      "hcp_customer_id",
+      (crawledCustomers?.rows ?? []).map((c) => c.hcpCustomerId),
     );
 
     // Map HCP customer id → our internal row id, once, for jobs + estimates.
@@ -365,6 +443,8 @@ export async function syncHcp(
         }),
     );
 
+    await markCrawlSeen("hcp_jobs", "hcp_job_id", (crawledJobs?.rows ?? []).map((j) => j.hcpJobId));
+
     // ── Estimates (ROI revenue event) ─────────────────────────────────────────
     // Hot zone + whatever slice of the cold crawl this run reached. They overlap
     // once per pass, when the cursor reaches the newest pages; `dedupeBy` keeps one
@@ -450,6 +530,12 @@ export async function syncHcp(
             OR ${hcpEstimates.options} IS DISTINCT FROM excluded.options
           `,
         }),
+    );
+
+    await markCrawlSeen(
+      "hcp_estimates",
+      "hcp_estimate_id",
+      (crawledEstimates?.estimates ?? []).map((e) => e.hcpEstimateId),
     );
 
     // ── Invoices (what was billed and collected — never ROI revenue) ──────────
@@ -558,6 +644,12 @@ export async function syncHcp(
         }),
     );
 
+    await markCrawlSeen(
+      "hcp_invoices",
+      "hcp_invoice_id",
+      (crawledInvoices?.rows ?? []).map((i) => i.hcpInvoiceId),
+    );
+
     // Self-heal the invoice → job → customer links. Covers the ordering problem the
     // in-memory map cannot: an invoice read on a run whose crawl had not yet reached
     // its job, and a job whose customer link was filled in later.
@@ -612,12 +704,18 @@ export async function syncHcp(
 
     // Advance the cursors only after the rows are safely upserted — a crash between
     // the two would skip those pages until the next full pass came round.
-    const estCrawlAfter = advanceCrawl(estCrawlBefore, crawledEstimates
-      ? { rows: crawledEstimates.estimates, nextPage: crawledEstimates.nextPage, wrapped: crawledEstimates.wrapped, totalItems: crawledEstimates.totalItems }
-      : null);
-    const custCrawlAfter = advanceCrawl(custCrawlBefore, crawledCustomers);
-    const jobCrawlAfter = advanceCrawl(jobCrawlBefore, crawledJobs);
-    const invCrawlAfter = advanceCrawl(invCrawlBefore, crawledInvoices);
+    const estCrawlPage = crawledEstimates
+      ? {
+          rows: crawledEstimates.estimates,
+          nextPage: crawledEstimates.nextPage,
+          wrapped: crawledEstimates.wrapped,
+          totalItems: crawledEstimates.totalItems,
+        }
+      : null;
+    const estCrawlAfter = advanceCrawl(estCrawlBefore, estCrawlPage, runStartedAt);
+    const custCrawlAfter = advanceCrawl(custCrawlBefore, crawledCustomers, runStartedAt);
+    const jobCrawlAfter = advanceCrawl(jobCrawlBefore, crawledJobs, runStartedAt);
+    const invCrawlAfter = advanceCrawl(invCrawlBefore, crawledInvoices, runStartedAt);
 
     await Promise.all([
       crawledEstimates ? setSetting(CRAWL_KEYS.estimates, estCrawlAfter) : null,
@@ -651,9 +749,7 @@ export async function syncHcp(
       mode: sinceDays == null ? "incremental" : "explicit",
       windowDays: Number(windowDays.toFixed(3)),
       crawl: {
-        estimates: crawlStats(estCrawlBefore, estCrawlAfter, crawledEstimates
-          ? { rows: crawledEstimates.estimates, nextPage: crawledEstimates.nextPage, wrapped: crawledEstimates.wrapped, totalItems: crawledEstimates.totalItems }
-          : null),
+        estimates: crawlStats(estCrawlBefore, estCrawlAfter, estCrawlPage),
         customers: crawlStats(custCrawlBefore, custCrawlAfter, crawledCustomers),
         jobs: crawlStats(jobCrawlBefore, jobCrawlAfter, crawledJobs),
         invoices: crawlStats(invCrawlBefore, invCrawlAfter, crawledInvoices),

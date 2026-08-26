@@ -290,13 +290,50 @@ export async function diagnosticsReport(): Promise<{ httpStatus: number; report:
   // Reported for all four synced collections, not just estimates. Jobs, customers
   // and invoices each got a crawl of their own, and a stalled cursor is exactly as
   // invisible on any of them as it was on estimates.
-  const CRAWL_STATE_DEFAULT = { nextPage: 1, passes: 0, lastCompletedPassAt: null, totalItems: null };
+  const CRAWL_STATE_DEFAULT = {
+    nextPage: 1,
+    passes: 0,
+    lastCompletedPassAt: null,
+    lastCompletedPassStartedAt: null,
+    totalItems: null,
+  };
   type CrawlStateShape = {
     nextPage: number;
     passes: number;
     lastCompletedPassAt: string | null;
+    lastCompletedPassStartedAt: string | null;
     totalItems: number | null;
   };
+
+  /**
+   * Rows HousecallPro no longer lists.
+   *
+   * A completed crawl pass has, by definition, seen every row HCP will return, and
+   * stamps `crawl_seen_at` on each. So anything still carrying a stamp older than
+   * that pass STARTED — or none at all — is a row HCP has deleted or merged away
+   * and will never mention again. This is the only way the drift can be resolved:
+   * the crawl cannot see an absence, so the absence has to be inferred from what it
+   * did see.
+   *
+   * `created_at < cutoff` excludes rows we inserted mid-pass, which the crawl may
+   * legitimately have walked past before they existed.
+   */
+  async function missingFromHcp(table: string, hcpIdColumn: string, labelExpr: string, cutoffIso: string | null) {
+    if (!cutoffIso) return { count: 0, sample: [] as unknown[] };
+    const cutoff = new Date(cutoffIso);
+    const res = await db.execute<{ count: number; sample: unknown[] }>(sql`
+      with missing as (
+        select ${sql.raw(hcpIdColumn)} as hcp_id, ${sql.raw(labelExpr)} as label
+        from ${sql.raw(table)}
+        where created_at < ${cutoff}
+          and (crawl_seen_at is null or crawl_seen_at < ${cutoff})
+      )
+      select (select count(*)::int from missing) as count,
+             coalesce((select jsonb_agg(t) from (select * from missing limit 10) t), '[]'::jsonb) as sample
+    `);
+    const row = (res.rows?.[0] ?? { count: 0, sample: [] }) as { count: number; sample: unknown[] };
+    return { count: Number(row.count ?? 0), sample: row.sample ?? [] };
+  }
 
   const [estCount, jobCount, custCount, invCount] = await Promise.all([
     db.select({ n: sql<number>`count(*)::int` }).from(hcpEstimates),
@@ -312,7 +349,23 @@ export async function diagnosticsReport(): Promise<{ httpStatus: number; report:
     getSetting<CrawlStateShape>("hcp.invoices.crawl", CRAWL_STATE_DEFAULT),
   ]);
 
-  function collectionSync(ours: number, crawl: CrawlStateShape) {
+  const [missingEstimates, missingJobs, missingCustomers, missingInvoices] = await Promise.all([
+    missingFromHcp("hcp_estimates", "hcp_estimate_id", "customer_name", estCrawl.lastCompletedPassStartedAt),
+    missingFromHcp("hcp_jobs", "hcp_job_id", "coalesce(invoice_number, description)", jobCrawl.lastCompletedPassStartedAt),
+    missingFromHcp(
+      "hcp_customers",
+      "hcp_customer_id",
+      "nullif(trim(concat_ws(' ', first_name, last_name)), '')",
+      custCrawl.lastCompletedPassStartedAt,
+    ),
+    missingFromHcp("hcp_invoices", "hcp_invoice_id", "invoice_number", invCrawl.lastCompletedPassStartedAt),
+  ]);
+
+  function collectionSync(
+    ours: number,
+    crawl: CrawlStateShape,
+    missing: { count: number; sample: unknown[] },
+  ) {
     const ageHours = crawl.lastCompletedPassAt
       ? Number(((now.getTime() - new Date(crawl.lastCompletedPassAt).getTime()) / 3_600_000).toFixed(1))
       : null;
@@ -330,14 +383,17 @@ export async function diagnosticsReport(): Promise<{ httpStatus: number; report:
       completedPasses: crawl.passes,
       lastCompletedPassAt: crawl.lastCompletedPassAt,
       passAgeHours: ageHours,
+      // Rows the last completed pass never saw: HCP has dropped them. Named as the
+      // explanation for a surplus drift rather than left for someone to work out.
+      missingFromHcp: missing,
     };
   }
 
   const hcpSync = {
-    estimates: collectionSync(estCount[0]?.n ?? 0, estCrawl),
-    jobs: collectionSync(jobCount[0]?.n ?? 0, jobCrawl),
-    customers: collectionSync(custCount[0]?.n ?? 0, custCrawl),
-    invoices: collectionSync(invCount[0]?.n ?? 0, invCrawl),
+    estimates: collectionSync(estCount[0]?.n ?? 0, estCrawl, missingEstimates),
+    jobs: collectionSync(jobCount[0]?.n ?? 0, jobCrawl, missingJobs),
+    customers: collectionSync(custCount[0]?.n ?? 0, custCrawl, missingCustomers),
+    invoices: collectionSync(invCount[0]?.n ?? 0, invCrawl, missingInvoices),
   };
 
   // Kept as its own key: it is what /api/diagnostics has always exposed and what
@@ -399,9 +455,17 @@ export async function diagnosticsReport(): Promise<{ httpStatus: number; report:
   // deciding whether to tombstone it.
   for (const [name, state] of Object.entries(hcpSync)) {
     if (state.drift != null && state.drift !== 0) {
+      // A surplus fully accounted for by rows HCP has dropped is explained, not
+      // mysterious — say so, so the warning stays a signal rather than furniture.
+      const explained = state.drift > 0 && state.missingFromHcp.count === state.drift;
       warnings.push(
         `${name} count differs from HousecallPro by ${state.drift} ` +
-          `(ours ${state.ours}, HCP ${state.housecallPro})`,
+          `(ours ${state.ours}, HCP ${state.housecallPro})` +
+          (explained
+            ? ` — all ${state.missingFromHcp.count} are rows HCP no longer lists (deleted or merged there); see hcpSync.${name}.missingFromHcp`
+            : state.missingFromHcp.count > 0
+              ? ` — ${state.missingFromHcp.count} of them are rows HCP no longer lists; see hcpSync.${name}.missingFromHcp`
+              : ""),
       );
     }
     // ~2 full passes at the configured crawl rate. Slower than that means the crawl

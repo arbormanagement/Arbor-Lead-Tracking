@@ -68,11 +68,18 @@ const ESTIMATE_HOT_PAGES = 7;
  * can be ORDERED by recency but no row can be dated from what comes back, and
  * `paginate`'s early stop has nothing to read. `paginateFixed` is the honest tool.
  *
- * 5 pages is ~1,000 invoices. The account writes ~1,180 invoices a year, so this
- * covers roughly the last year of *any* change (an invoice being sent, paid, voided)
- * every single run. Everything beyond it is the crawl's job.
+ * 2 pages is ~400 invoices. Sized DOWN from 5 on 2026-08-26 after watching a real
+ * run: every sync was pulling ~4,100 rows across the four hot passes to catch a
+ * handful of changes, and invoices were the worst offender — 1,000 rows an hour
+ * against an account that writes about three invoices a day. The original 5 was
+ * chosen on "generous is safe" reasoning precisely because there is no timestamp to
+ * early-stop on, which is not a reason to read a year of history every hour.
+ *
+ * 400 rows still covers months of any change (an invoice being sent, paid, voided),
+ * and the crawl — which now clears a full lap far faster, see CRAWL_COLD_START_BUDGET_MS
+ * in lib/sync/hcp.ts — is what guarantees the rest.
  */
-const INVOICE_HOT_PAGES = 5;
+const INVOICE_HOT_PAGES = 2;
 
 /** Page ceiling for a routine pull. 50 pages x 200 = 10,000 rows. */
 const DEFAULT_MAX_PAGES = 50;
@@ -385,15 +392,21 @@ class HousecallProProvider implements RevenueProvider {
     path: string,
     listKey: string,
     map: (row: Record<string, unknown>) => T,
-    { startPage, pages }: { startPage: number; pages: number },
+    { startPage, pages, budgetMs }: { startPage: number; pages: number; budgetMs?: number },
   ): Promise<HcpCrawlPage<T>> {
     const cfg = await this.config();
     const out: Array<Record<string, unknown>> = [];
+    const deadline = budgetMs == null ? null : Date.now() + budgetMs;
     let page = Math.max(1, startPage);
     let wrapped = false;
     let totalItems: number | null = null;
 
     for (let i = 0; i < pages; i++) {
+      // `budgetMs` turns the page count into a ceiling rather than the schedule.
+      // A cold start wants to read as much as it can inside one run; steady state
+      // wants a couple of pages. Checked BEFORE the request so the budget bounds
+      // wall time rather than being discovered after overshooting it.
+      if (deadline != null && i > 0 && Date.now() >= deadline) break;
       const body = await this.get<Record<string, unknown>>(cfg, path, {
         page,
         page_size: HCP_MAX_PAGE_SIZE,
@@ -420,7 +433,7 @@ class HousecallProProvider implements RevenueProvider {
     return { rows: out.map(map), nextPage: page, wrapped, totalItems };
   }
 
-  async crawlEstimates(opts: { startPage: number; pages: number }): Promise<HcpEstimateCrawlPage> {
+  async crawlEstimates(opts: { startPage: number; pages: number; budgetMs?: number }): Promise<HcpEstimateCrawlPage> {
     const page = await this.crawlCollection("/estimates", "estimates", mapEstimate, opts);
     // Keeps its own named field rather than the generic `rows`: this shape predates
     // the generic walk and `lib/sync/hcp.ts` reads `.estimates`.
@@ -432,15 +445,15 @@ class HousecallProProvider implements RevenueProvider {
     };
   }
 
-  crawlCustomers(opts: { startPage: number; pages: number }): Promise<HcpCrawlPage<HcpCustomerDTO>> {
+  crawlCustomers(opts: { startPage: number; pages: number; budgetMs?: number }): Promise<HcpCrawlPage<HcpCustomerDTO>> {
     return this.crawlCollection("/customers", "customers", mapCustomer, opts);
   }
 
-  crawlJobs(opts: { startPage: number; pages: number }): Promise<HcpCrawlPage<HcpJobDTO>> {
+  crawlJobs(opts: { startPage: number; pages: number; budgetMs?: number }): Promise<HcpCrawlPage<HcpJobDTO>> {
     return this.crawlCollection("/jobs", "jobs", mapJob, opts);
   }
 
-  crawlInvoices(opts: { startPage: number; pages: number }): Promise<HcpCrawlPage<HcpInvoiceDTO>> {
+  crawlInvoices(opts: { startPage: number; pages: number; budgetMs?: number }): Promise<HcpCrawlPage<HcpInvoiceDTO>> {
     return this.crawlCollection("/invoices", "invoices", mapInvoice, opts);
   }
 

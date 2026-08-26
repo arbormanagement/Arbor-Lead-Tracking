@@ -197,14 +197,14 @@ export interface RevenueProvider {
    * keeps estimates older than the hot zone in sync, which no time window can do
    * because the provider's change rate never decays to zero with age.
    */
-  crawlEstimates(opts: { startPage: number; pages: number }): Promise<HcpEstimateCrawlPage>;
+  crawlEstimates(opts: { startPage: number; pages: number; budgetMs?: number }): Promise<HcpEstimateCrawlPage>;
   /** Invoices ordered newest-touched-first — a fixed page count, because the
    *  payload carries no timestamp to early-stop on. See `HcpInvoiceDTO`. */
   listInvoices(opts: { sinceDays: number }): Promise<HcpInvoiceDTO[]>;
   /** Cold-zone cursor walks. Same contract as `crawlEstimates`, one per collection:
    *  every one of these endpoints lacks a server-side `updated_at` filter, so a
    *  window of any width leaves aged rows uncovered and only a walk closes it. */
-  crawlCustomers(opts: { startPage: number; pages: number }): Promise<HcpCrawlPage<HcpCustomerDTO>>;
-  crawlJobs(opts: { startPage: number; pages: number }): Promise<HcpCrawlPage<HcpJobDTO>>;
-  crawlInvoices(opts: { startPage: number; pages: number }): Promise<HcpCrawlPage<HcpInvoiceDTO>>;
+  crawlCustomers(opts: { startPage: number; pages: number; budgetMs?: number }): Promise<HcpCrawlPage<HcpCustomerDTO>>;
+  crawlJobs(opts: { startPage: number; pages: number; budgetMs?: number }): Promise<HcpCrawlPage<HcpJobDTO>>;
+  crawlInvoices(opts: { startPage: number; pages: number; budgetMs?: number }): Promise<HcpCrawlPage<HcpInvoiceDTO>>;
 }
