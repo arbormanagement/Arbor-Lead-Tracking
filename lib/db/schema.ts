@@ -348,6 +348,21 @@ export const hcpCustomers = pgTable(
     // backfill.
     createdAtHcp: timestamp("created_at_hcp", { withTimezone: true }),
     updatedAtHcp: timestamp("updated_at_hcp", { withTimezone: true }),
+    // When the cold-zone crawl last SAW this row.
+    //
+    // A crawl can only ever see what HousecallPro still returns, so a record HCP
+    // has deleted or merged away is invisible to it by construction — no number of
+    // passes will notice it is gone. Estimates hide this (HCP soft-deletes them, so
+    // they keep coming back); customers do not, which is how 57 surplus customer
+    // rows survived a full pass with drift reporting +57 and no mechanism able to
+    // resolve it (2026-08-26).
+    //
+    // Stamped by a narrow UPDATE after each crawl page — deliberately NOT part of
+    // the row upsert, whose skip-if-unchanged guard would leave untouched rows
+    // unstamped, and whose jsonb rewrite is the cost that guard exists to avoid.
+    // Rows still carrying a stamp older than the last completed pass are the ones
+    // HCP no longer lists.
+    crawlSeenAt: timestamp("crawl_seen_at", { withTimezone: true }),
     raw: jsonb("raw"),
     syncedAt: timestamp("synced_at", { withTimezone: true }).notNull().defaultNow(),
     createdAt: createdAt(),
@@ -355,6 +370,7 @@ export const hcpCustomers = pgTable(
   },
   (t) => [
     uniqueIndex("hcp_customers_hcp_id_uq").on(t.hcpCustomerId),
+    index("hcp_customers_crawl_seen_idx").on(t.crawlSeenAt),
     index("hcp_customers_created_hcp_idx").on(t.createdAtHcp),
     index("hcp_customers_phone_idx").on(t.phoneE164),
     index("hcp_customers_email_idx").on(t.emailLc),
@@ -413,6 +429,8 @@ export const hcpJobs = pgTable(
     address: jsonb("address"),
     location: locationEnum("location").default("unknown"),
     createdAtHcp: timestamp("created_at_hcp", { withTimezone: true }),
+    /** When the cold-zone crawl last saw this row — see hcpCustomers.crawlSeenAt. */
+    crawlSeenAt: timestamp("crawl_seen_at", { withTimezone: true }),
     raw: jsonb("raw"),
     syncedAt: timestamp("synced_at", { withTimezone: true }).notNull().defaultNow(),
     createdAt: createdAt(),
@@ -420,6 +438,7 @@ export const hcpJobs = pgTable(
   },
   (t) => [
     uniqueIndex("hcp_jobs_hcp_id_uq").on(t.hcpJobId),
+    index("hcp_jobs_crawl_seen_idx").on(t.crawlSeenAt),
     index("hcp_jobs_customer_idx").on(t.hcpCustomerId),
     index("hcp_jobs_created_hcp_idx").on(t.createdAtHcp),
     index("hcp_jobs_completed_hcp_idx").on(t.completedAtHcp),
@@ -494,6 +513,8 @@ export const hcpEstimates = pgTable(
     // HCP's own updated_at — lets attribution re-derive leads whose estimate
     // changed long after creation (late approval, cancellation, price edit).
     updatedAtHcp: timestamp("updated_at_hcp", { withTimezone: true }),
+    /** When the cold-zone crawl last saw this row — see hcpCustomers.crawlSeenAt. */
+    crawlSeenAt: timestamp("crawl_seen_at", { withTimezone: true }),
     raw: jsonb("raw"),
     syncedAt: timestamp("synced_at", { withTimezone: true }).notNull().defaultNow(),
     createdAt: createdAt(),
@@ -501,6 +522,7 @@ export const hcpEstimates = pgTable(
   },
   (t) => [
     uniqueIndex("hcp_estimates_hcp_id_uq").on(t.hcpEstimateId),
+    index("hcp_estimates_crawl_seen_idx").on(t.crawlSeenAt),
     index("hcp_estimates_customer_idx").on(t.hcpCustomerId),
     index("hcp_estimates_won_idx").on(t.won),
     index("hcp_estimates_phone_idx").on(t.customerPhoneE164),
@@ -585,6 +607,8 @@ export const hcpInvoices = pgTable(
     discounts: jsonb("discounts"),
     payments: jsonb("payments"),
     refunds: jsonb("refunds"),
+    /** When the cold-zone crawl last saw this row — see hcpCustomers.crawlSeenAt. */
+    crawlSeenAt: timestamp("crawl_seen_at", { withTimezone: true }),
     raw: jsonb("raw"),
     syncedAt: timestamp("synced_at", { withTimezone: true }).notNull().defaultNow(),
     createdAt: createdAt(),
@@ -592,6 +616,7 @@ export const hcpInvoices = pgTable(
   },
   (t) => [
     uniqueIndex("hcp_invoices_hcp_id_uq").on(t.hcpInvoiceId),
+    index("hcp_invoices_crawl_seen_idx").on(t.crawlSeenAt),
     index("hcp_invoices_job_idx").on(t.hcpJobId),
     // The self-heal pass filters on this, and it is how an invoice finds its job.
     index("hcp_invoices_job_hcp_idx").on(t.hcpJobIdHcp),

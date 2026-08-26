@@ -78,6 +78,21 @@ Edwardsville + O'Fallon). WhatConverts-style. Single-tenant. Owner: Justin
 - **Facebook lead-gen** via the MCP webhook.
 - **ROI = attributed HousecallPro won-estimate revenue ÷ ad spend**, per source/campaign/location. Revenue event = a customer-approved (won) estimate, valued at the approved-option amount (`hcp_estimates`).
 - **Four money numbers exist and must never be blended** (jobs + invoices + customers landed 2026-08-25): estimate APPROVED value (the only ROI revenue), job QUOTED total, invoice BILLED, invoice COLLECTED. `roi_daily` reads the first and only the first — an estimate is approved the moment the customer says yes, which is when the marketing did its job, while an invoice is written days or weeks later and paid later still. Re-anchoring ROI on invoices would move every historical figure and lag the channel that earned it. Jobs and invoices answer "was the work done and did we get paid", never "did the ads work". Justin chose this explicitly (2026-08-25) over a second ROI lens or a replacement.
+- **A crawl cannot see an absence.** It only ever reads what HCP still returns, so a
+  record deleted or merged there is invisible to it by construction — which is why
+  customers sat at +57 rows against HCP with drift reporting it and nothing able to
+  resolve it (2026-08-26). Estimates hide this because HCP soft-deletes them. The fix
+  is `crawl_seen_at`: every completed pass stamps every row it saw, so rows still
+  carrying a stamp older than that pass STARTED are the ones HCP has dropped.
+  `/api/diagnostics` reports them per collection under `hcpSync.<name>.missingFromHcp`
+  (count + a 10-row sample), and the drift warning names them as the cause. Detection
+  only — nothing is deleted automatically.
+- **Cold start is paced differently from steady state.** While a crawl has never
+  completed a pass it reads until it wraps or a 5-minute budget runs out; afterwards
+  it drops to 2 pages a run. A single constant was wrong for both: the 2026-08-25
+  deploy would have taken a day to fill, and twelve manual `trigger_sync` calls
+  cleared the same work in thirteen minutes. If a fill ever needs forcing by hand,
+  re-triggering the `hcp` job is the lever — each run advances every cursor.
 - **All four HCP collections are synced COMPLETE, not windowed** — ~10.7k customers, ~10.8k jobs, ~15.5k estimates, ~10.6k invoices. Each gets a hot pass (recent rows, every run) plus a cold crawl (a cursor walking the whole collection, 2 pages/run, wrapping forever). The crawls are the reason this is complete: before them, jobs were bounded to a 180-day schedule window and customers to whatever the incremental window reached, so most of the account was simply absent. A cold start fills in ~1.1 days with no manual backfill.
 - **Read path is DIRECT to each platform API** (decision 2026-06-26): a background sync needs clean typed data + reliability, so we don't route it through the LLM-oriented MCP gateway. All spend/revenue access is behind `lib/integrations` (`SpendProvider`/`RevenueProvider`) so any provider can be swapped — including back to an MCP-backed impl. The MCP client (`lib/mcp/client.ts`) is retained as an optional per-platform fallback.
 - Direct providers: `lib/integrations/housecallpro.ts` (API key), `google-ads.ts` (OAuth refresh → GAQL searchStream), `facebook.ts` (Graph insights). Sync jobs in `lib/sync/{spend,hcp}.ts`, recorded in `sync_runs`; admin trigger `POST /api/sync/{spend|hcp}`, scheduled by the `cron` worker (`scripts/cron.ts`) hitting `GET /api/cron/{job}`.

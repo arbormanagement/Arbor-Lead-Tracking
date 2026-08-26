@@ -26,6 +26,7 @@ import { sql } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { hcpCustomers, hcpEstimates, hcpInvoices, hcpJobs } from "@/lib/db/schema";
 import { listCustomers, listInvoices, listJobs } from "@/lib/queries/hcp";
+import { CRAWL_INITIAL, advanceCrawl, crawlWindowFor, markCrawlSeen } from "@/lib/sync/hcp";
 
 const now = new Date();
 const days = (n: number) => new Date(now.getTime() - n * 86_400_000);
@@ -208,6 +209,64 @@ async function main() {
   check("tracked=false (no contacts linked)", (await listCustomers({ filters: { tracked: false } })).rows.length === 2);
   check("days window", (await listCustomers({ days: 20 })).rows.length === 1, undefined);
   check("paging", (await listCustomers({ limit: 1 })).hasMore === true);
+
+  // ── Crawl cursor: pass boundaries ───────────────────────────────────────────
+  // Pure logic, but it decides the cutoff that deletion detection depends on — an
+  // off-by-one-pass here silently flags every row as missing, or none of them.
+  console.log("\ncrawl cursor:");
+  const t0 = new Date("2026-01-01T00:00:00Z");
+  const t1 = new Date("2026-01-01T01:00:00Z");
+  const mid = advanceCrawl(CRAWL_INITIAL, { rows: [], nextPage: 30, wrapped: false, totalItems: 100 }, t0);
+  check("a pass in flight records its start", mid.currentPassStartedAt === t0.toISOString(), mid.currentPassStartedAt);
+  check("an unfinished pass does not count", mid.passes === 0, mid.passes);
+  check("no cutoff until a pass completes", mid.lastCompletedPassStartedAt === null);
+
+  const done = advanceCrawl(mid, { rows: [], nextPage: 1, wrapped: true, totalItems: 100 }, t1);
+  check("wrapping counts the pass", done.passes === 1, done.passes);
+  check(
+    "cutoff is the pass START, not its end",
+    done.lastCompletedPassStartedAt === t0.toISOString(),
+    done.lastCompletedPassStartedAt,
+  );
+  check("in-flight marker clears on wrap", done.currentPassStartedAt === null);
+
+  check("cold start reads on a time budget", crawlWindowFor(CRAWL_INITIAL).budgetMs != null);
+  check("steady state does not", crawlWindowFor(done).budgetMs === undefined);
+  check("steady state is the small page count", crawlWindowFor(done).pages === 2, crawlWindowFor(done).pages);
+
+  // ── Deletion detection ──────────────────────────────────────────────────────
+  console.log("\ndeletion detection:");
+  const passStart = new Date(Date.now() - 60_000);
+  // Two of the three customers are still in HCP, so a pass stamps them...
+  await markCrawlSeen("hcp_customers", "hcp_customer_id", ["cus_1", "cus_2"]);
+  // ...and one arrived only after the pass began, so it must NOT read as missing.
+  await db.insert(hcpCustomers).values({
+    hcpCustomerId: "cus_new", firstName: "Brand", lastName: "New", createdAtHcp: days(1),
+  });
+  // A fourth predates the pass and was never stamped: HCP has dropped it.
+  await db.insert(hcpCustomers).values({
+    hcpCustomerId: "cus_gone", firstName: "Gone", lastName: "Away", createdAtHcp: days(400),
+  });
+  await db.execute(sql`UPDATE hcp_customers SET created_at = ${days(400)} WHERE hcp_customer_id = 'cus_gone'`);
+
+  const missing = await db.execute<{ hcp_id: string }>(sql`
+    select hcp_customer_id as hcp_id from hcp_customers
+    where created_at < ${passStart}
+      and (crawl_seen_at is null or crawl_seen_at < ${passStart})
+  `);
+  const missingIds = (missing.rows ?? []).map((r) => r.hcp_id);
+  check("the dropped customer is detected", missingIds.includes("cus_gone"), missingIds);
+  check("stamped customers are not flagged", !missingIds.some((id) => id === "cus_1" || id === "cus_2"), missingIds);
+  check("a row created after the pass began is not flagged", !missingIds.includes("cus_new"), missingIds);
+  check("exactly one missing", missingIds.length === 1, missingIds);
+
+  // Re-stamping clears it — the crawl seeing a row again is what resolves the flag.
+  await markCrawlSeen("hcp_customers", "hcp_customer_id", ["cus_gone"]);
+  const after = await db.execute<{ n: number }>(sql`
+    select count(*)::int as n from hcp_customers
+    where created_at < ${passStart} and (crawl_seen_at is null or crawl_seen_at < ${passStart})
+  `);
+  check("re-seeing a row clears the flag", Number(after.rows?.[0]?.n) === 0, after.rows?.[0]?.n);
 
   console.log(failures === 0 ? "\nALL PASS" : `\n${failures} FAILURE(S)`);
   process.exit(failures === 0 ? 0 : 1);

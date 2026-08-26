@@ -103,10 +103,21 @@ export async function lastSuccessfulRunStart(job: string): Promise<Date | null> 
  */
 export async function incrementalWindowDays(
   job: string,
-  { overlapHours = 2, maxDays = 30 }: { overlapHours?: number; maxDays?: number } = {},
+  {
+    overlapHours = 2,
+    maxDays = 30,
+    minDays,
+  }: { overlapHours?: number; maxDays?: number; minDays?: number } = {},
 ): Promise<number> {
   const last = await lastSuccessfulRunStart(job);
   if (!last) return maxDays;
   const ms = Date.now() - last.getTime() + overlapHours * 3_600_000;
-  return Math.min(maxDays, Math.max(overlapHours / 24, ms / 86_400_000));
+  // `minDays` exists because this window is derived from the gap since the last
+  // SUCCESSFUL run, which means re-triggering a job by hand shrinks it toward zero:
+  // observed live 2026-08-26, where successive manual `hcp` triggers walked the
+  // window down 0.122 → 0.084 days. The overlap keeps that safe, but it is exactly
+  // backwards — an operator forcing a catch-up wants a WIDER read, not a narrower
+  // one — so a job whose hot pass should never collapse sets a floor.
+  const floor = minDays ?? overlapHours / 24;
+  return Math.min(maxDays, Math.max(floor, ms / 86_400_000));
 }
