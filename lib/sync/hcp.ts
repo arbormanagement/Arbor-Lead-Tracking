@@ -90,15 +90,29 @@ export interface CrawlState {
   /** ISO timestamp of the last completed pass; null until the first one finishes. */
   lastCompletedPassAt: string | null;
   /**
-   * When the last COMPLETED pass began. This is the cutoff that makes deletions
-   * detectable: every row HCP still lists was stamped at some point after this
-   * instant, so a row whose `crawl_seen_at` predates it is one HCP no longer
-   * returns. Without the START of the pass — not its end — the check would flag
-   * every row the crawl happened to read early in the lap.
+   * When the last lap that provably ran page 1 → wrap began. The cutoff that makes
+   * deletions detectable: every row HCP still lists was stamped at some point after
+   * this instant, so a row whose `crawl_seen_at` predates it is one HCP no longer
+   * returns.
+   *
+   * ⚠️ "Provably" is load-bearing, and getting it wrong is not a subtle failure.
+   * A lap the cursor JOINED midway is not a full lap: the pages before the join
+   * were never stamped, so treating its wrap as a cutoff condemns every row in them.
+   * Shipped without this guard on 2026-08-26 and the estimate crawl — mid-lap at
+   * page 73 when the deploy landed — wrapped six pages later and reported 14,000 of
+   * 15,464 estimates as missing from HousecallPro, against a drift of 0. A diagnostic
+   * that confidently reports a whole table as deleted is worse than no diagnostic.
+   *
+   * Deliberately a NEW field name rather than a reinterpretation of the old one:
+   * crawl state persists in `settings`, so a stored value written under the broken
+   * rule must not be readable as a valid cutoff. Absent → no cutoff → no claims.
    */
-  lastCompletedPassStartedAt: string | null;
-  /** When the pass currently in flight began; null between passes. */
-  currentPassStartedAt: string | null;
+  lastFullLapStartedAt: string | null;
+  /**
+   * When the in-flight lap began — set ONLY when that lap started at page 1, so a
+   * cursor that joined mid-lap carries null and cannot publish a cutoff on wrap.
+   */
+  currentLapStartedAt: string | null;
   /** Provider's own total row count, from the last response seen. */
   totalItems: number | null;
 }
@@ -107,8 +121,8 @@ export const CRAWL_INITIAL: CrawlState = {
   nextPage: 1,
   passes: 0,
   lastCompletedPassAt: null,
-  lastCompletedPassStartedAt: null,
-  currentPassStartedAt: null,
+  lastFullLapStartedAt: null,
+  currentLapStartedAt: null,
   totalItems: null,
 };
 
@@ -126,15 +140,18 @@ export function crawlWindowFor(state: CrawlState): { startPage: number; pages: n
  */
 export function advanceCrawl(before: CrawlState, page: HcpCrawlPage<unknown> | null, runStartedAt: Date): CrawlState {
   if (!page) return before;
-  // A pass begins on the first run that reads for it and ends when the cursor wraps.
-  const passStartedAt = before.currentPassStartedAt ?? runStartedAt.toISOString();
+  // A lap counts for deletion detection only if this cursor started it at page 1.
+  // Joining an already-running lap leaves this null, and a null cannot become a
+  // cutoff on wrap — see the note on `lastFullLapStartedAt`.
+  const lapStartedAt =
+    before.currentLapStartedAt ?? (before.nextPage <= 1 ? runStartedAt.toISOString() : null);
   if (!page.wrapped) {
     return {
       nextPage: page.nextPage,
       passes: before.passes,
       lastCompletedPassAt: before.lastCompletedPassAt,
-      lastCompletedPassStartedAt: before.lastCompletedPassStartedAt,
-      currentPassStartedAt: passStartedAt,
+      lastFullLapStartedAt: before.lastFullLapStartedAt,
+      currentLapStartedAt: lapStartedAt,
       totalItems: page.totalItems ?? before.totalItems,
     };
   }
@@ -142,8 +159,10 @@ export function advanceCrawl(before: CrawlState, page: HcpCrawlPage<unknown> | n
     nextPage: page.nextPage,
     passes: before.passes + 1,
     lastCompletedPassAt: new Date().toISOString(),
-    lastCompletedPassStartedAt: passStartedAt,
-    currentPassStartedAt: null,
+    // A partial lap still counts as a pass (it proves the cursor is moving) but
+    // must not move the cutoff.
+    lastFullLapStartedAt: lapStartedAt ?? before.lastFullLapStartedAt,
+    currentLapStartedAt: null,
     totalItems: page.totalItems ?? before.totalItems,
   };
 }
@@ -157,7 +176,7 @@ function crawlStats(before: CrawlState, after: CrawlState, page: HcpCrawlPage<un
     rows: page?.rows.length ?? 0,
     passes: after.passes,
     lastCompletedPassAt: after.lastCompletedPassAt,
-    lastCompletedPassStartedAt: after.lastCompletedPassStartedAt,
+    lastFullLapStartedAt: after.lastFullLapStartedAt,
     coldStart: before.passes === 0,
     totalItems: after.totalItems,
   };
