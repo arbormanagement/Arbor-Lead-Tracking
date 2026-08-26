@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, sql } from "drizzle-orm";
+import { and, desc, eq, gte, lte, sql } from "drizzle-orm";
 import { campaignNotExcluded, excludedCampaignIds } from "@/lib/campaigns";
 import { db } from "@/lib/db/client";
 import { campaigns, conversations, hcpCustomers, hcpEstimates, leads, sources } from "@/lib/db/schema";
@@ -14,6 +14,7 @@ import {
 import { isLiveEstimate } from "@/lib/estimates/countable";
 import { landingPathSql } from "@/lib/landing-page";
 import { TRACKING_STARTED_AT } from "@/lib/tracking-coverage";
+import { resolveWindow, type WindowInput } from "@/lib/window";
 
 /**
  * The estimate list — what /estimates renders and what the MCP `list_estimates`
@@ -141,8 +142,7 @@ export interface EstimateListAgg {
   wonCents: number;
 }
 
-export async function listEstimates(opts: {
-  days: number;
+export async function listEstimates(opts: WindowInput & {
   filters?: EstimateFilters;
   limit?: number;
   offset?: number;
@@ -153,8 +153,8 @@ export async function listEstimates(opts: {
   hasMore: boolean;
   nextOffset: number | null;
 }> {
-  const { days, filters = {}, limit = 50, offset = 0 } = opts;
-  const since = new Date(Date.now() - days * 86_400_000);
+  const { filters = {}, limit = 50, offset = 0 } = opts;
+  const { since, until } = resolveWindow(opts, 7);
 
   // Recruiting/brand campaigns are not customer acquisition, so their estimates
   // stay out of this list and its totals — the same exclusion roi_daily applies.
@@ -170,6 +170,8 @@ export async function listEstimates(opts: {
   const scope = and(
     isLiveEstimate,
     gte(hcpEstimates.createdAtHcp, since),
+    // Only bounded when the caller named a fixed period; a rolling window runs to now.
+    until ? lte(hcpEstimates.createdAtHcp, until) : undefined,
     campaignNotExcluded(leads.campaignId, excludedIds),
     filterSql(filters),
   );

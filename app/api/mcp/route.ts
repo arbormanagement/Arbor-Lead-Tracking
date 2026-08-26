@@ -173,7 +173,8 @@ const handler = createMcpHandler(
         outputSchema: ListEstimatesOutput.shape,
         annotations: { readOnlyHint: true },
       },
-      async ({ days, limit, offset, ...filters }) => json(await listEstimates({ days, filters, limit, offset })),
+      async ({ days, start, end, limit, offset, ...filters }) =>
+        json(await listEstimates({ days, start, end, filters, limit, offset })),
     );
 
     server.registerTool(
@@ -214,8 +215,8 @@ const handler = createMcpHandler(
         outputSchema: ListJobsOutput.shape,
         annotations: { readOnlyHint: true },
       },
-      async ({ days, dateField, limit, offset, ...filters }) =>
-        json(await listJobs({ days, dateField, filters, limit, offset })),
+      async ({ days, start, end, dateField, limit, offset, ...filters }) =>
+        json(await listJobs({ days, start, end, dateField, filters, limit, offset })),
     );
 
     server.registerTool(
@@ -233,8 +234,8 @@ const handler = createMcpHandler(
         outputSchema: ListInvoicesOutput.shape,
         annotations: { readOnlyHint: true },
       },
-      async ({ days, dateField, limit, offset, ...filters }) =>
-        json(await listInvoices({ days, dateField, filters, limit, offset })),
+      async ({ days, start, end, dateField, limit, offset, ...filters }) =>
+        json(await listInvoices({ days, start, end, dateField, filters, limit, offset })),
     );
 
     server.registerTool(
