@@ -66,6 +66,13 @@ async function main() {
     jobType: "Tree Removal", tags: ["Treezilla", "Needs To Be Dry"],
     assignedEmployees: [{ first_name: "Matt", last_name: "Brooks" }, { first_name: "Trent", last_name: "Commer" }],
     estimateOptionIds: ["est_opt1"], leadSourceRaw: "Website",
+    onMyWayAtHcp: new Date(days(18).getTime() - 2 * 3_600_000),
+    startedAtHcp: new Date(days(18).getTime() - 90 * 60_000),
+    scheduledEnd: days(20), arrivalWindowMinutes: 240, notes: "Gate code 1234",
+    appointments: [
+      { id: "appt_1", dispatched_employees_ids: ["pro_matt", "pro_trent"] },
+      { id: "appt_2", dispatched_employees_ids: ["pro_matt"] },
+    ],
     address: { street: "12 Oak St", city: "O'Fallon", state: "IL", zip: "62269" },
   }).returning();
 
@@ -283,6 +290,84 @@ async function main() {
     where created_at < ${passStart} and (crawl_seen_at is null or crawl_seen_at < ${passStart})
   `);
   check("re-seeing a row clears the flag", Number(after.rows?.[0]?.n) === 0, after.rows?.[0]?.n);
+
+  // ── Newly projected job fields ──────────────────────────────────────────────
+  console.log("\nprojected job fields:");
+  const jrow = (await listJobs({ days: 90 })).rows[0];
+  check("on-my-way timestamp surfaces", jrow?.onMyWayAt != null, jrow?.onMyWayAt);
+  check("started timestamp surfaces", jrow?.startedAt != null, jrow?.startedAt);
+  check("on-site minutes derived", jrow?.onSiteMinutes === 90, jrow?.onSiteMinutes);
+  check("arrival window surfaces", jrow?.arrivalWindowMinutes === 240, jrow?.arrivalWindowMinutes);
+  check("notes surface", jrow?.notes === "Gate code 1234", jrow?.notes);
+  check("appointment count", jrow?.appointmentCount === 2, jrow?.appointmentCount);
+  check(
+    "dispatched employees deduped across visits",
+    JSON.stringify([...(jrow?.dispatchedEmployeeIds ?? [])].sort()) === JSON.stringify(["pro_matt", "pro_trent"]),
+    jrow?.dispatchedEmployeeIds,
+  );
+  // A job with no clock-in must read null, never 0 — "not recorded" is not "instant".
+  await db.insert(hcpJobs).values({
+    hcpJobId: "job_unclocked", hcpCustomerId: cust!.id, createdAtHcp: days(3), completedAtHcp: days(2),
+  });
+  const unclocked = (await listJobs({ days: 90 })).rows.find((r) => r.hcpJobId === "job_unclocked");
+  check("unclocked job reports null on-site, not 0", unclocked?.onSiteMinutes === null, unclocked?.onSiteMinutes);
+  check("job with no expand reports null appointment count", unclocked?.appointmentCount === null, unclocked?.appointmentCount);
+
+  // ── do_not_service: the three-state trap ────────────────────────────────────
+  console.log("\ndo_not_service (three-state):");
+  await db.insert(hcpCustomers).values([
+    { hcpCustomerId: "cus_dns", firstName: "Flagged", lastName: "Person", doNotService: true, createdAtHcp: days(5) },
+    { hcpCustomerId: "cus_ok", firstName: "Safe", lastName: "Person", doNotService: false, createdAtHcp: days(5) },
+  ]);
+  // cus_1 / cus_2 / cus_new / cus_gone were seeded WITHOUT the flag = UNKNOWN.
+  const flagged = await listCustomers({ filters: { doNotService: true } });
+  const mailable = await listCustomers({ filters: { doNotService: false } });
+  check("flagged filter finds only the flagged", flagged.rows.length === 1 && flagged.rows[0]?.hcpCustomerId === "cus_dns", flagged.rows.map((r) => r.hcpCustomerId));
+  check(
+    "mailable filter excludes UNKNOWN as well as flagged",
+    mailable.rows.length === 1 && mailable.rows[0]?.hcpCustomerId === "cus_ok",
+    mailable.rows.map((r) => r.hcpCustomerId),
+  );
+  const allCust = await listCustomers({});
+  check("unknown counted separately from not-flagged", (allCust.agg?.doNotServiceUnknown ?? 0) >= 4, allCust.agg?.doNotServiceUnknown);
+  check("flagged counted", allCust.agg?.doNotService === 1, allCust.agg?.doNotService);
+  check("null survives to the row as null", allCust.rows.find((r) => r.hcpCustomerId === "cus_1")?.doNotService === null);
+
+  // ── Backfill-from-raw, exactly as migration 0042 runs it ────────────────────
+  console.log("\nbackfill from raw:");
+  await db.insert(hcpJobs).values({
+    hcpJobId: "job_raw", hcpCustomerId: cust!.id, createdAtHcp: days(9),
+    raw: {
+      work_timestamps: { on_my_way_at: "2026-08-01T12:00:00Z", started_at: "2026-08-01T13:00:00Z" },
+      schedule: { scheduled_end: "2026-08-01T17:00:00Z", arrival_window: 120 },
+      notes: "from raw", job_fields: { job_type: { id: "jbt_x" }, business_unit: null },
+      recurrence_number: 3, recurrence_status: "active", recurrence_id: "rec_1", recurrence_rule: null,
+    },
+  });
+  await db.execute(sql`
+    UPDATE hcp_jobs SET
+      on_my_way_at_hcp = nullif(raw->'work_timestamps'->>'on_my_way_at', '')::timestamptz,
+      started_at_hcp = nullif(raw->'work_timestamps'->>'started_at', '')::timestamptz,
+      scheduled_end = nullif(raw->'schedule'->>'scheduled_end', '')::timestamptz,
+      arrival_window_minutes = CASE WHEN jsonb_typeof(raw->'schedule'->'arrival_window') = 'number'
+        THEN (raw->'schedule'->>'arrival_window')::int END,
+      notes = nullif(raw->>'notes', ''),
+      job_type_id = raw->'job_fields'->'job_type'->>'id',
+      business_unit = raw->'job_fields'->>'business_unit',
+      recurrence_number = CASE WHEN jsonb_typeof(raw->'recurrence_number') = 'number' THEN (raw->>'recurrence_number')::int END,
+      recurrence_rule = CASE WHEN raw->'recurrence_rule' = 'null'::jsonb THEN NULL ELSE raw->'recurrence_rule' END,
+      recurrence_status = raw->>'recurrence_status',
+      recurrence_id = raw->>'recurrence_id'
+    WHERE hcp_job_id = 'job_raw'
+  `);
+  const [filled] = await db.select().from(hcpJobs).where(sql`${hcpJobs.hcpJobId} = 'job_raw'`);
+  check("backfills on-my-way from raw", filled?.onMyWayAtHcp?.toISOString() === "2026-08-01T12:00:00.000Z", filled?.onMyWayAtHcp);
+  check("backfills arrival window from raw", filled?.arrivalWindowMinutes === 120, filled?.arrivalWindowMinutes);
+  check("backfills notes from raw", filled?.notes === "from raw", filled?.notes);
+  check("backfills nested job_type id", filled?.jobTypeId === "jbt_x", filled?.jobTypeId);
+  check("JSON null business_unit lands as SQL NULL", filled?.businessUnit === null, filled?.businessUnit);
+  check("JSON null recurrence_rule lands as SQL NULL", filled?.recurrenceRule === null, filled?.recurrenceRule);
+  check("backfills recurrence number", filled?.recurrenceNumber === 3, filled?.recurrenceNumber);
 
   console.log(failures === 0 ? "\nALL PASS" : `\n${failures} FAILURE(S)`);
   process.exit(failures === 0 ? 0 : 1);

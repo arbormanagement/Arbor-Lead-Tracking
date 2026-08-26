@@ -145,8 +145,36 @@ export async function listJobs(opts: WindowInput & {
       tags: hcpJobs.tags,
       createdAt: hcpJobs.createdAtHcp,
       scheduledStart: hcpJobs.scheduledStart,
+      scheduledEnd: hcpJobs.scheduledEnd,
+      arrivalWindowMinutes: hcpJobs.arrivalWindowMinutes,
+      onMyWayAt: hcpJobs.onMyWayAtHcp,
+      startedAt: hcpJobs.startedAtHcp,
       completedAt: hcpJobs.completedAtHcp,
       canceledAt: hcpJobs.canceledAtHcp,
+      // Actual time on site, in minutes. Null unless the crew clocked both ends —
+      // HCP does not require it, so treat a null as "not recorded", never as zero.
+      onSiteMinutes: sql<number | null>`
+        case when ${hcpJobs.startedAtHcp} is not null and ${hcpJobs.completedAtHcp} is not null
+          then round(extract(epoch from (${hcpJobs.completedAtHcp} - ${hcpJobs.startedAtHcp})) / 60)::int
+        end`,
+      appointmentCount: sql<number | null>`
+        case when jsonb_typeof(${hcpJobs.appointments}) = 'array'
+          then jsonb_array_length(${hcpJobs.appointments}) end`,
+      // Who was actually SENT, across every visit — more reliable than
+      // assigned_employees, which is empty on a great many jobs.
+      dispatchedEmployeeIds: sql<string[] | null>`(
+        select nullif(array_agg(distinct e), '{}')
+        from jsonb_array_elements(
+          case when jsonb_typeof(${hcpJobs.appointments}) = 'array' then ${hcpJobs.appointments} else '[]'::jsonb end
+        ) a,
+        jsonb_array_elements_text(
+          case when jsonb_typeof(a->'dispatched_employees_ids') = 'array'
+            then a->'dispatched_employees_ids' else '[]'::jsonb end
+        ) e
+      )`,
+      notes: hcpJobs.notes,
+      recurrenceId: hcpJobs.recurrenceId,
+      recurrenceStatus: hcpJobs.recurrenceStatus,
       totalCents: hcpJobs.totalAmountCents,
       outstandingCents: hcpJobs.outstandingBalanceCents,
       invoicedCents: hcpJobs.invoiceTotalCents,
@@ -312,6 +340,14 @@ export interface CustomerFilters {
   hasJobs?: boolean;
   /** true = linked to a tracked inbox contact. */
   tracked?: boolean;
+  /**
+   * true  = flagged do-not-service.
+   * false = provably NOT flagged (`IS FALSE`, never `IS NOT TRUE`) — the only set
+   *         safe to contact. Customers whose flag is still UNKNOWN are excluded,
+   *         deliberately: under-mailing is recoverable, mailing someone who asked
+   *         not to be contacted is not.
+   */
+  doNotService?: boolean;
 }
 
 /**
@@ -350,6 +386,13 @@ export async function listCustomers(opts: {
   if (filters.tracked != null) {
     conds.push(filters.tracked ? isNotNull(contacts.id) : isNull(contacts.id));
   }
+  if (filters.doNotService != null) {
+    conds.push(
+      filters.doNotService
+        ? eq(hcpCustomers.doNotService, true)
+        : eq(hcpCustomers.doNotService, false),
+    );
+  }
   const scope = conds.length ? and(...conds) : undefined;
 
   const page = await db
@@ -364,6 +407,13 @@ export async function listCustomers(opts: {
       phones: hcpCustomers.phonesE164,
       createdAt: hcpCustomers.createdAtHcp,
       updatedAt: hcpCustomers.updatedAtHcp,
+      company: hcpCustomers.company,
+      tags: hcpCustomers.tags,
+      notes: hcpCustomers.notes,
+      notificationsEnabled: hcpCustomers.notificationsEnabled,
+      // THREE-STATE. null = UNKNOWN (not yet re-read with the expand), NOT "false".
+      doNotService: hcpCustomers.doNotService,
+      leadSourceRaw: hcpCustomers.leadSourceRaw,
       city: sql<string | null>`(
         select a->>'city' from jsonb_array_elements(
           case when jsonb_typeof(${hcpCustomers.addresses}) = 'array' then ${hcpCustomers.addresses} else '[]'::jsonb end
@@ -445,6 +495,10 @@ export async function listCustomers(opts: {
     .select({
       total: sql<number>`count(*)::int`,
       tracked: sql<number>`count(*) filter (where ${contacts.id} is not null)::int`,
+      doNotService: sql<number>`count(*) filter (where ${hcpCustomers.doNotService} is true)::int`,
+      // Not yet re-read with the expand, so their flag is genuinely unknown. Counted
+      // separately from `false` because the two must never be pooled.
+      doNotServiceUnknown: sql<number>`count(*) filter (where ${hcpCustomers.doNotService} is null)::int`,
     })
     .from(hcpCustomers)
     .leftJoin(contacts, eq(contacts.hcpCustomerId, hcpCustomers.id))

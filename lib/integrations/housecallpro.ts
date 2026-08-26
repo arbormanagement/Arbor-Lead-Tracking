@@ -112,9 +112,21 @@ class HousecallProProvider implements RevenueProvider {
     return { apiKey: c.api_key, base: c.api_base || env.HCP_API_BASE };
   }
 
-  private async get<T = unknown>(cfg: HcpConfig, path: string, query: Record<string, string | number> = {}): Promise<T> {
+  private async get<T = unknown>(
+    cfg: HcpConfig,
+    path: string,
+    query: Record<string, string | number | string[]> = {},
+  ): Promise<T> {
     const url = new URL(path, cfg.base);
-    for (const [k, v] of Object.entries(query)) url.searchParams.set(k, String(v));
+    for (const [k, v] of Object.entries(query)) {
+      // Array values go out as repeated `key[]=` params — HCP's convention for
+      // `expand`. Worth stating because getting it wrong is INVISIBLE: HCP silently
+      // ignores query parameters it does not recognise (verified 2026-08-15 against
+      // invented parameter names), so a mis-encoded `expand` returns a normal-looking
+      // 200 with the field quietly absent. `assertExpanded` below is the guard.
+      if (Array.isArray(v)) for (const item of v) url.searchParams.append(`${k}[]`, item);
+      else url.searchParams.set(k, String(v));
+    }
 
     const res = await fetchWithRetry(url, {
       headers: {
@@ -153,7 +165,7 @@ class HousecallProProvider implements RevenueProvider {
     cfg: HcpConfig,
     path: string,
     listKey: string,
-    query: Record<string, string | number>,
+    query: Record<string, string | number | string[]>,
     pages: number,
   ): Promise<Array<Record<string, unknown>>> {
     const out: Array<Record<string, unknown>> = [];
@@ -174,7 +186,7 @@ class HousecallProProvider implements RevenueProvider {
     cfg: HcpConfig,
     path: string,
     listKey: string,
-    query: Record<string, string | number> = {},
+    query: Record<string, string | number | string[]> = {},
     stopOlderThanMs?: number,
     sortedOn: (row: Record<string, unknown>) => Date | null = (r) => parseDate(r.updated_at ?? r.updated_at_iso),
     maxPages: number = DEFAULT_MAX_PAGES,
@@ -220,7 +232,9 @@ class HousecallProProvider implements RevenueProvider {
     const rows = await this.paginate(cfg, "/customers", "customers", {
       sort_by: "updated_at",
       sort_direction: "desc",
+      expand: EXPAND_CUSTOMER,
     }, cutoff, undefined, pageCeilingFor(sinceDays));
+    assertExpanded(rows, "do_not_service", "/customers");
     return rows
       .filter((c) => {
         const updated = parseDate(c.updated_at ?? c.updated_at_iso);
@@ -252,6 +266,7 @@ class HousecallProProvider implements RevenueProvider {
       sort_by: "updated_at",
       sort_direction: "desc",
       scheduled_start_min: min,
+      expand: EXPAND_JOB,
     }, cutoff, undefined, pageCeilingFor(windowDays));
 
     // One-time shape probe. The field names above are assumptions about HCP's
@@ -393,6 +408,7 @@ class HousecallProProvider implements RevenueProvider {
     listKey: string,
     map: (row: Record<string, unknown>) => T,
     { startPage, pages, budgetMs }: { startPage: number; pages: number; budgetMs?: number },
+    expand?: string[],
   ): Promise<HcpCrawlPage<T>> {
     const cfg = await this.config();
     const out: Array<Record<string, unknown>> = [];
@@ -412,6 +428,7 @@ class HousecallProProvider implements RevenueProvider {
         page_size: HCP_MAX_PAGE_SIZE,
         sort_by: "created_at",
         sort_direction: "asc",
+        ...(expand ? { expand } : {}),
       });
       const items = (body[listKey] as Array<Record<string, unknown>>) ?? [];
       // `total_items` rides along on every response and is the authority for the
@@ -445,12 +462,15 @@ class HousecallProProvider implements RevenueProvider {
     };
   }
 
+  // The crawls carry the same expands as the hot passes. Without that the cold zone
+  // would overwrite expanded rows with un-expanded ones and quietly erase
+  // `do_not_service` / `appointments` on everything older than the hot window.
   crawlCustomers(opts: { startPage: number; pages: number; budgetMs?: number }): Promise<HcpCrawlPage<HcpCustomerDTO>> {
-    return this.crawlCollection("/customers", "customers", mapCustomer, opts);
+    return this.crawlCollection("/customers", "customers", mapCustomer, opts, EXPAND_CUSTOMER);
   }
 
   crawlJobs(opts: { startPage: number; pages: number; budgetMs?: number }): Promise<HcpCrawlPage<HcpJobDTO>> {
-    return this.crawlCollection("/jobs", "jobs", mapJob, opts);
+    return this.crawlCollection("/jobs", "jobs", mapJob, opts, EXPAND_JOB);
   }
 
   crawlInvoices(opts: { startPage: number; pages: number; budgetMs?: number }): Promise<HcpCrawlPage<HcpInvoiceDTO>> {
@@ -481,6 +501,35 @@ class HousecallProProvider implements RevenueProvider {
     );
     return rows.map(mapInvoice);
   }
+}
+
+/**
+ * Fields that only exist when explicitly expanded, and the misery of finding out
+ * the hard way.
+ *
+ * `do_not_service` is absent from a customer payload unless `expand[]=do_not_service`
+ * is sent — and absent reads identically to `false`, which is exactly how 51 flagged
+ * customers ended up on a newsletter send. `appointments` is the same shape of trap:
+ * `schedule.appointments` comes back `[]` rather than missing, so a multi-day job
+ * looks single-day.
+ *
+ * Since HCP silently ignores unrecognised query parameters, a wrong encoding here
+ * produces a clean 200 with the field quietly gone. This asserts the field actually
+ * arrived rather than trusting that the request was shaped right.
+ */
+const EXPAND_CUSTOMER = ["do_not_service"];
+const EXPAND_JOB = ["appointments"];
+
+function assertExpanded(rows: Array<Record<string, unknown>>, key: string, path: string): boolean {
+  if (rows.length === 0) return true; // nothing to judge from
+  const present = rows.some((r) => key in r);
+  if (!present) {
+    console.error(
+      `[hcp] ${path}: requested expand '${key}' but NO row carries it — the expand parameter is ` +
+        `not reaching HCP (it ignores unknown params silently). Treat this field as UNKNOWN, not false.`,
+    );
+  }
+  return present;
 }
 
 function cents(v: unknown): number {
@@ -530,6 +579,17 @@ function mapCustomer(c: Record<string, unknown>): HcpCustomerDTO {
       (v): v is string => typeof v === "string" && v.trim() !== "",
     ),
     addresses: c.addresses ?? null,
+    company: (c.company as string) ?? null,
+    notificationsEnabled: typeof c.notifications_enabled === "boolean" ? c.notifications_enabled : null,
+    leadSourceRaw: (c.lead_source as string) ?? null,
+    notes: (c.notes as string) ?? null,
+    kind: (c.kind as string) ?? null,
+    tags: Array.isArray(c.tags) ? (c.tags as unknown[]).map(String) : null,
+    // ⚠️ THREE-STATE, and the third state is the dangerous one. Only present with
+    // `expand[]=do_not_service`; without it the key is absent and reads exactly like
+    // `false`. null therefore means UNKNOWN — never "safe to contact". This is the
+    // flag that put 51 do-not-service customers on a newsletter send.
+    doNotService: "do_not_service" in c ? Boolean(c.do_not_service) : null,
     createdAtHcp: parseDate(c.created_at),
     updatedAtHcp: parseDate(c.updated_at ?? c.updated_at_iso),
     raw: c,
@@ -539,13 +599,23 @@ function mapCustomer(c: Record<string, unknown>): HcpCustomerDTO {
 function mapJob(j: Record<string, unknown>): HcpJobDTO {
   const customer = j.customer as Record<string, unknown> | undefined;
   const timestamps = (j.work_timestamps as Record<string, unknown> | undefined) ?? {};
+  const schedule = (j.schedule as Record<string, unknown> | undefined) ?? {};
   const fields = (j.job_fields as Record<string, unknown> | undefined) ?? {};
   const jobType = fields.job_type as Record<string, unknown> | string | null | undefined;
   return {
     hcpJobId: String(j.id),
     hcpCustomerId: customer?.id ? String(customer.id) : (j.customer_id ? String(j.customer_id) : null),
     workStatus: (j.work_status as string) ?? null,
-    scheduledStart: parseDate((j.schedule as Record<string, unknown>)?.scheduled_start ?? j.scheduled_start),
+    scheduledStart: parseDate(schedule.scheduled_start ?? j.scheduled_start),
+    scheduledEnd: parseDate(schedule.scheduled_end),
+    // Minutes of slack quoted to the customer around the start. 0 is a real value
+    // (a hard time), so it is kept distinct from null (no window set).
+    arrivalWindowMinutes: typeof schedule.arrival_window === "number" ? schedule.arrival_window : null,
+    // Only present with `expand[]=appointments`; `[]` otherwise, which is why a job
+    // with several visits reads as a single-day job without it. Each appointment
+    // carries `dispatched_employees_ids` — who was actually SENT, as opposed to
+    // `assigned_employees`, which is empty on a great many jobs.
+    appointments: Array.isArray(schedule.appointments) ? schedule.appointments : null,
     totalAmountCents: cents(j.total_amount),
     subtotalCents: cents(j.subtotal ?? j.total_amount),
     outstandingBalanceCents: cents(j.outstanding_balance),
@@ -554,6 +624,8 @@ function mapJob(j: Record<string, unknown>): HcpJobDTO {
     // the quote. The real figure is rolled up from `hcp_invoices` after the sync.
     invoiceNumber: (j.invoice_number as string) ?? null,
     description: (j.description as string) ?? null,
+    onMyWayAtHcp: parseDate(timestamps.on_my_way_at),
+    startedAtHcp: parseDate(timestamps.started_at),
     completedAtHcp: parseDate(timestamps.completed_at),
     canceledAtHcp: parseDate(j.canceled_at),
     deletedAtHcp: parseDate(j.deleted_at),
@@ -578,6 +650,20 @@ function mapJob(j: Record<string, unknown>): HcpJobDTO {
         ? [String(j.original_estimate_id)]
         : null,
     leadSourceRaw: (j.lead_source as string) ?? null,
+    jobTypeId:
+      typeof jobType === "object" && jobType !== null
+        ? ((jobType as Record<string, unknown>).id as string) ?? null
+        : null,
+    businessUnit: (fields.business_unit as string) ?? null,
+    notes: (j.notes as string) ?? null,
+    lockedAtHcp: parseDate(j.locked_at),
+    assignedRouteTemplateId: (j.assigned_route_template_id as string) ?? null,
+    // Recurring work (plant healthcare rounds). Kept because absence of a column is
+    // how a whole category of work becomes invisible to reporting.
+    recurrenceNumber: typeof j.recurrence_number === "number" ? j.recurrence_number : null,
+    recurrenceRule: j.recurrence_rule ?? null,
+    recurrenceStatus: (j.recurrence_status as string) ?? null,
+    recurrenceId: (j.recurrence_id as string) ?? null,
     address: j.address ?? null,
     createdAtHcp: parseDate(j.created_at),
     raw: j,
@@ -619,6 +705,8 @@ function mapInvoice(i: Record<string, unknown>): HcpInvoiceDTO {
     paymentMethods: payments.length
       ? [...new Set(payments.map((p) => p.payment_method).filter((m): m is string => typeof m === "string"))]
       : null,
+    dueConcept: (i.due_concept as string) ?? null,
+    displayDueConcept: (i.display_due_concept as string) ?? null,
     invoiceDate: parseDate(i.invoice_date),
     serviceDate: parseDate(i.service_date),
     dueAt: parseDate(i.due_at),
@@ -706,6 +794,25 @@ function mapEstimate(e: Record<string, unknown>): HcpEstimateDTO {
     // calendar — 29% of estimates never get one (cancelled, or still "needs
     // scheduling"), so a null here is meaningful, not missing data.
     scheduledStartHcp: parseDate((e.schedule as Record<string, unknown>)?.scheduled_start),
+    scheduledEndHcp: parseDate((e.schedule as Record<string, unknown>)?.scheduled_end),
+    arrivalWindowMinutes:
+      typeof (e.schedule as Record<string, unknown>)?.arrival_window === "number"
+        ? ((e.schedule as Record<string, unknown>).arrival_window as number)
+        : null,
+    // The estimator's own visit timeline — went / arrived / finished. Distinct from
+    // the estimate being WRITTEN and from the customer approving it.
+    //
+    // Note these are deliberately the only estimate fields promoted here. HCP also
+    // returns estimate_number, assigned_employees and estimate_fields.job_type, but
+    // `lib/estimates/hcp-fields.ts` already reads all three out of `raw` in SQL and
+    // every estimate surface uses those helpers. Adding columns alongside would
+    // create two sources for one value, which is the drift this codebase keeps
+    // getting bitten by — promoting them is a separate change that repoints the
+    // helpers at the same time.
+    onMyWayAtHcp: parseDate((e.work_timestamps as Record<string, unknown>)?.on_my_way_at),
+    startedAtHcp: parseDate((e.work_timestamps as Record<string, unknown>)?.started_at),
+    completedAtHcp: parseDate((e.work_timestamps as Record<string, unknown>)?.completed_at),
+    assignedRouteTemplateId: (e.assigned_route_template_id as string) ?? null,
     approvedAtHcp: won ? approvedAt ?? parseDate(e.updated_at ?? e.created_at) : null,
     // Option-aware, so `attribution.run`'s `updated_at_hcp >= lookback` arm actually
     // fires on a late approval. Reading the header alone left an approved estimate

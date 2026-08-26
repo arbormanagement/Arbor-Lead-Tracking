@@ -322,6 +322,13 @@ export async function syncHcp(
             // number across two fields.
             phonesE164: [...new Set((c.phones ?? [c.mobile, c.phone]).map(normalizePhone).filter(Boolean))] as string[],
             addresses: c.addresses,
+            company: c.company,
+            notificationsEnabled: c.notificationsEnabled,
+            leadSourceRaw: c.leadSourceRaw,
+            notes: c.notes,
+            kind: c.kind,
+            tags: c.tags ?? null,
+            doNotService: c.doNotService,
             createdAtHcp: c.createdAtHcp,
             updatedAtHcp: c.updatedAtHcp,
             raw: c.raw,
@@ -340,6 +347,15 @@ export async function syncHcp(
             phoneE164: sql`excluded.phone_e164`,
             phonesE164: sql`excluded.phones_e164`,
             addresses: sql`excluded.addresses`,
+            company: sql`excluded.company`,
+            notificationsEnabled: sql`excluded.notifications_enabled`,
+            leadSourceRaw: sql`excluded.lead_source_raw`,
+            notes: sql`excluded.notes`,
+            kind: sql`excluded.kind`,
+            tags: sql`excluded.tags`,
+            // COALESCE: a pull whose `expand` did not reach HCP carries null, which
+            // means UNKNOWN — it must not erase a flag we already know about.
+            doNotService: sql`coalesce(excluded.do_not_service, ${hcpCustomers.doNotService})`,
             createdAtHcp: sql`excluded.created_at_hcp`,
             updatedAtHcp: sql`excluded.updated_at_hcp`,
             raw: sql`excluded.raw`,
@@ -361,6 +377,14 @@ export async function syncHcp(
             OR ${hcpCustomers.phoneE164} IS DISTINCT FROM excluded.phone_e164
             OR ${hcpCustomers.phonesE164} IS DISTINCT FROM excluded.phones_e164
             OR ${hcpCustomers.addresses} IS DISTINCT FROM excluded.addresses
+            OR ${hcpCustomers.company} IS DISTINCT FROM excluded.company
+            OR ${hcpCustomers.notificationsEnabled} IS DISTINCT FROM excluded.notifications_enabled
+            OR ${hcpCustomers.leadSourceRaw} IS DISTINCT FROM excluded.lead_source_raw
+            OR ${hcpCustomers.notes} IS DISTINCT FROM excluded.notes
+            OR ${hcpCustomers.kind} IS DISTINCT FROM excluded.kind
+            OR ${hcpCustomers.tags} IS DISTINCT FROM excluded.tags
+            OR (excluded.do_not_service IS NOT NULL
+                AND ${hcpCustomers.doNotService} IS DISTINCT FROM excluded.do_not_service)
             OR ${hcpCustomers.createdAtHcp} IS DISTINCT FROM excluded.created_at_hcp
             OR ${hcpCustomers.updatedAtHcp} IS DISTINCT FROM excluded.updated_at_hcp
           `,
@@ -396,6 +420,20 @@ export async function syncHcp(
             invoiceNumber: j.invoiceNumber,
             description: j.description,
             completedAtHcp: j.completedAtHcp,
+            onMyWayAtHcp: j.onMyWayAtHcp,
+            startedAtHcp: j.startedAtHcp,
+            scheduledEnd: j.scheduledEnd,
+            arrivalWindowMinutes: j.arrivalWindowMinutes,
+            appointments: j.appointments ?? null,
+            notes: j.notes,
+            jobTypeId: j.jobTypeId,
+            businessUnit: j.businessUnit,
+            lockedAtHcp: j.lockedAtHcp,
+            assignedRouteTemplateId: j.assignedRouteTemplateId,
+            recurrenceNumber: j.recurrenceNumber,
+            recurrenceRule: j.recurrenceRule ?? null,
+            recurrenceStatus: j.recurrenceStatus,
+            recurrenceId: j.recurrenceId,
             canceledAtHcp: j.canceledAtHcp,
             deletedAtHcp: j.deletedAtHcp,
             updatedAtHcp: j.updatedAtHcp,
@@ -425,6 +463,22 @@ export async function syncHcp(
             invoiceNumber: sql`excluded.invoice_number`,
             description: sql`excluded.description`,
             completedAtHcp: sql`excluded.completed_at_hcp`,
+            onMyWayAtHcp: sql`excluded.on_my_way_at_hcp`,
+            startedAtHcp: sql`excluded.started_at_hcp`,
+            scheduledEnd: sql`excluded.scheduled_end`,
+            arrivalWindowMinutes: sql`excluded.arrival_window_minutes`,
+            // COALESCE, same reasoning as customers.do_not_service: appointments
+            // only arrive with the expand, and a null must not wipe a known set.
+            appointments: sql`coalesce(excluded.appointments, ${hcpJobs.appointments})`,
+            notes: sql`excluded.notes`,
+            jobTypeId: sql`excluded.job_type_id`,
+            businessUnit: sql`excluded.business_unit`,
+            lockedAtHcp: sql`excluded.locked_at_hcp`,
+            assignedRouteTemplateId: sql`excluded.assigned_route_template_id`,
+            recurrenceNumber: sql`excluded.recurrence_number`,
+            recurrenceRule: sql`excluded.recurrence_rule`,
+            recurrenceStatus: sql`excluded.recurrence_status`,
+            recurrenceId: sql`excluded.recurrence_id`,
             canceledAtHcp: sql`excluded.canceled_at_hcp`,
             deletedAtHcp: sql`excluded.deleted_at_hcp`,
             updatedAtHcp: sql`excluded.updated_at_hcp`,
@@ -446,6 +500,21 @@ export async function syncHcp(
             OR ${hcpJobs.subtotalCents} IS DISTINCT FROM excluded.subtotal_cents
             OR ${hcpJobs.outstandingBalanceCents} IS DISTINCT FROM excluded.outstanding_balance_cents
             OR ${hcpJobs.completedAtHcp} IS DISTINCT FROM excluded.completed_at_hcp
+            OR ${hcpJobs.onMyWayAtHcp} IS DISTINCT FROM excluded.on_my_way_at_hcp
+            OR ${hcpJobs.startedAtHcp} IS DISTINCT FROM excluded.started_at_hcp
+            OR ${hcpJobs.scheduledEnd} IS DISTINCT FROM excluded.scheduled_end
+            OR ${hcpJobs.arrivalWindowMinutes} IS DISTINCT FROM excluded.arrival_window_minutes
+            OR (excluded.appointments IS NOT NULL
+                AND ${hcpJobs.appointments} IS DISTINCT FROM excluded.appointments)
+            OR ${hcpJobs.notes} IS DISTINCT FROM excluded.notes
+            OR ${hcpJobs.jobTypeId} IS DISTINCT FROM excluded.job_type_id
+            OR ${hcpJobs.businessUnit} IS DISTINCT FROM excluded.business_unit
+            OR ${hcpJobs.lockedAtHcp} IS DISTINCT FROM excluded.locked_at_hcp
+            OR ${hcpJobs.assignedRouteTemplateId} IS DISTINCT FROM excluded.assigned_route_template_id
+            OR ${hcpJobs.recurrenceNumber} IS DISTINCT FROM excluded.recurrence_number
+            OR ${hcpJobs.recurrenceRule} IS DISTINCT FROM excluded.recurrence_rule
+            OR ${hcpJobs.recurrenceStatus} IS DISTINCT FROM excluded.recurrence_status
+            OR ${hcpJobs.recurrenceId} IS DISTINCT FROM excluded.recurrence_id
             OR ${hcpJobs.canceledAtHcp} IS DISTINCT FROM excluded.canceled_at_hcp
             OR ${hcpJobs.deletedAtHcp} IS DISTINCT FROM excluded.deleted_at_hcp
             OR ${hcpJobs.updatedAtHcp} IS DISTINCT FROM excluded.updated_at_hcp
@@ -492,6 +561,12 @@ export async function syncHcp(
             address: e.address,
             createdAtHcp: e.createdAtHcp,
             scheduledStartHcp: e.scheduledStartHcp,
+            scheduledEndHcp: e.scheduledEndHcp,
+            arrivalWindowMinutes: e.arrivalWindowMinutes,
+            onMyWayAtHcp: e.onMyWayAtHcp,
+            startedAtHcp: e.startedAtHcp,
+            completedAtHcp: e.completedAtHcp,
+            assignedRouteTemplateId: e.assignedRouteTemplateId,
             approvedAtHcp: e.approvedAtHcp,
             updatedAtHcp: e.updatedAtHcp,
             raw: e.raw,
@@ -517,6 +592,12 @@ export async function syncHcp(
             customerName: sql`excluded.customer_name`,
             address: sql`excluded.address`,
             scheduledStartHcp: sql`excluded.scheduled_start_hcp`,
+            scheduledEndHcp: sql`excluded.scheduled_end_hcp`,
+            arrivalWindowMinutes: sql`excluded.arrival_window_minutes`,
+            onMyWayAtHcp: sql`excluded.on_my_way_at_hcp`,
+            startedAtHcp: sql`excluded.started_at_hcp`,
+            completedAtHcp: sql`excluded.completed_at_hcp`,
+            assignedRouteTemplateId: sql`excluded.assigned_route_template_id`,
             approvedAtHcp: sql`excluded.approved_at_hcp`,
             updatedAtHcp: sql`excluded.updated_at_hcp`,
             raw: sql`excluded.raw`,
@@ -540,6 +621,11 @@ export async function syncHcp(
             OR ${hcpEstimates.totalAmountCents} IS DISTINCT FROM excluded.total_amount_cents
             OR ${hcpEstimates.approvedAmountCents} IS DISTINCT FROM excluded.approved_amount_cents
             OR ${hcpEstimates.scheduledStartHcp} IS DISTINCT FROM excluded.scheduled_start_hcp
+            OR ${hcpEstimates.scheduledEndHcp} IS DISTINCT FROM excluded.scheduled_end_hcp
+            OR ${hcpEstimates.arrivalWindowMinutes} IS DISTINCT FROM excluded.arrival_window_minutes
+            OR ${hcpEstimates.onMyWayAtHcp} IS DISTINCT FROM excluded.on_my_way_at_hcp
+            OR ${hcpEstimates.startedAtHcp} IS DISTINCT FROM excluded.started_at_hcp
+            OR ${hcpEstimates.completedAtHcp} IS DISTINCT FROM excluded.completed_at_hcp
             OR ${hcpEstimates.approvedAtHcp} IS DISTINCT FROM excluded.approved_at_hcp
             OR ${hcpEstimates.updatedAtHcp} IS DISTINCT FROM excluded.updated_at_hcp
             OR ${hcpEstimates.hcpCustomerId} IS DISTINCT FROM excluded.hcp_customer_id
@@ -591,6 +677,8 @@ export async function syncHcp(
               taxAmountCents: i.taxAmountCents,
               discountAmountCents: i.discountAmountCents,
               paymentMethods: i.paymentMethods ?? null,
+              dueConcept: i.dueConcept,
+              displayDueConcept: i.displayDueConcept,
               invoiceDate: i.invoiceDate,
               serviceDate: i.serviceDate,
               dueAt: i.dueAt,
@@ -625,6 +713,8 @@ export async function syncHcp(
             taxAmountCents: sql`excluded.tax_amount_cents`,
             discountAmountCents: sql`excluded.discount_amount_cents`,
             paymentMethods: sql`excluded.payment_methods`,
+            dueConcept: sql`excluded.due_concept`,
+            displayDueConcept: sql`excluded.display_due_concept`,
             invoiceDate: sql`excluded.invoice_date`,
             serviceDate: sql`excluded.service_date`,
             dueAt: sql`excluded.due_at`,

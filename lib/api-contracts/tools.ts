@@ -611,8 +611,18 @@ export const JobRow = z.object({
   tags: z.array(z.string()).nullable(),
   createdAt: isoDate.nullable(),
   scheduledStart: isoDate.nullable(),
+  scheduledEnd: isoDate.nullable(),
+  arrivalWindowMinutes: z.number().int().nullable().describe("Slack quoted around the start. 0 is a hard time; null means no window set"),
+  onMyWayAt: isoDate.nullable().describe("Crew dispatched"),
+  startedAt: isoDate.nullable().describe("Crew on site"),
   completedAt: isoDate.nullable().describe("work_timestamps.completed_at — when the crew finished"),
+  onSiteMinutes: z.number().int().nullable().describe("completed − started. Null = not clocked, NEVER zero"),
   canceledAt: isoDate.nullable(),
+  appointmentCount: z.number().int().nullable().describe("Visits on the job. Null until the row is re-read with expand[]=appointments"),
+  dispatchedEmployeeIds: z.array(z.string()).nullable().describe("Who was actually SENT, across all visits — more reliable than assignedTo, which is empty on many jobs"),
+  notes: z.string().nullable(),
+  recurrenceId: z.string().nullable().describe("Set on recurring work (plant healthcare rounds)"),
+  recurrenceStatus: z.string().nullable(),
   totalCents: z.number().int().nullable().describe("The job's own quoted total"),
   outstandingCents: z.number().int().nullable().describe("HCP's own outstanding_balance on the job"),
   invoicedCents: z.number().int().nullable().describe("Rolled up from live invoices — voided/canceled excluded"),
@@ -737,6 +747,13 @@ export const ListCustomersInput = z.object({
   q: z.string().max(200).optional().describe("Free text over name, email, and every phone on the record"),
   city: z.string().max(200).optional(),
   hasJobs: z.boolean().optional(),
+  doNotService: z
+    .boolean()
+    .optional()
+    .describe(
+      "true = flagged do-not-service. false = PROVABLY not flagged — the only set safe to mail. " +
+        "Customers whose flag is still unknown are excluded from both, deliberately.",
+    ),
   tracked: z
     .boolean()
     .optional()
@@ -756,6 +773,18 @@ export const CustomerRow = z.object({
   phones: z.array(z.string()).nullable().describe("EVERY number on the record — people call from whichever handset they are holding"),
   createdAt: isoDate.nullable().describe("HCP's own created_at, not when we first synced them"),
   updatedAt: isoDate.nullable(),
+  company: z.string().nullable(),
+  tags: z.array(z.string()).nullable(),
+  notes: z.string().nullable(),
+  notificationsEnabled: z.boolean().nullable(),
+  doNotService: z
+    .boolean()
+    .nullable()
+    .describe(
+      "⚠️ THREE-STATE. true = flagged, false = not flagged, null = UNKNOWN (not yet re-read with the expand). " +
+        "null is NOT 'safe to contact' — treating absence as false is how 51 flagged customers were mailed.",
+    ),
+  leadSourceRaw: z.string().nullable().describe("HCP's own lead_source. NOT attribution"),
   city: z.string().nullable(),
   zip: z.string().nullable(),
   contactId: z.string().nullable().describe("The tracked inbox contact, when they have one"),
@@ -774,6 +803,8 @@ export const ListCustomersOutput = z.object({
   agg: z.object({
     total: z.number().int(),
     tracked: z.number().int().describe("How many are linked to a tracked contact"),
+    doNotService: z.number().int().describe("Flagged do-not-service"),
+    doNotServiceUnknown: z.number().int().describe("Flag not yet known — never pool these with the unflagged"),
   }),
   ...PagingFields,
 });

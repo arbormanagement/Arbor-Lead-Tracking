@@ -410,6 +410,43 @@ export async function diagnosticsReport(): Promise<{ httpStatus: number; report:
     };
   }
 
+  /**
+   * Are the `expand`-only fields actually arriving?
+   *
+   * HCP silently ignores query parameters it does not recognise, so a mis-encoded
+   * `expand` returns a healthy-looking 200 with the field simply absent — and for
+   * `do_not_service`, absent reads identically to `false`. Coverage is therefore the
+   * only way to tell "nobody is flagged" from "we never asked properly", and the
+   * difference between those two is a newsletter going to 51 people who asked never
+   * to be contacted.
+   */
+  const [expandRow] = await db
+    .select({
+      customers: sql<number>`count(*)::int`,
+      doNotServiceKnown: sql<number>`count(*) filter (where ${hcpCustomers.doNotService} is not null)::int`,
+      doNotServiceFlagged: sql<number>`count(*) filter (where ${hcpCustomers.doNotService} is true)::int`,
+    })
+    .from(hcpCustomers);
+  const [apptRow] = await db
+    .select({
+      jobs: sql<number>`count(*)::int`,
+      appointmentsKnown: sql<number>`count(*) filter (where ${hcpJobs.appointments} is not null)::int`,
+    })
+    .from(hcpJobs);
+
+  const expandCoverage = {
+    doNotService: {
+      known: expandRow?.doNotServiceKnown ?? 0,
+      unknown: (expandRow?.customers ?? 0) - (expandRow?.doNotServiceKnown ?? 0),
+      flagged: expandRow?.doNotServiceFlagged ?? 0,
+      note: "null = UNKNOWN, never 'safe to contact'. Any mailing filter must require do_not_service IS FALSE.",
+    },
+    appointments: {
+      known: apptRow?.appointmentsKnown ?? 0,
+      unknown: (apptRow?.jobs ?? 0) - (apptRow?.appointmentsKnown ?? 0),
+    },
+  };
+
   const hcpSync = {
     estimates: collectionSync(estCount[0]?.n ?? 0, estCrawl, missingEstimates),
     jobs: collectionSync(jobCount[0]?.n ?? 0, jobCrawl, missingJobs),
@@ -474,6 +511,13 @@ export async function diagnosticsReport(): Promise<{ httpStatus: number; report:
   // all is a gap. Warned in both directions: fewer than HCP means we are missing
   // estimates, more means something vanished there and we should find out why before
   // deciding whether to tombstone it.
+  if (expandCoverage.doNotService.unknown > 0) {
+    warnings.push(
+      `do_not_service is UNKNOWN for ${expandCoverage.doNotService.unknown} customer(s) — ` +
+        `they have not been re-read since the expand was added. Do NOT treat them as mailable; ` +
+        `a mailing filter must require do_not_service IS FALSE, not IS NOT TRUE`,
+    );
+  }
   for (const [name, state] of Object.entries(hcpSync)) {
     if (state.drift != null && state.drift !== 0) {
       // A surplus fully accounted for by rows HCP has dropped is explained, not
@@ -576,6 +620,7 @@ export async function diagnosticsReport(): Promise<{ httpStatus: number; report:
       volume: { ...vol, ...callVol },
       estimateSync,
       hcpSync,
+      expandCoverage,
       credentials: creds,
     },
   };
