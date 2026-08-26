@@ -33,6 +33,16 @@ export interface HcpCustomerDTO {
   /** Every number on the record (mobile, home, work), unnormalized, in that order. */
   phones?: string[];
   addresses?: unknown;
+  company?: string | null;
+  notificationsEnabled?: boolean | null;
+  /** HCP's `lead_source`. Never usable as attribution — see hcpEstimates.leadSourceRaw. */
+  leadSourceRaw?: string | null;
+  notes?: string | null;
+  kind?: string | null;
+  tags?: string[] | null;
+  /** THREE-STATE: true / false / null = UNKNOWN (the expand was not honoured).
+   *  null must never be treated as "safe to contact". */
+  doNotService?: boolean | null;
   createdAtHcp?: Date | null;
   updatedAtHcp?: Date | null;
   raw?: unknown;
@@ -48,8 +58,25 @@ export interface HcpJobDTO {
   outstandingBalanceCents: number;
   invoiceNumber?: string | null;
   description?: string | null;
-  /** `work_timestamps.completed_at` — when the crew actually finished. */
+  /** `work_timestamps` — dispatched / on site / finished. Together these are the
+   *  only source of actual job duration. */
+  onMyWayAtHcp?: Date | null;
+  startedAtHcp?: Date | null;
   completedAtHcp?: Date | null;
+  scheduledEnd?: Date | null;
+  arrivalWindowMinutes?: number | null;
+  /** Only populated with `expand[]=appointments`; a multi-visit job looks
+   *  single-day without it. Carries `dispatched_employees_ids` per visit. */
+  appointments?: unknown;
+  notes?: string | null;
+  jobTypeId?: string | null;
+  businessUnit?: string | null;
+  lockedAtHcp?: Date | null;
+  assignedRouteTemplateId?: string | null;
+  recurrenceNumber?: number | null;
+  recurrenceRule?: unknown;
+  recurrenceStatus?: string | null;
+  recurrenceId?: string | null;
   canceledAtHcp?: Date | null;
   deletedAtHcp?: Date | null;
   updatedAtHcp?: Date | null;
@@ -90,6 +117,8 @@ export interface HcpInvoiceDTO {
   taxAmountCents: number;
   discountAmountCents: number;
   paymentMethods?: string[] | null;
+  dueConcept?: string | null;
+  displayDueConcept?: string | null;
   invoiceDate?: Date | null;
   serviceDate?: Date | null;
   dueAt?: Date | null;
@@ -133,6 +162,14 @@ export interface HcpEstimateDTO {
   /** When the estimate VISIT is booked (HCP schedule.scheduled_start). Null until
    *  the office puts it on the calendar, and stays null if it never happens. */
   scheduledStartHcp?: Date | null;
+  scheduledEndHcp?: Date | null;
+  arrivalWindowMinutes?: number | null;
+  /** The ESTIMATOR's visit timeline — distinct from when the estimate was written
+   *  and from when the customer approved it. */
+  onMyWayAtHcp?: Date | null;
+  startedAtHcp?: Date | null;
+  completedAtHcp?: Date | null;
+  assignedRouteTemplateId?: string | null;
   approvedAtHcp?: Date | null;
   /** HCP's own updated_at — bumps on any change (approval, cancel, price edit). */
   updatedAtHcp?: Date | null;

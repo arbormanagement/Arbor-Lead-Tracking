@@ -346,6 +346,23 @@ export const hcpCustomers = pgTable(
     // a fact about the sync, not about the customer — windowing "customers acquired
     // this month" on it would date the whole back catalogue to the day of the
     // backfill.
+    company: text("company"),
+    notificationsEnabled: boolean("notifications_enabled"),
+    /** HCP's `lead_source`. NOT attribution — same trap as hcpEstimates.leadSourceRaw. */
+    leadSourceRaw: text("lead_source_raw"),
+    notes: text("notes"),
+    kind: text("kind"),
+    tags: text("tags").array(),
+    /**
+     * ⚠️ THREE-STATE, and the third state is the dangerous one.
+     *
+     * true = flagged, false = explicitly not, **null = UNKNOWN** — the field only
+     * arrives with `expand[]=do_not_service`, and without it the key is absent from
+     * the payload and reads exactly like `false`. That is how 51 flagged customers
+     * ended up on a newsletter send. NEVER treat null as "safe to contact"; any
+     * mailing filter must require `do_not_service IS FALSE`, never `IS NOT TRUE`.
+     */
+    doNotService: boolean("do_not_service"),
     createdAtHcp: timestamp("created_at_hcp", { withTimezone: true }),
     updatedAtHcp: timestamp("updated_at_hcp", { withTimezone: true }),
     // When the cold-zone crawl last SAW this row.
@@ -372,6 +389,7 @@ export const hcpCustomers = pgTable(
     uniqueIndex("hcp_customers_hcp_id_uq").on(t.hcpCustomerId),
     index("hcp_customers_crawl_seen_idx").on(t.crawlSeenAt),
     index("hcp_customers_created_hcp_idx").on(t.createdAtHcp),
+    index("hcp_customers_do_not_service_idx").on(t.doNotService),
     index("hcp_customers_phone_idx").on(t.phoneE164),
     index("hcp_customers_email_idx").on(t.emailLc),
     // GIN, because every query against this asks "does the array CONTAIN this
@@ -409,6 +427,36 @@ export const hcpJobs = pgTable(
     // answer to "what did we actually DO in this window", as distinct from what was
     // sold (estimates) or billed (invoices).
     completedAtHcp: timestamp("completed_at_hcp", { withTimezone: true }),
+    // With completedAt these are the only source of real job duration: dispatched →
+    // on site → finished. Projected 2026-08-26; previously only `completed_at` was
+    // promoted, which answers "did it happen" but nothing about how long it took.
+    onMyWayAtHcp: timestamp("on_my_way_at_hcp", { withTimezone: true }),
+    startedAtHcp: timestamp("started_at_hcp", { withTimezone: true }),
+    scheduledEnd: timestamp("scheduled_end", { withTimezone: true }),
+    /** Minutes of slack quoted around the start. 0 is a real value (a hard time),
+     *  distinct from null (no window set). */
+    arrivalWindowMinutes: integer("arrival_window_minutes"),
+    /**
+     * Every visit on the job. Requires `expand[]=appointments` — without it HCP
+     * returns `schedule.appointments: []` rather than omitting it, so a multi-day
+     * job silently reads as a single-day one.
+     *
+     * Each entry carries `dispatched_employees_ids`, which is who was actually SENT.
+     * That is not the same as `assigned_employees`, which is empty on a great many
+     * jobs — so this is the more reliable answer to "who did this work".
+     */
+    appointments: jsonb("appointments"),
+    notes: text("notes"),
+    jobTypeId: text("job_type_id"),
+    businessUnit: text("business_unit"),
+    lockedAtHcp: timestamp("locked_at_hcp", { withTimezone: true }),
+    assignedRouteTemplateId: text("assigned_route_template_id"),
+    // Recurring work (plant healthcare rounds). Absent columns are how a whole
+    // category of work becomes invisible to reporting.
+    recurrenceNumber: integer("recurrence_number"),
+    recurrenceRule: jsonb("recurrence_rule"),
+    recurrenceStatus: text("recurrence_status"),
+    recurrenceId: text("recurrence_id"),
     canceledAtHcp: timestamp("canceled_at_hcp", { withTimezone: true }),
     deletedAtHcp: timestamp("deleted_at_hcp", { withTimezone: true }),
     updatedAtHcp: timestamp("updated_at_hcp", { withTimezone: true }),
@@ -442,6 +490,8 @@ export const hcpJobs = pgTable(
     index("hcp_jobs_customer_idx").on(t.hcpCustomerId),
     index("hcp_jobs_created_hcp_idx").on(t.createdAtHcp),
     index("hcp_jobs_completed_hcp_idx").on(t.completedAtHcp),
+    index("hcp_jobs_started_hcp_idx").on(t.startedAtHcp),
+    index("hcp_jobs_recurrence_idx").on(t.recurrenceId),
     index("hcp_jobs_work_status_idx").on(t.workStatus),
     // GIN: the job → estimate join asks "does this array contain that option id".
     index("hcp_jobs_estimate_options_idx").using("gin", t.estimateOptionIds),
@@ -477,6 +527,15 @@ export const hcpEstimates = pgTable(
     // one (cancelled or still "needs scheduling"). Conflating the two overstates
     // the funnel, which is why this is its own column rather than derived.
     scheduledStartHcp: timestamp("scheduled_start_hcp", { withTimezone: true }),
+    scheduledEndHcp: timestamp("scheduled_end_hcp", { withTimezone: true }),
+    arrivalWindowMinutes: integer("arrival_window_minutes"),
+    // The ESTIMATOR's visit timeline. Three distinct clocks live on an estimate and
+    // conflating them is easy: created_at (the office wrote it), these (the arborist
+    // drove out and looked at the tree), approved_at (the customer said yes).
+    onMyWayAtHcp: timestamp("on_my_way_at_hcp", { withTimezone: true }),
+    startedAtHcp: timestamp("started_at_hcp", { withTimezone: true }),
+    completedAtHcp: timestamp("completed_at_hcp", { withTimezone: true }),
+    assignedRouteTemplateId: text("assigned_route_template_id"),
     approvedAtHcp: timestamp("approved_at_hcp", { withTimezone: true }),
     // The options array, modelled rather than left buried in `raw`. Every stage,
     // amount and approval this app reports on is derived from it, and the reporting
@@ -597,6 +656,10 @@ export const hcpInvoices = pgTable(
     paymentMethods: text("payment_methods").array(),
     /** HCP's `invoice_date` — the billing date, and what a money window should run
      *  on. Note the API exposes no `created_at`/`updated_at` on invoices at all. */
+    /** HCP's payment-terms fields: `due_concept` is the code ("upon"),
+     *  `display_due_concept` the rendered phrase ("upon receipt"). */
+    dueConcept: text("due_concept"),
+    displayDueConcept: text("display_due_concept"),
     invoiceDate: timestamp("invoice_date", { withTimezone: true }),
     serviceDate: timestamp("service_date", { withTimezone: true }),
     dueAt: timestamp("due_at", { withTimezone: true }),

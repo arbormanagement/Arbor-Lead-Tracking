@@ -209,6 +209,8 @@ const handler = createMcpHandler(
           "Each row carries its invoice rollup (invoiced / collected / due, voided and canceled invoices excluded) and `estimateId`, the link back " +
           "to the estimate and therefore to its attribution chain. " +
           "⚠️ Choose `dateField` deliberately: `created` is when the job was written, `completed` is when the crew finished — 'what did we DO in July' is `completed`. " +
+          "Crew timeline is `onMyWayAt` → `startedAt` → `completedAt`, with `onSiteMinutes` derived from the last two; a null there means it was never clocked, not zero. " +
+          "`dispatchedEmployeeIds` (from the appointments expand) is who actually went, and is more reliable than `assignedTo`, which is empty on many jobs. " +
           "None of this money is ROI revenue: roi_daily is anchored on the won estimate, because that is when the marketing did its job. Booked, billed and collected are three different numbers. " +
           "`leadSourceRaw` is HCP's own lead_source and is NOT attribution — it records how the record was typed in.",
         inputSchema: ListJobsInput.shape,
@@ -247,7 +249,10 @@ const handler = createMcpHandler(
           "`days` is OPTIONAL here and windows on HCP's own created_at ('customers acquired since') — omit it to search the whole book, which is the usual case. " +
           "`phones` holds EVERY number on the record, not just the primary: people call from whichever handset they are holding, and matching on the primary alone " +
           "is what used to leave estimates unattributed while two real calls from the same household sat on file. " +
-          "`tracked: false` finds customers who never reached us on a tracked channel — referrals, walk-ins, and anyone predating tracking.",
+          "`tracked: false` finds customers who never reached us on a tracked channel — referrals, walk-ins, and anyone predating tracking. " +
+          "⚠️ `doNotService` is THREE-STATE: true / false / null, where null means the flag is UNKNOWN because that row has not been re-read since the " +
+          "`expand[]=do_not_service` request was added. null is NOT 'safe to contact' — treating an absent flag as false is how 51 flagged customers were " +
+          "put on a newsletter send. For anything that contacts people, filter `doNotService: false`, which matches only rows provably not flagged.",
         inputSchema: ListCustomersInput.shape,
         outputSchema: ListCustomersOutput.shape,
         annotations: { readOnlyHint: true },

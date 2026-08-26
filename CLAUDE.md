@@ -78,6 +78,27 @@ Edwardsville + O'Fallon). WhatConverts-style. Single-tenant. Owner: Justin
 - **Facebook lead-gen** via the MCP webhook.
 - **ROI = attributed HousecallPro won-estimate revenue ÷ ad spend**, per source/campaign/location. Revenue event = a customer-approved (won) estimate, valued at the approved-option amount (`hcp_estimates`).
 - **Four money numbers exist and must never be blended** (jobs + invoices + customers landed 2026-08-25): estimate APPROVED value (the only ROI revenue), job QUOTED total, invoice BILLED, invoice COLLECTED. `roi_daily` reads the first and only the first — an estimate is approved the moment the customer says yes, which is when the marketing did its job, while an invoice is written days or weeks later and paid later still. Re-anchoring ROI on invoices would move every historical figure and lag the channel that earned it. Jobs and invoices answer "was the work done and did we get paid", never "did the ads work". Justin chose this explicitly (2026-08-25) over a second ROI lens or a replacement.
+- **⚠️ `do_not_service` is THREE-STATE, and the third state is the dangerous one.**
+  `true` / `false` / **`null` = UNKNOWN**. HCP only returns the field when the request
+  sends `expand[]=do_not_service`; without it the key is simply absent from the
+  payload and reads identically to `false`. That is how 51 flagged customers ended up
+  on a newsletter send. Any filter that contacts people must require
+  `do_not_service IS FALSE` — never `IS NOT TRUE`, and never "not flagged" by
+  omission. `arbor_list_customers` exposes `doNotService: false` as the only mailable
+  set (unknowns excluded on purpose), and `/api/diagnostics.expandCoverage` reports
+  how many rows are still unknown.
+- **`expand` failures are silent.** HCP ignores query parameters it does not
+  recognise, so a mis-encoded `expand` returns a healthy 200 with the field quietly
+  missing. The client sends arrays as repeated `key[]=` params and `assertExpanded`
+  logs loudly when a requested field arrives on no row. Both expands
+  (`do_not_service` on customers, `appointments` on jobs) are sent by the hot passes
+  AND the crawls — if only the hot pass sent them, the crawl would overwrite expanded
+  rows with un-expanded ones and erase the fields on everything older.
+- **`raw` is the safety net, and it works.** Every synced row keeps the full HCP
+  payload, so a field that was never projected to a column is recoverable by
+  migration rather than re-sync. 29 columns were added across the four tables on
+  2026-08-26 and every one except the two expand-only fields backfilled straight out
+  of `raw`. When adding a projection, backfill from `raw` in the same migration.
 - **A crawl cannot see an absence.** It only ever reads what HCP still returns, so a
   record deleted or merged there is invisible to it by construction — which is why
   customers sat at +57 rows against HCP with drift reporting it and nothing able to
