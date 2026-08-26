@@ -216,19 +216,35 @@ async function main() {
   console.log("\ncrawl cursor:");
   const t0 = new Date("2026-01-01T00:00:00Z");
   const t1 = new Date("2026-01-01T01:00:00Z");
-  const mid = advanceCrawl(CRAWL_INITIAL, { rows: [], nextPage: 30, wrapped: false, totalItems: 100 }, t0);
-  check("a pass in flight records its start", mid.currentPassStartedAt === t0.toISOString(), mid.currentPassStartedAt);
-  check("an unfinished pass does not count", mid.passes === 0, mid.passes);
-  check("no cutoff until a pass completes", mid.lastCompletedPassStartedAt === null);
+  const atPageOne = { ...CRAWL_INITIAL, nextPage: 1 };
+
+  const mid = advanceCrawl(atPageOne, { rows: [], nextPage: 30, wrapped: false, totalItems: 100 }, t0);
+  check("a lap begun at page 1 records its start", mid.currentLapStartedAt === t0.toISOString(), mid.currentLapStartedAt);
+  check("an unfinished lap does not count", mid.passes === 0, mid.passes);
+  check("no cutoff until a lap completes", mid.lastFullLapStartedAt === null);
 
   const done = advanceCrawl(mid, { rows: [], nextPage: 1, wrapped: true, totalItems: 100 }, t1);
   check("wrapping counts the pass", done.passes === 1, done.passes);
-  check(
-    "cutoff is the pass START, not its end",
-    done.lastCompletedPassStartedAt === t0.toISOString(),
-    done.lastCompletedPassStartedAt,
-  );
-  check("in-flight marker clears on wrap", done.currentPassStartedAt === null);
+  check("cutoff is the lap START, not its end", done.lastFullLapStartedAt === t0.toISOString(), done.lastFullLapStartedAt);
+  check("in-flight marker clears on wrap", done.currentLapStartedAt === null);
+
+  // THE REGRESSION. A cursor that joins a lap already in progress — which is what
+  // every collection does on the deploy that ships this — has not stamped the pages
+  // before it joined, so its wrap must NOT become a cutoff. Shipping without this
+  // reported 14,000 of 15,464 estimates as deleted (2026-08-26).
+  const joinedMidLap = { ...CRAWL_INITIAL, nextPage: 73, passes: 6 };
+  const partial = advanceCrawl(joinedMidLap, { rows: [], nextPage: 79, wrapped: false, totalItems: 100 }, t0);
+  check("joining mid-lap records no lap start", partial.currentLapStartedAt === null, partial.currentLapStartedAt);
+  const partialWrap = advanceCrawl(partial, { rows: [], nextPage: 1, wrapped: true, totalItems: 100 }, t1);
+  check("a mid-lap join publishes NO cutoff on wrap", partialWrap.lastFullLapStartedAt === null, partialWrap.lastFullLapStartedAt);
+  check("but it still counts the pass", partialWrap.passes === 7, partialWrap.passes);
+  // ...and the lap AFTER it starts at page 1, so detection recovers by itself.
+  const recovered = advanceCrawl(partialWrap, { rows: [], nextPage: 20, wrapped: false, totalItems: 100 }, t1);
+  check("the next lap from page 1 does record a start", recovered.currentLapStartedAt === t1.toISOString());
+
+  // A stored state written before this field existed must not read as a cutoff.
+  const legacy = { nextPage: 1, passes: 3, lastCompletedPassAt: t0.toISOString(), totalItems: 100 } as unknown as typeof CRAWL_INITIAL;
+  check("a legacy state publishes no cutoff", legacy.lastFullLapStartedAt === undefined || legacy.lastFullLapStartedAt === null);
 
   check("cold start reads on a time budget", crawlWindowFor(CRAWL_INITIAL).budgetMs != null);
   check("steady state does not", crawlWindowFor(done).budgetMs === undefined);

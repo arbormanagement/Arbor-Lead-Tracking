@@ -294,14 +294,14 @@ export async function diagnosticsReport(): Promise<{ httpStatus: number; report:
     nextPage: 1,
     passes: 0,
     lastCompletedPassAt: null,
-    lastCompletedPassStartedAt: null,
+    lastFullLapStartedAt: null,
     totalItems: null,
   };
   type CrawlStateShape = {
     nextPage: number;
     passes: number;
     lastCompletedPassAt: string | null;
-    lastCompletedPassStartedAt: string | null;
+    lastFullLapStartedAt: string | null;
     totalItems: number | null;
   };
 
@@ -333,6 +333,10 @@ export async function diagnosticsReport(): Promise<{ httpStatus: number; report:
     `);
     const row = (res.rows?.[0] ?? { count: 0, sample: [] }) as { count: number; sample: unknown[] };
     return { count: Number(row.count ?? 0), sample: row.sample ?? [] };
+    // NOTE: the caller cross-checks this against drift. "Missing" rows we still hold
+    // must show up as a SURPLUS against HCP's own count, so a large missing figure
+    // sitting on zero drift is self-contradictory and gets suppressed rather than
+    // reported — see `reconcilable` below.
   }
 
   const [estCount, jobCount, custCount, invCount] = await Promise.all([
@@ -350,15 +354,15 @@ export async function diagnosticsReport(): Promise<{ httpStatus: number; report:
   ]);
 
   const [missingEstimates, missingJobs, missingCustomers, missingInvoices] = await Promise.all([
-    missingFromHcp("hcp_estimates", "hcp_estimate_id", "customer_name", estCrawl.lastCompletedPassStartedAt),
-    missingFromHcp("hcp_jobs", "hcp_job_id", "coalesce(invoice_number, description)", jobCrawl.lastCompletedPassStartedAt),
+    missingFromHcp("hcp_estimates", "hcp_estimate_id", "customer_name", estCrawl.lastFullLapStartedAt),
+    missingFromHcp("hcp_jobs", "hcp_job_id", "coalesce(invoice_number, description)", jobCrawl.lastFullLapStartedAt),
     missingFromHcp(
       "hcp_customers",
       "hcp_customer_id",
       "nullif(trim(concat_ws(' ', first_name, last_name)), '')",
-      custCrawl.lastCompletedPassStartedAt,
+      custCrawl.lastFullLapStartedAt,
     ),
-    missingFromHcp("hcp_invoices", "hcp_invoice_id", "invoice_number", invCrawl.lastCompletedPassStartedAt),
+    missingFromHcp("hcp_invoices", "hcp_invoice_id", "invoice_number", invCrawl.lastFullLapStartedAt),
   ]);
 
   function collectionSync(
@@ -374,18 +378,35 @@ export async function diagnosticsReport(): Promise<{ httpStatus: number; report:
     // and reporting that as drift would fire a warning for every collection on every
     // fresh deploy, which is how a real drift warning stops being believed.
     const backfilling = crawl.passes === 0;
+    const drift = backfilling || crawl.totalItems == null ? null : ours - crawl.totalItems;
     return {
       ours,
       housecallPro: crawl.totalItems,
-      drift: backfilling || crawl.totalItems == null ? null : ours - crawl.totalItems,
+      drift,
       backfilling,
       crawlPage: crawl.nextPage,
       completedPasses: crawl.passes,
       lastCompletedPassAt: crawl.lastCompletedPassAt,
       passAgeHours: ageHours,
-      // Rows the last completed pass never saw: HCP has dropped them. Named as the
+      // Rows the last full lap never saw: HCP has dropped them. Named as the
       // explanation for a surplus drift rather than left for someone to work out.
-      missingFromHcp: missing,
+      //
+      // Cross-checked against drift before being believed. A row we hold and HCP
+      // does not must make our count HIGHER than theirs, so "missing" can never
+      // legitimately exceed the surplus. When it does, the stamping is incomplete
+      // rather than the data being gone — report the incoherence instead of the
+      // number, because a diagnostic that confidently declares a whole table
+      // deleted does more damage than one that admits it cannot tell.
+      missingFromHcp:
+        missing.count > 0 && missing.count > Math.max(0, drift ?? 0)
+          ? {
+              count: 0,
+              sample: [],
+              inconclusive:
+                `${missing.count} row(s) unstamped but drift is ${drift ?? "unknown"} — ` +
+                `the crawl has not yet stamped a full lap, so absence cannot be distinguished from not-yet-seen`,
+            }
+          : missing,
     };
   }
 
