@@ -13,6 +13,8 @@ import {
   sources,
 } from "@/lib/db/schema";
 import { countableEstimateDate, isCountableEstimate, isLiveEstimate } from "@/lib/estimates/countable";
+import { PRE_TRACKING_SOURCE_KEY } from "@/lib/sources/naming";
+import { TRACKING_STARTED_AT } from "@/lib/tracking-coverage";
 import { getSetting } from "@/lib/settings";
 import { businessDate } from "@/lib/tz";
 import { withSyncRun } from "./run";
@@ -471,6 +473,7 @@ async function rebuildRoiDaily(windowDays: number): Promise<number> {
   // Source-key → id, so ad spend (which carries platform, not source) can roll up.
   const sourceRows = await db.select({ id: sources.id, key: sources.key }).from(sources);
   const sourceIdByKey = new Map(sourceRows.map((s) => [s.key, s.id]));
+  const preTrackingSourceId = sourceIdByKey.get(PRE_TRACKING_SOURCE_KEY) ?? null;
 
   const acc = new Map<string, RoiAcc>();
   const keyOf = (a: {
@@ -611,6 +614,13 @@ async function rebuildRoiDaily(windowDays: number): Promise<number> {
     // is what the `customer_window_days` inheritance rule was crudely approximating:
     // capped at 90 days, won estimates only, and it credited revenue without ever
     // linking the estimate.
+    // Whatever the model resolves to, an estimate left with NO source that predates
+    // tracking is reported as `n/a` rather than as a nameless blank row. Applied
+    // once here rather than inside the model branches so last- and first-touch
+    // cannot disagree about it, and only ever as a fallback — an estimate that HAS
+    // a source keeps it whatever its date.
+    const unsourcedSourceId =
+      e.createdAtHcp && e.createdAtHcp < TRACKING_STARTED_AT ? preTrackingSourceId : null;
     const contactId = e.leadContactId ?? (e.hcpCustomerId ? contactByHcpCustomer.get(e.hcpCustomerId) : undefined);
     const ft = contactId ? firstTouchByContact.get(contactId) : undefined;
     // Recruiting is excluded under either model.
@@ -634,7 +644,7 @@ async function rebuildRoiDaily(windowDays: number): Promise<number> {
       const row = bump({
         date,
         touchType,
-        sourceId: src.sourceId ?? null,
+        sourceId: src.sourceId ?? unsourcedSourceId,
         campaignId: src.campaignId ?? null,
         location: (src.location ?? "unknown") as RoiAcc["location"],
       });

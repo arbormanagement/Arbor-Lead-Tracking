@@ -32,6 +32,10 @@ export const SEED_SOURCES: Array<{
   { key: "email/newsletter", displayName: "Email Newsletter", platform: "other", costModel: "none" },
   // Catch-all for traffic we do not recognise. See lib/sources/naming.ts.
   { key: "other", displayName: "Other / Unmapped", platform: "other", costModel: "none" },
+  // Estimates written before tracking existed. Not a channel — a stand-in so they
+  // stop sharing a nameless blank row with genuinely unattributed work.
+  // See PRE_TRACKING_SOURCE_KEY in lib/sources/naming.ts.
+  { key: "n/a", displayName: "N/A (before tracking)", platform: "other", costModel: "none" },
 ];
 
 // `isDni` = website DNI draws rotating numbers from this pool; the rest are

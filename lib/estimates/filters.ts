@@ -1,7 +1,9 @@
-import { and, eq, isNull, or, sql, type SQL } from "drizzle-orm";
+import { and, eq, gte, isNull, lt, or, sql, type SQL } from "drizzle-orm";
 import { campaigns, hcpEstimates, leads, sources } from "@/lib/db/schema";
 import { assignedToSql } from "@/lib/estimates/hcp-fields";
 import { landingPathSql } from "@/lib/landing-page";
+import { PRE_TRACKING_SOURCE_KEY } from "@/lib/sources/naming";
+import { TRACKING_STARTED_AT } from "@/lib/tracking-coverage";
 
 /**
  * Attribution filters on the estimate list — the other half of "show me the
@@ -87,7 +89,20 @@ export function filterSql(f: EstimateFilters): SQL | undefined {
   const parts: SQL[] = [];
 
   if (f.source) {
-    parts.push(f.source === NONE ? isNull(leads.sourceId)! : eq(sources.key, f.source));
+    // `none` and `n/a` split what used to be one bucket, matching `sourceKeySql`:
+    // no source AND written before the cutover is `n/a` (outside what this app can
+    // see); no source since the cutover stays `none` (we were watching and still
+    // have nothing — the only one of the two worth chasing). An estimate that HAS a
+    // source is untouched by both. A null `created_at_hcp` cannot be placed before
+    // the cutover, so it falls to `none`; spelled out because `NULL < ts` is NULL
+    // and would otherwise drop the row from both filters.
+    parts.push(
+      f.source === NONE
+        ? and(isNull(leads.sourceId), or(isNull(hcpEstimates.createdAtHcp), gte(hcpEstimates.createdAtHcp, TRACKING_STARTED_AT)))!
+        : f.source === PRE_TRACKING_SOURCE_KEY
+          ? and(isNull(leads.sourceId), lt(hcpEstimates.createdAtHcp, TRACKING_STARTED_AT))!
+          : eq(sources.key, f.source),
+    );
   }
   if (f.campaign) {
     parts.push(f.campaign === NONE ? isNull(leads.campaignId)! : eq(campaigns.name, f.campaign));
