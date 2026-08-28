@@ -99,16 +99,16 @@ async function buildCallTwiml(params: Record<string, string>, dest: { current: s
     // 2) Resolve attribution.
     //    Static numbers map straight to their source; pooled numbers resolve to
     //    the most-recent (active or recently-released) session lease.
-    const { sourceKey, assignmentId, lease } = await resolveInboundAttribution(tn);
+    const { sourceKey, assignmentId, lease, conversionPage } = await resolveInboundAttribution(tn);
 
     // 3) Spam pre-check (hard rules only — keep it fast).
     if (fromE164 && (await isHardSpamNumber(fromE164))) {
-      await recordCall({ callSid, fromE164, tn, assignmentId, lease, sourceKey, destination, status: "rejected_spam" });
+      await recordCall({ callSid, fromE164, tn, assignmentId, lease, conversionPage, sourceKey, destination, status: "rejected_spam" });
       return rejectTwiml();
     }
 
     // 4) Persist the call + lead immediately (status callbacks fill in the rest).
-    await recordCall({ callSid, fromE164, tn, assignmentId, lease, sourceKey, destination, status: "ringing" });
+    await recordCall({ callSid, fromE164, tn, assignmentId, lease, conversionPage, sourceKey, destination, status: "ringing" });
 
     // 5) Forward with an optional pre-call message + whisper + (optional) recording.
     //    All three are per-number overrides.
@@ -154,11 +154,13 @@ async function recordCall(args: {
   tn: typeof trackingNumbers.$inferSelect;
   assignmentId: string | null;
   lease: typeof numberAssignments.$inferSelect | null;
+  /** Last page of the leased session — what the caller was reading when they dialled. */
+  conversionPage: string | null;
   sourceKey: string | null;
   destination: string;
   status: string;
 }) {
-  const { callSid, fromE164, tn, assignmentId, lease, sourceKey, destination, status } = args;
+  const { callSid, fromE164, tn, assignmentId, lease, conversionPage, sourceKey, destination, status } = args;
 
   // Resolve source id (best-effort) for the denormalized lead row.
   const sourceId = await ensureSourceId(sourceKey);
@@ -242,6 +244,7 @@ async function recordCall(args: {
       wbraid: lease?.wbraid ?? null,
       fbclid: lease?.fbclid ?? null,
       landingPage: lease?.landingPage ?? null,
+      conversionPage,
       visitorId: lease?.visitorId ?? null,
       webSessionId: lease?.webSessionId ?? null,
     })

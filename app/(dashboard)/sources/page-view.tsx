@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { dollars } from "@/lib/format";
-import { landingPagePerformance } from "@/lib/queries/sources";
+import { landingPagePerformance, type PageBasis } from "@/lib/queries/sources";
 import { estimateDrilldown } from "./drilldown";
 import { sourcesHref } from "./view";
 
@@ -29,10 +29,10 @@ import { sourcesHref } from "./view";
  * contacts that actually close, because that outcome lives in HousecallPro. A page can
  * produce fewer contacts and better ones, and that is the finding worth acting on.
  */
-export async function PageView({ days }: { days: number }) {
+export async function PageView({ days, basis = "entry" }: { days: number; basis?: PageBasis }) {
   // The numbers live in lib/queries/sources.ts, shared with the MCP
   // `landing_pages` tool so the two surfaces cannot disagree.
-  const { rows, unknownUa } = await landingPagePerformance(days);
+  const { rows, unknownUa } = await landingPagePerformance(days, basis);
 
   const totals = rows.reduce(
     (a, r) => ({
@@ -54,8 +54,27 @@ export async function PageView({ days }: { days: number }) {
 
   return (
     <>
+      <div className="page-sub" style={{ marginBottom: 12, fontSize: 12 }}>
+        Counting by{" "}
+        <Link href={sourcesHref("page", days, "entry")} className={basis === "entry" ? "link" : "link muted"}>
+          entry page
+        </Link>{" "}
+        ·{" "}
+        <Link href={sourcesHref("page", days, "conversion")} className={basis === "conversion" ? "link" : "link muted"}>
+          page at contact
+        </Link>
+        <div className="muted" style={{ marginTop: 2 }}>
+          {basis === "entry"
+            ? "Where the visit started — what an ad click or a search result bought."
+            : "What was on screen when they got in touch. arbor-mgmt.com routes client-side, so most visitors read a page other than the one they arrived on. Only recorded from 2026-08-28 onward — earlier sessions have no value here and are absent rather than wrong."}
+        </div>
+      </div>
       {rows.length === 0 ? (
-        <div className="empty">No landing pages recorded in this window — populates from track.js on arbor-mgmt.com.</div>
+        <div className="empty">
+          {basis === "conversion"
+            ? "Nothing recorded on this basis yet — it fills in as visits arrive after the deploy that started capturing it."
+            : "No landing pages recorded in this window — populates from track.js on arbor-mgmt.com."}
+        </div>
       ) : (
         <>
           <div className="table-scroll" style={{ marginBottom: 14 }}>

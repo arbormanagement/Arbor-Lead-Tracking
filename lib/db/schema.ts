@@ -118,6 +118,13 @@ export const webSessions = pgTable(
     msclkid: text("msclkid"),
     referrer: text("referrer"),
     landingPage: text("landing_page"),
+    // The most recent page seen in this session, updated on every pageview —
+    // whereas `landingPage` is frozen at the page the visit STARTED on and is
+    // deliberately never overwritten. Both are needed: the entry page is what an
+    // ad or a search result actually bought, the last page is what the visitor
+    // was reading when they decided to call. On a client-side-routed site those
+    // are usually different pages, and until now only the first was recorded.
+    lastPage: text("last_page"),
     ipHash: text("ip_hash"),
     userAgent: text("user_agent"),
     location: locationEnum("location").default("unknown"),
@@ -828,6 +835,13 @@ export const leads = pgTable(
     wbraid: text("wbraid"),
     fbclid: text("fbclid"),
     landingPage: text("landing_page"),
+    /**
+     * The page the visitor was on when this lead was created, as distinct from
+     * `landingPage` (where the visit began). Null when it cannot be known: a
+     * session that never sent a second pageview, a call on a lease whose session
+     * row predates this column, or any contact that never touched the site.
+     */
+    conversionPage: text("conversion_page"),
     referrer: text("referrer"),
     location: locationEnum("location").default("unknown"),
     // Linkage

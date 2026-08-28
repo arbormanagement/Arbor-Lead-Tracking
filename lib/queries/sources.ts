@@ -259,17 +259,40 @@ export interface PagePerfRow {
  * agent as a bot, which is right at the DNI gate and wrong here — assuming bot would
  * silently shrink the denominator and inflate every conversion rate.
  */
-export async function landingPagePerformance(days: number): Promise<{ rows: PagePerfRow[]; unknownUa: number }> {
+/**
+ * Which page a row is counted against.
+ *
+ * `entry` — the page the visit STARTED on. What an ad click or a search result
+ * actually bought. This is the original behaviour and stays the default so no
+ * existing surface moves.
+ *
+ * `conversion` — the page the visitor was on when they became a lead, and the
+ * page they were last seen on for the session denominator. On a client-side
+ * routed site these are usually different: someone lands on the home page from
+ * the map pack, reads a location page, and calls. Under `entry` the home page
+ * gets the whole credit and the location page can never earn any.
+ *
+ * Only `conversion` answers "which content persuades"; only `entry` answers
+ * "which page should the ad point at". Both are real questions.
+ */
+export type PageBasis = "entry" | "conversion";
+
+export async function landingPagePerformance(
+  days: number,
+  basis: PageBasis = "entry",
+): Promise<{ rows: PagePerfRow[]; unknownUa: number }> {
   const since = new Date(Date.now() - days * 86_400_000);
   const excluded = await excludedCampaignIds();
+  const sessionCol = basis === "conversion" ? webSessions.lastPage : webSessions.landingPage;
+  const leadCol = basis === "conversion" ? leads.conversionPage : leads.landingPage;
 
   // Sessions carry their user-agent so crawlers can be dropped in JS through the
   // SAME predicate the DNI gate uses — replicating that regex in SQL would give two
   // definitions of "bot" that drift.
   const sessionRows = await db
-    .select({ path: landingPathSql(webSessions.landingPage), ua: webSessions.userAgent })
+    .select({ path: landingPathSql(sessionCol), ua: webSessions.userAgent })
     .from(webSessions)
-    .where(and(gte(webSessions.startedAt, since), isNotNull(webSessions.landingPage), ne(webSessions.landingPage, "")));
+    .where(and(gte(webSessions.startedAt, since), isNotNull(sessionCol), ne(sessionCol, "")));
 
   let unknownUa = 0;
   const sessionsByPath = new Map<string, number>();
@@ -283,7 +306,7 @@ export async function landingPagePerformance(days: number): Promise<{ rows: Page
   // not a "qualified lead" — so this agrees with the demand figure everywhere else.
   const outcomeRows = await db
     .select({
-      path: landingPathSql(leads.landingPage),
+      path: landingPathSql(leadCol),
       contacts: sql<number>`count(*)::int`,
       estimates: sql<number>`count(*) filter (where ${leads.hcpEstimateId} is not null)::int`,
       won: sql<number>`count(*) filter (where ${leads.status} = 'won')::int`,
@@ -294,12 +317,12 @@ export async function landingPagePerformance(days: number): Promise<{ rows: Page
       and(
         gte(leads.occurredAt, since),
         eq(leads.isSpam, false),
-        isNotNull(leads.landingPage),
-        ne(leads.landingPage, ""),
+        isNotNull(leadCol),
+        ne(leadCol, ""),
         campaignNotExcluded(leads.campaignId, excluded),
       ),
     )
-    .groupBy(landingPathSql(leads.landingPage));
+    .groupBy(landingPathSql(leadCol));
 
   const outcomeByPath = new Map(outcomeRows.map((r) => [r.path, r]));
   const paths = [...new Set([...sessionsByPath.keys(), ...outcomeByPath.keys()])];

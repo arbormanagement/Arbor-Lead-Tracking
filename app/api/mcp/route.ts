@@ -267,12 +267,13 @@ const handler = createMcpHandler(
         description:
           "CRO view: sessions (crawlers excluded), contacts, conversion, estimates, won and revenue per landing path. Deliberately has NO spend — money attaches to campaigns, not pages. " +
           "Reads raw session/lead timestamps, so totals will not reconcile with arbor_roi_summary at a window edge. Rates on under ~30 sessions are noise wearing a percent sign — suppress them when presenting. " +
-          "unknownUa sessions carry no user-agent (recorded only from 2026-08-13) and are counted as human.",
+          "unknownUa sessions carry no user-agent (recorded only from 2026-08-13) and are counted as human. " +
+          "`basis` chooses entry page (default) or the page they were on at contact.",
         inputSchema: LandingPagesInput.shape,
         outputSchema: LandingPagesOutput.shape,
         annotations: { readOnlyHint: true },
       },
-      async ({ days }) => json(await landingPagePerformance(days)),
+      async ({ days, basis }) => json(await landingPagePerformance(days, basis)),
     );
 
     server.registerTool(

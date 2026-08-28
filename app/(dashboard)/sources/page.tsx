@@ -5,7 +5,7 @@ import { CoverageNotice } from "../coverage-notice";
 import { CampaignView } from "./campaign-view";
 import { ChannelView } from "./channel-view";
 import { PageView } from "./page-view";
-import { DEFAULT_DAYS, DEFAULT_VIEW, parseView, sourcesHref, VIEWS } from "./view";
+import { DEFAULT_DAYS, DEFAULT_VIEW, parseBasis, parseView, sourcesHref, VIEWS } from "./view";
 
 export const dynamic = "force-dynamic";
 
@@ -33,11 +33,12 @@ export const dynamic = "force-dynamic";
 export default async function SourcesPage({
   searchParams,
 }: {
-  searchParams: Promise<{ days?: string; view?: string }>;
+  searchParams: Promise<{ days?: string; view?: string; basis?: string }>;
 }) {
-  const { days: daysParam, view: viewParam } = await searchParams;
+  const { days: daysParam, view: viewParam, basis: basisParam } = await searchParams;
   const days = pickDays(daysParam, DEFAULT_DAYS);
   const view = parseView(viewParam);
+  const basis = parseBasis(basisParam);
   // Read once here rather than in each view: it is a settings lookup, and the
   // subtitle needs it anyway. Landing pages ignores it — attribution touch model
   // has no meaning for a session count.
@@ -69,7 +70,7 @@ export default async function SourcesPage({
           {VIEWS.map((v) => (
             <Link
               key={v.key}
-              href={sourcesHref(v.key, days)}
+              href={sourcesHref(v.key, days, basis)}
               className="pill"
               style={
                 view === v.key
@@ -84,7 +85,7 @@ export default async function SourcesPage({
           {TIMEFRAMES.map((t) => (
             <Link
               key={t.days}
-              href={sourcesHref(view, t.days)}
+              href={sourcesHref(view, t.days, basis)}
               className="pill"
               style={
                 days === t.days
@@ -105,7 +106,7 @@ export default async function SourcesPage({
 
       {view === DEFAULT_VIEW && <ChannelView days={days} touch={touch} />}
       {view === "campaign" && <CampaignView days={days} touch={touch} />}
-      {view === "page" && <PageView days={days} />}
+      {view === "page" && <PageView days={days} basis={basis} />}
     </>
   );
 }

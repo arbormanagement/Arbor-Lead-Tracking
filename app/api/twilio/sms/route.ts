@@ -70,7 +70,7 @@ export async function POST(req: Request) {
     }
 
     const spam = await isHardSpamNumber(fromE164);
-    const { sourceKey, assignmentId, lease } = await resolveInboundAttribution(tn);
+    const { sourceKey, assignmentId, lease, conversionPage } = await resolveInboundAttribution(tn);
     const sourceId = await ensureSourceId(sourceKey);
 
     const thread = await upsertThread(
@@ -124,6 +124,7 @@ export async function POST(req: Request) {
       location: tn.location ?? "unknown",
       spam,
       lease,
+      conversionPage,
     });
 
     await db.update(messages).set({ leadId }).where(eq(messages.id, inserted.id));
@@ -165,8 +166,10 @@ async function attachToOpenLeadOrCreate(args: {
   location: "edwardsville" | "ofallon" | "unknown";
   spam: boolean;
   lease: typeof numberAssignments.$inferSelect | null;
+  /** Last page of the leased session — what they were reading when they texted. */
+  conversionPage: string | null;
 }): Promise<string> {
-  const { thread, fromE164, body, sourceId, location, spam, lease } = args;
+  const { thread, fromE164, body, sourceId, location, spam, lease, conversionPage } = args;
 
   const [open] = await db
     .select({ id: leads.id })
@@ -205,6 +208,7 @@ async function attachToOpenLeadOrCreate(args: {
       wbraid: lease?.wbraid ?? null,
       fbclid: lease?.fbclid ?? null,
       landingPage: lease?.landingPage ?? null,
+      conversionPage,
       visitorId: lease?.visitorId ?? null,
       webSessionId: lease?.webSessionId ?? null,
       // Left unclassified on purpose — see the note at the top of this file.
