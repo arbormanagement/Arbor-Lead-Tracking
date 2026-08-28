@@ -13,6 +13,7 @@ import {
 } from "@/lib/estimates/hcp-fields";
 import { isLiveEstimate } from "@/lib/estimates/countable";
 import { landingPathSql } from "@/lib/landing-page";
+import { PRE_TRACKING_SOURCE_KEY, displayNameFor } from "@/lib/sources/naming";
 import { TRACKING_STARTED_AT } from "@/lib/tracking-coverage";
 import { resolveWindow, type WindowInput } from "@/lib/window";
 
@@ -82,6 +83,20 @@ export interface EstimateListRow {
   /** First option note: in practice, the description of the work. */
   serviceNote: string | null;
 }
+
+/**
+ * Source as displayed: the lead's own source, or `n/a` when the estimate has none
+ * AND predates tracking.
+ *
+ * Written as a coalesce so the rule is one expression rather than a branch: an
+ * estimate that HAS a source keeps it whatever its date, which is what leaves the
+ * pre-cutover Meta lead-form estimates attributed. `created_at_hcp` is nullable and
+ * `NULL < timestamp` is NULL, so an estimate with no date falls through to
+ * unattributed rather than being silently relabelled — matching `filterSql`, which
+ * spells the same three-valued case out explicitly.
+ */
+const sourceKeySql = sql<string | null>`coalesce(${sources.key}, case when ${hcpEstimates.createdAtHcp} < ${TRACKING_STARTED_AT} then ${PRE_TRACKING_SOURCE_KEY} end)`;
+const sourceNameSql = sql<string | null>`coalesce(${sources.displayName}, case when ${hcpEstimates.createdAtHcp} < ${TRACKING_STARTED_AT} then ${displayNameFor(PRE_TRACKING_SOURCE_KEY)} end)`;
 
 /**
  * Projected identically by the list and the detail tool. Spread rather than repeated
@@ -197,8 +212,8 @@ export async function listEstimates(opts: WindowInput & {
       leadId: leads.id,
       leadType: leads.type,
       leadLocation: leads.location,
-      sourceKey: sources.key,
-      sourceName: sources.displayName,
+      sourceKey: sourceKeySql,
+      sourceName: sourceNameSql,
       campaignName: campaigns.name,
       keyword: leads.keyword,
       landingPage: landingPathSql(leads.landingPage),
@@ -320,8 +335,8 @@ export async function getEstimateDetail(id: string): Promise<EstimateDetail | nu
       leadLocation: leads.location,
       leadOccurredAt: leads.occurredAt,
       conversationId: conversations.id,
-      sourceKey: sources.key,
-      sourceName: sources.displayName,
+      sourceKey: sourceKeySql,
+      sourceName: sourceNameSql,
       campaignName: campaigns.name,
       keyword: leads.keyword,
       landingPage: landingPathSql(leads.landingPage),

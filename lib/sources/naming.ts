@@ -29,6 +29,27 @@
  */
 export const UNMAPPED_SOURCE_KEY = "other";
 
+/**
+ * Estimates written BEFORE tracking existed, which have no source and never can.
+ *
+ * Distinct from "unattributed" on purpose, and the distinction is the whole point:
+ * an unattributed estimate written since the cutover is a question to answer — we
+ * were watching and still have no source — while one written before it is simply
+ * outside what this app can see. Lumping them together makes the second, far larger
+ * group look like a tracking failure and buries the first. Measured 2026-08-28: over
+ * 90 days, 801 of the 844 estimates with no source are pre-tracking and only 6 are
+ * the real defect.
+ *
+ * The rule is narrow, and only this one cell of the matrix moves: an estimate that
+ * HAS a source keeps it whatever its date (Meta lead forms carry their own history
+ * back to May, so pre-cutover Meta estimates are genuinely attributed), and an
+ * estimate with no source written since the cutover stays unattributed.
+ *
+ * This decays on its own as the window rolls forward, and disappears entirely if the
+ * CallRail history is ever imported — see TRACKING_STARTED_AT.
+ */
+export const PRE_TRACKING_SOURCE_KEY = "n/a";
+
 /** Keys whose names are fixed by the seed; everything else is derived. */
 const KNOWN: Record<string, string> = {
   "google/cpc": "Google Ads (Search)",
@@ -41,6 +62,7 @@ const KNOWN: Record<string, string> = {
   "email/newsletter": "Email Newsletter",
   referral: "Referral",
   [UNMAPPED_SOURCE_KEY]: "Other / Unmapped",
+  [PRE_TRACKING_SOURCE_KEY]: "N/A (before tracking)",
 };
 
 /**
