@@ -12,7 +12,7 @@ import {
   roiDaily,
   sources,
 } from "@/lib/db/schema";
-import { countableEstimateDate, isCountableEstimate } from "@/lib/estimates/countable";
+import { countableEstimateDate, isCountableEstimate, isLiveEstimate } from "@/lib/estimates/countable";
 import { getSetting } from "@/lib/settings";
 import { businessDate } from "@/lib/tz";
 import { withSyncRun } from "./run";
@@ -123,8 +123,30 @@ async function matchLeadsToEstimates(windowDays: number): Promise<{ qualified: n
       .where(resettable);
   });
 
-  // Every estimate (created), won first so a won estimate claims its lead before a
-  // merely-created one does.
+  // Every estimate (created), ordered so the RIGHT estimate claims the lead. A lead
+  // can be claimed only once (`claimedLeads` below), so when one customer has
+  // several estimates this ordering alone decides which of them carries the
+  // attribution — and which are left reading as untracked business.
+  //
+  // The office's practice is the thing to encode: a customer who submits several
+  // estimate requests gets ONE kept — the first — and the rest cancelled as
+  // duplicates. So:
+  //
+  //  1. won first     — a won estimate claims its lead ahead of a merely-created
+  //                     one; that is where the revenue is.
+  //  2. live first    — a cancelled or deleted duplicate must never claim a lead
+  //                     ahead of the estimate that survived it.
+  //  3. oldest first  — of two live estimates competing for one lead, the earlier
+  //                     is the real request; the later is the duplicate.
+  //
+  // Measured 2026-08-28, both caused by the previous `desc(created_at)` ordering:
+  //  · Patrick Shansey — his CANCELLED duplicate (15466) claimed the 8/19 web-form
+  //    lead, so the surviving estimate 15350 read as unattributed AND the live lead
+  //    was stamped `cancelled`, since the stage set below is derived from whichever
+  //    estimate claims it. 177 leads sat at `cancelled` against 94 at `quoted`.
+  //  · Pamela Norton — her Google LSA call was credited to a $4,550 second estimate
+  //    while the $7,000 one written four minutes after that call read as
+  //    unattributed.
   const estRows = await db
     .select({
       estId: hcpEstimates.id,
@@ -140,7 +162,7 @@ async function matchLeadsToEstimates(windowDays: number): Promise<{ qualified: n
     })
     .from(hcpEstimates)
     .where(scannedEstimates)
-    .orderBy(desc(hcpEstimates.won), desc(hcpEstimates.createdAtHcp));
+    .orderBy(desc(hcpEstimates.won), desc(isLiveEstimate), asc(hcpEstimates.createdAtHcp));
 
   // The identity spine, indexed by HCP customer. `contacts` + `contact_identifiers`
   // already unify every number and address a person has ever used, and
