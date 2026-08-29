@@ -150,11 +150,15 @@ const SNIPPET = String.raw`(function () {
     // only ever seen the home page. The DNI swap already had to solve this (see
     // the MutationObserver below); the pageview beacon never did.
     (function trackRouteChanges() {
-      var last = location.href;
+      // Compared on path + query, deliberately NOT the full href: the site's own
+      // CTAs are #free-quote anchors, and a jump to an anchor is not a new page.
+      // Including the hash would bill every one of those as a pageview and
+      // overwrite last_page with the same path it already held.
+      function key() { return location.pathname + location.search; }
+      var last = key();
       function onRouteChange() {
-        // Same-page hash/replace churn is not a new pageview.
-        if (location.href === last) return;
-        last = location.href;
+        if (key() === last) return;
+        last = key();
         pageview();
       }
       ['pushState', 'replaceState'].forEach(function (m) {
