@@ -13,6 +13,8 @@
  * Flattening it into a shared shape would have meant either an empty Spend column or
  * dropping the conversion rate — so the views share a shell, not a table.
  */
+import type { PageBasis } from "@/lib/queries/sources";
+
 export type SourceView = "channel" | "campaign" | "page";
 
 export const DEFAULT_VIEW: SourceView = "channel";
@@ -39,14 +41,31 @@ export function parseView(v: string | undefined): SourceView {
   return VIEWS.some((x) => x.key === v) ? (v as SourceView) : DEFAULT_VIEW;
 }
 
+/**
+ * Which page a visit and a lead are counted against, on the Landing pages view.
+ *
+ * Entry is the default because it is what this view has always meant and what an
+ * ad buys. Conversion answers the different question — which page was on screen
+ * when they got in touch — and on a client-side routed site that is usually not
+ * the page they arrived on.
+ */
+export const DEFAULT_BASIS: PageBasis = "entry";
+
+export function parseBasis(v: string | undefined): PageBasis {
+  return v === "conversion" ? "conversion" : DEFAULT_BASIS;
+}
+
 /** Default timeframe, shared so the pills and the query cannot disagree. */
 export const DEFAULT_DAYS = 30;
 
 /** URL for a given view/timeframe, omitting both defaults so the plain path is canonical. */
-export function sourcesHref(view: SourceView, days: number): string {
+export function sourcesHref(view: SourceView, days: number, basis: PageBasis = DEFAULT_BASIS): string {
   const q = new URLSearchParams();
   if (view !== DEFAULT_VIEW) q.set("view", view);
   if (days !== DEFAULT_DAYS) q.set("days", String(days));
+  // Only meaningful on the page view, and omitted at its default so the plain
+  // path stays canonical.
+  if (view === "page" && basis !== DEFAULT_BASIS) q.set("basis", basis);
   const s = q.toString();
   return s ? `/sources?${s}` : "/sources";
 }

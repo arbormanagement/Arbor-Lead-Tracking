@@ -250,11 +250,22 @@ export type EstimateAggregate = z.infer<typeof EstimateAgg>;
 export const EstimateDetailInput = z.object({ id: z.string().max(64) });
 
 // ── landing_pages ────────────────────────────────────────────────────────────
-export const LandingPagesInput = z.object({ days: days(30) });
+export const LandingPagesInput = z.object({
+  days: days(30),
+  basis: z
+    .enum(["entry", "conversion"])
+    .default("entry")
+    .describe(
+      "Which page to count against. 'entry' (default) is where the visit started — what an ad click bought. " +
+        "'conversion' is the page on screen when they got in touch; arbor-mgmt.com routes client-side, so that is " +
+        "usually a different page from the one they arrived on. Recorded from 2026-08-28 onward only — earlier " +
+        "sessions carry no value on this basis and are absent rather than zero.",
+    ),
+});
 
 export const LandingPageRow = z.object({
   path: z.string(),
-  sessions: z.number().int().describe("Visits starting on this page, crawlers excluded"),
+  sessions: z.number().int().describe("Visits starting on this page (basis=entry) or last seen on it (basis=conversion), crawlers excluded"),
   contacts: z.number().int(),
   estimates: z.number().int(),
   won: z.number().int(),

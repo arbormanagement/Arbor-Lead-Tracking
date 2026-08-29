@@ -1,7 +1,7 @@
 import { displayNameFor } from "@/lib/sources/naming";
 import { and, desc, eq, gt } from "drizzle-orm";
 import { db } from "@/lib/db/client";
-import { numberAssignments, sources, spamRules, trackingNumbers } from "@/lib/db/schema";
+import { numberAssignments, sources, spamRules, trackingNumbers, webSessions } from "@/lib/db/schema";
 
 /**
  * Shared inbound-contact resolution for tracking numbers — used by both the voice
@@ -36,6 +36,13 @@ export interface InboundAttribution {
   sourceKey: string | null;
   assignmentId: string | null;
   /**
+   * The last page the leased session was seen on — what the caller was reading
+   * when they dialled, as opposed to `lease.landingPage`, which is where the
+   * visit began. Null for a static number, a session with no pageview, or any
+   * session that started before `web_sessions.last_page` existed.
+   */
+  conversionPage: string | null;
+  /**
    * The whole lease, not just its source. Everything else frozen onto it at assign
    * time — campaign, keyword, click ids, landing page, session/visitor — belongs on
    * the lead the contact produces. Returning only the source meant every DNI call
@@ -62,7 +69,7 @@ export async function resolveInboundAttribution(
       .from(sources)
       .where(eq(sources.id, tn.staticSourceId))
       .limit(1);
-    return { sourceKey: src?.key ?? null, assignmentId: null, lease: null };
+    return { sourceKey: src?.key ?? null, assignmentId: null, lease: null, conversionPage: null };
   }
 
   // Keyed on `expires_at`, NOT `released_at`, and deliberately so. `released_at` is
@@ -78,16 +85,28 @@ export async function resolveInboundAttribution(
   // An active lease still matches: its `expires_at` is in the future, which is
   // trivially after the cutoff.
   const graceCutoff = new Date(Date.now() - GRACE_MS);
-  const [assignment] = await db
-    .select()
+  // The LEFT JOIN pulls the session's last page in the same round trip. This route
+  // has a hard sub-3s budget and fallback-forwards on error, so the page a caller
+  // was reading is worth exactly one indexed join on a primary key and not a
+  // second query. LEFT, not inner: a lease can be seeded by /api/dni/assign before
+  // any pageview reached /api/track, and losing the whole attribution because the
+  // page is unknown would be a far worse trade.
+  const [row] = await db
+    .select({ assignment: numberAssignments, conversionPage: webSessions.lastPage })
     .from(numberAssignments)
+    .leftJoin(webSessions, eq(webSessions.id, numberAssignments.webSessionId))
     .where(and(eq(numberAssignments.trackingNumberId, tn.id), gt(numberAssignments.expiresAt, graceCutoff)))
     .orderBy(desc(numberAssignments.assignedAt))
     .limit(1);
 
-  return assignment
-    ? { sourceKey: assignment.source ?? null, assignmentId: assignment.id, lease: assignment }
-    : { sourceKey: null, assignmentId: null, lease: null };
+  return row
+    ? {
+        sourceKey: row.assignment.source ?? null,
+        assignmentId: row.assignment.id,
+        lease: row.assignment,
+        conversionPage: row.conversionPage ?? null,
+      }
+    : { sourceKey: null, assignmentId: null, lease: null, conversionPage: null };
 }
 
 /**

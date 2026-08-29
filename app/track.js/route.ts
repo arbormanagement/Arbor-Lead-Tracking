@@ -137,7 +137,43 @@ const SNIPPET = String.raw`(function () {
       var o = {}; for (var k in base) o[k] = base[k]; for (var j in extra) o[j] = extra[j]; return o;
     }
 
-    send(merge({ event: 'pageview' }));
+    // base.url is the entry URL, captured once. A pageview for a later page must
+    // override it — merge applies its argument last, so passing url wins.
+    function pageview() { send(merge({ event: 'pageview', url: location.href })); }
+
+    pageview();
+
+    // arbor-mgmt.com is a React SPA, so every navigation after the first is
+    // client-side and fires no page load. Without these hooks the tracker sees
+    // exactly one page per visit — the entry page — and a visitor who lands on
+    // the home page, reads a location page and then calls is recorded as having
+    // only ever seen the home page. The DNI swap already had to solve this (see
+    // the MutationObserver below); the pageview beacon never did.
+    (function trackRouteChanges() {
+      // Compared on path + query, deliberately NOT the full href: the site's own
+      // CTAs are #free-quote anchors, and a jump to an anchor is not a new page.
+      // Including the hash would bill every one of those as a pageview and
+      // overwrite last_page with the same path it already held.
+      function key() { return location.pathname + location.search; }
+      var last = key();
+      function onRouteChange() {
+        if (key() === last) return;
+        last = key();
+        pageview();
+      }
+      ['pushState', 'replaceState'].forEach(function (m) {
+        var orig = history[m];
+        if (typeof orig !== 'function') return;
+        history[m] = function () {
+          var r = orig.apply(this, arguments);
+          // The URL is only updated after the original runs.
+          try { onRouteChange(); } catch (e) {}
+          return r;
+        };
+      });
+      window.addEventListener('popstate', onRouteChange);
+      window.addEventListener('hashchange', onRouteChange);
+    })();
 
     // Pool-based DNI — swap displayed numbers to this session's tracking number.
     //

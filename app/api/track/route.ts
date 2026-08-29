@@ -172,6 +172,7 @@ export async function POST(req: Request) {
       msclkid: click.msclkid,
       referrer,
       landingPage: url,
+      lastPage: url,
       location,
       derivedSourceId: sourceId,
     })
@@ -179,6 +180,10 @@ export async function POST(req: Request) {
       target: webSessions.id,
       set: {
         lastActivityAt: now,
+        // Unlike everything below this, `lastPage` is a plain overwrite — that is
+        // the whole point of it. `landingPage` stays absent from this set clause
+        // and so stays frozen at the entry page.
+        lastPage: sql`excluded.last_page`,
         // Backfill, never overwrite. /api/dni/assign seeds a session row to satisfy
         // the lease's FKs but cannot populate these (it has no source resolution and
         // no page context), and it frequently wins the race against this beacon — so
@@ -295,6 +300,13 @@ export async function POST(req: Request) {
         // The page the form was on is the useful landing page for the lead itself;
         // the session's own landing page is kept on the session row.
         landingPage: form.pageUrl ?? url,
+        // Same value, under the name that means it. Form leads have always
+        // recorded the page of the form here, so they were already attributed to
+        // where the visitor converted — it is call leads, five times the volume,
+        // that carry the session's ENTRY page instead. Setting both explicitly
+        // gives `conversionPage` one meaning across every lead type without
+        // moving a single existing number.
+        conversionPage: form.pageUrl ?? url,
         referrer: referrer ?? sess?.referrer,
         location,
         visitorId: vid,
