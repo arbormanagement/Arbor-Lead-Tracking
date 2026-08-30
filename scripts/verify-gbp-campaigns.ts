@@ -72,6 +72,13 @@ async function main() {
   const [unknownLead] = await db.insert(leads).values({
     type: "call", sourceId: gbp.id, location: "unknown", occurredAt: new Date(), phoneE164: FIXTURES[1],
   }).returning();
+  // The real shape of every unknown-location GBP contact: a pool-number call whose
+  // lease carried the listing, which /voice threw away by reading location off the
+  // number. Location says nothing; the landing page says everything.
+  const [poolCallLead] = await db.insert(leads).values({
+    type: "call", sourceId: gbp.id, location: "unknown", occurredAt: new Date(), phoneE164: FIXTURES[2],
+    landingPage: "https://arbor-mgmt.com/?utm_source=google+my+business&utm_medium=organic&utm_campaign=ofallon",
+  }).returning();
 
   await seedDefaults(db);
 
@@ -105,7 +112,18 @@ async function main() {
   const [leadAfter] = await db.select().from(leads).where(eq(leads.id, oldLead.id));
   ok(leadAfter.campaignId === ofa.id, "existing gbp lead backfilled from its location");
   const [unknownAfter] = await db.select().from(leads).where(eq(leads.id, unknownLead.id));
-  ok(unknownAfter.campaignId === null, "gbp lead with unknown location left alone");
+  ok(unknownAfter.campaignId === null, "gbp lead with no location and no tag left alone");
+  const [poolAfter] = await db.select().from(leads).where(eq(leads.id, poolCallLead.id));
+  ok(poolAfter.campaignId === ofa.id, "pool-number gbp call recovered from its landing-page tag");
+
+  // The tag is matched with its delimiters, so a longer token cannot collide.
+  const [decoy] = await db.insert(leads).values({
+    type: "call", sourceId: gbp.id, location: "unknown", occurredAt: new Date(), phoneE164: FIXTURES[0],
+    landingPage: "https://arbor-mgmt.com/?utm_campaign=ofallon-print-2026",
+  }).returning();
+  await seedDefaults(db);
+  const [decoyAfter] = await db.select().from(leads).where(eq(leads.id, decoy.id));
+  ok(decoyAfter.campaignId === null, "utm_campaign=ofallon-print-2026 does NOT match ofallon");
 
   // Idempotency + non-destructiveness.
   await db.update(leads).set({ campaignId: edw.id }).where(eq(leads.id, oldLead.id));

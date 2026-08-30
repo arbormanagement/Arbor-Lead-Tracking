@@ -1,4 +1,4 @@
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import * as schema from "./schema";
 import { displayNameFor } from "@/lib/sources/naming";
 import type { Db } from "./client";
@@ -183,6 +183,30 @@ export async function seedDefaults(db: Db, onRow?: (label: string) => void) {
           eq(schema.leads.sourceId, src.id),
           eq(schema.leads.location, c.location),
           isNull(schema.leads.campaignId),
+        ),
+      );
+
+    // 3. …and the ones whose listing is in the LANDING PAGE but not in `location`,
+    //    which is a bigger group than it sounds and is the case that settled the
+    //    design. A GBP visitor who is handed a DNI pool number and then rings it
+    //    reaches /voice, which reads location off the tracking NUMBER — and a pool
+    //    number has none, so the branch is dropped even though the lease it just
+    //    resolved carries `utm_campaign=edwardsville` verbatim. Every one of the 13
+    //    GBP contacts sitting at `location: unknown` on 2026-08-30 is this: 7
+    //    Edwardsville and 6 O'Fallon, each with the tag in its landing page.
+    //
+    //    Forward-going leads no longer need this — /voice matches the lease's
+    //    campaign text now — so it exists to repair the rows written before that.
+    //    Matched on the tag with its delimiter so `ofallon` cannot also match a
+    //    hypothetical `ofallon-something`.
+    await db
+      .update(schema.leads)
+      .set({ campaignId: row.id })
+      .where(
+        and(
+          eq(schema.leads.sourceId, src.id),
+          isNull(schema.leads.campaignId),
+          sql`${schema.leads.landingPage} ~ ${`[?&]utm_campaign=${c.externalCampaignId}(&|$)`}`,
         ),
       );
   }
