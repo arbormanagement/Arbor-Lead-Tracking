@@ -10,6 +10,7 @@ import { syncConversions } from "@/lib/sync/conversions";
 import { syncFacebookLeads } from "@/lib/sync/facebook-leads";
 import { releaseExpired } from "@/lib/dni/assign";
 import { syncNumberWebhooks } from "@/lib/sync/twilio-webhooks";
+import { syncReviewWorkflow } from "@/lib/sync/review-workflow";
 import { runDniCanary } from "@/lib/sync/dni-canary";
 
 export const runtime = "nodejs";
@@ -61,6 +62,11 @@ export async function GET(req: Request, { params }: { params: Promise<{ job: str
         // NOT folded into `reaper` or any other DNI job: a canary that shares a run
         // with real work reports that work's failures as its own.
         return Response.json({ ok: true, job, result: await runDniCanary() });
+      case "review-workflow":
+        // The Google-review follow-up sequence (the Automations merge). Sends
+        // are gated by REVIEW_WORKFLOW_ENABLED — until the slice 4 cutover this
+        // returns {enabled:false} and touches nothing.
+        return Response.json({ ok: true, job, result: await syncReviewWorkflow() });
       case "twilio-fallback":
         // Self-healing: re-assert every tracking number's Twilio webhooks — voice
         // fallback (outage protection) and inbound SMS — so no number can drift or

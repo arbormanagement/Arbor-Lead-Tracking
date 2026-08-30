@@ -65,6 +65,11 @@ const JOBS: Array<{ job: string; schedule: string; timeoutMs?: number }> = [
   // Backfills pre-inbox call history on its first runs, then idles at zero rows —
   // staying on as the repair path for the voice webhook's best-effort threading.
   { job: "thread-backfill", schedule: "17 * * * *", timeoutMs: 600_000 },
+  // Google-review follow-up sequence (the Automations merge). The first step is
+  // due 1 minute after invoice.paid, so 5 minutes is the granularity customers
+  // actually experience; gated by REVIEW_WORKFLOW_ENABLED on the web service —
+  // a no-op tick until the slice 4 cutover flips it.
+  { job: "review-workflow", schedule: "*/5 * * * *", timeoutMs: 120_000 },
 ];
 
 const only = process.env.CRON_JOBS?.split(",").map((s) => s.trim()).filter(Boolean);
