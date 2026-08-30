@@ -17,6 +17,7 @@
 import { sendFailureAlert } from "@/lib/email/sendgrid";
 import { env } from "@/lib/env";
 import { createIntake, processIntake, updateIntakeFailed } from "@/lib/intake/process";
+import { formatPhoneNumber } from "@/lib/integrations/housecallpro-write";
 import type { FbLeadDetail } from "@/lib/integrations/facebook";
 
 const FIELD_ALIASES: Record<string, string[]> = {
@@ -81,8 +82,7 @@ export async function createHcpEstimateForFbLead(detail: FbLeadDetail): Promise<
     }
 
     const rawPhone = pick(fields, FIELD_ALIASES.phone);
-    const digits = rawPhone.replace(/\D/g, "");
-    const phone = digits.length === 11 && digits.startsWith("1") ? digits.slice(1) : digits.slice(-10);
+    const phone = formatPhoneNumber(rawPhone);
 
     const data = {
       firstName: firstName || "Unknown",

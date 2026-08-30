@@ -1,5 +1,7 @@
 import { after } from "next/server";
 import { createIntake, processIntake } from "@/lib/intake/process";
+import { webhookAuthorized } from "@/lib/intake/webhook-auth";
+import { formatPhoneNumber } from "@/lib/integrations/housecallpro-write";
 
 export const runtime = "nodejs";
 
@@ -19,20 +21,19 @@ export const runtime = "nodejs";
  *    customer + estimate takes seconds Chloe shouldn't spend silent.
  */
 export async function POST(req: Request) {
+  if (!webhookAuthorized(req)) return new Response("forbidden", { status: 403 });
   try {
     const body = await req.json().catch(() => ({}));
     const args = body.args || body;
     const call = body.call || {};
-    const callerPhone = call.from_number || call.to_number || "";
+    // Caller ID first, the model-captured phone second. The old app also fell
+    // back to call.to_number — which is the ARBOR line the caller dialed, so a
+    // blocked-caller-ID call got the company's own number recorded as the
+    // customer's and the phone Chloe actually captured was thrown away.
+    const callerPhone = call.from_number || "";
 
     const rawPhone = callerPhone || args.mobile_number || args.phone || "";
-    const phoneDigits = String(rawPhone).replace(/\D/g, "");
-    let normalizedPhone = phoneDigits;
-    if (phoneDigits.length === 11 && phoneDigits.startsWith("1")) {
-      normalizedPhone = phoneDigits.slice(1);
-    } else if (phoneDigits.length > 10) {
-      normalizedPhone = phoneDigits.slice(-10);
-    }
+    const normalizedPhone = formatPhoneNumber(String(rawPhone));
 
     const data = {
       firstName: String(args.first_name || ""),

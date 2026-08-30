@@ -199,6 +199,11 @@ export async function processIntake(intakeId: string, data: IntakeData, source: 
       await updateIntake(intakeId, { customerFound: false, hcpCustomerId: customerId });
     }
 
+    // Deliberate parity with the old app: retell estimates are ALSO labeled
+    // "Website" in HCP's lead_source, mislabeled as that is — the office's HCP
+    // reports have read that way since the automation launched, and changing
+    // the string mid-migration would split the voice channel across two labels.
+    // Flagged in docs/automations-merge-plan.md as a post-cutover decision.
     const leadSource = source === "facebook" ? "Facebook" : "Website";
     const estimate = await createEstimate(customerId, data.serviceNeeded, leadSource);
 

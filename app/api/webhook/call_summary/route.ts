@@ -1,7 +1,8 @@
 import { db } from "@/lib/db/client";
 import { retellCallSummaries } from "@/lib/db/schema";
 import { eq } from "drizzle-orm";
-import { sendEmail, sendFailureAlert } from "@/lib/email/sendgrid";
+import { escapeHtml, sendEmail, sendFailureAlert } from "@/lib/email/sendgrid";
+import { webhookAuthorized } from "@/lib/intake/webhook-auth";
 
 export const runtime = "nodejs";
 
@@ -21,6 +22,7 @@ export const runtime = "nodejs";
  * app's history buys nothing here.
  */
 export async function POST(req: Request) {
+  if (!webhookAuthorized(req)) return new Response("forbidden", { status: 403 });
   try {
     const body = await req.json().catch(() => ({}));
     const event = body.event;
@@ -38,8 +40,11 @@ export async function POST(req: Request) {
     const summary: string = callAnalysis.call_summary || call.call_summary || call.summary || "";
 
     // Claim the call_id FIRST — the unique index arbitrates a Retell redelivery
-    // racing itself, so exactly one claimant proceeds to email.
-    const [claimed] = await db
+    // racing itself, so exactly one claimant proceeds to email. A claim whose
+    // email FAILED stays claimable: this email is the only record of estimate
+    // cancellations, so a SendGrid blip must not permanently drop it —
+    // Retell's redeliveries become the retry mechanism.
+    let [claimed] = await db
       .insert(retellCallSummaries)
       .values({
         callId,
@@ -50,15 +55,27 @@ export async function POST(req: Request) {
       .onConflictDoNothing({ target: retellCallSummaries.callId })
       .returning({ id: retellCallSummaries.id });
     if (!claimed) {
-      console.log(`[call_summary] duplicate call_analyzed for call_id=${callId}, skipping`);
-      return Response.json({ message: "Duplicate event ignored" });
+      const [existing] = await db
+        .select({ id: retellCallSummaries.id, status: retellCallSummaries.status })
+        .from(retellCallSummaries)
+        .where(eq(retellCallSummaries.callId, callId as string))
+        .limit(1);
+      if (existing?.status !== "failed") {
+        console.log(`[call_summary] duplicate call_analyzed for call_id=${callId}, skipping`);
+        return Response.json({ message: "Duplicate event ignored" });
+      }
+      console.log(`[call_summary] retrying failed email for call_id=${callId}`);
+      claimed = existing;
     }
 
+    // The summary and transcript are model/caller-derived text landing in an
+    // HTML email — escape them, or a caller who says the right words injects
+    // markup into the office's inbox.
     const subject = `Call from ${fromNumber}`;
     const formattedTranscript = transcript
       .split("\n")
       .map((line: string) => {
-        const trimmed = line.trim();
+        const trimmed = escapeHtml(line.trim());
         if (!trimmed) return "<br/>";
         return trimmed
           .replace(/^(Agent:)/i, "<strong>Agent:</strong>")
@@ -70,7 +87,7 @@ export async function POST(req: Request) {
     const htmlBody = `
       <div style="font-family: Arial, sans-serif; color: #333; line-height: 1.6;">
         <p><strong>Call Summary:</strong><br/>
-        ${summary || "No summary available."}</p>
+        ${escapeHtml(summary) || "No summary available."}</p>
 
         <p><strong>Transcript:</strong><br/>
         ${formattedTranscript || "No transcript available."}</p>
@@ -79,6 +96,10 @@ export async function POST(req: Request) {
 
     try {
       await sendEmail("info@arbor-mgmt.com", subject, htmlBody);
+      await db
+        .update(retellCallSummaries)
+        .set({ status: "sent", errorMessage: null })
+        .where(eq(retellCallSummaries.id, claimed.id));
       console.log(`[call_summary] email sent for ${fromNumber}`);
     } catch (emailError) {
       const message = emailError instanceof Error ? emailError.message : String(emailError);

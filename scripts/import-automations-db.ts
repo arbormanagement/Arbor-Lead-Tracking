@@ -11,17 +11,22 @@
  * temporary one (`railway_create_tcp_proxy`, port 5432) for the import and
  * DELETE it afterwards, or run this from inside the project's private network.
  *
- * Idempotent: rows upsert on tracking_id (reviews) / id (catchup), so re-running
- * after the old app's flag is disabled picks up rows created since the last run
- * without touching anything already imported — which is exactly the slice 4
- * cutover sequence. Conversions applied:
+ * Idempotent AND state-advancing: reviews upsert on tracking_id, and a re-run
+ * REFRESHES step/click state on rows the old app progressed between runs
+ * (booleans only ever advance false→true, email_sent 'pending'→'sent'/'skipped',
+ * status off 'pending') — so the slice 4 sequence (import → disable old flag →
+ * re-import → enable here) cannot leave a stale 'pending' step that would
+ * double-send. Old-side state wins only where it is AHEAD; a click recorded on
+ * either side sticks. Per-row failures are reported at the end instead of
+ * aborting the run (a legacy duplicate on the new invoice+phone unique must not
+ * strand the import mid-way). Conversions applied:
  *   - stringly 'true'/'false' → real booleans; email_sent keeps its tri-state
  *     ('false' → 'pending', 'true' → 'sent', 'skipped' → 'skipped')
  *   - bare 10-digit phones → E.164
  *   - old ids are KEPT (both tables' ids are uuids; ULID columns accept them,
  *     and keeping them preserves catchup_texts.review_request_id references)
  */
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { Client } from "pg";
 import { db } from "@/lib/db/client";
 import { catchupTexts, reviewRequests } from "@/lib/db/schema";
@@ -101,43 +106,61 @@ async function main() {
   }
 
   let reviewsUpserted = 0;
-  let reviewsSkipped = 0;
+  const rowErrors: string[] = [];
   for (const r of reviews) {
     const phone = normalizePhone(r.customer_phone);
     if (!phone) {
       console.log(`  ! review ${r.tracking_id} has unusable phone "${r.customer_phone}" — importing with raw value`);
     }
-    const [row] = await db
-      .insert(reviewRequests)
-      .values({
-        id: r.id,
-        trackingId: r.tracking_id,
-        customerName: r.customer_name,
-        customerPhoneE164: phone ?? r.customer_phone,
-        customerEmail: r.customer_email || null,
-        invoiceId: r.invoice_id,
-        county: r.county === "stclair" ? "stclair" : "madison",
-        reviewUrl: r.review_url,
-        trackingUrl: r.tracking_url,
-        clicked: bool(r.clicked),
-        clickedAt: r.clicked_at,
-        smsSent: bool(r.sms_sent),
-        emailSent: mapEmailSent(r.email_sent),
-        finalSmsSent: bool(r.final_sms_sent),
-        status: r.status,
-        errorMessage: r.error_message,
-        createdAt: r.created_at,
-      })
-      .onConflictDoNothing({ target: reviewRequests.trackingId })
-      .returning({ id: reviewRequests.id });
-    if (row) reviewsUpserted++;
-    else reviewsSkipped++;
+    try {
+      await db
+        .insert(reviewRequests)
+        .values({
+          id: r.id,
+          trackingId: r.tracking_id,
+          customerName: r.customer_name,
+          customerPhoneE164: phone ?? r.customer_phone,
+          customerEmail: r.customer_email || null,
+          invoiceId: r.invoice_id,
+          county: r.county === "stclair" ? "stclair" : "madison",
+          reviewUrl: r.review_url,
+          trackingUrl: r.tracking_url,
+          clicked: bool(r.clicked),
+          clickedAt: r.clicked_at,
+          smsSent: bool(r.sms_sent),
+          emailSent: mapEmailSent(r.email_sent),
+          finalSmsSent: bool(r.final_sms_sent),
+          status: r.status,
+          errorMessage: r.error_message,
+          createdAt: r.created_at,
+        })
+        .onConflictDoUpdate({
+          target: reviewRequests.trackingId,
+          // State only ever ADVANCES: the old app progressed this row between
+          // imports, or a click landed on either side. Nothing here can regress
+          // a step already recorded locally, so a re-run is always safe.
+          set: {
+            clicked: sql`${reviewRequests.clicked} OR excluded.clicked`,
+            clickedAt: sql`coalesce(${reviewRequests.clickedAt}, excluded.clicked_at)`,
+            smsSent: sql`${reviewRequests.smsSent} OR excluded.sms_sent`,
+            emailSent: sql`case when excluded.email_sent in ('sent','skipped') then excluded.email_sent else ${reviewRequests.emailSent} end`,
+            finalSmsSent: sql`${reviewRequests.finalSmsSent} OR excluded.final_sms_sent`,
+            status: sql`case when excluded.status <> 'pending' then excluded.status else ${reviewRequests.status} end`,
+            errorMessage: sql`coalesce(excluded.error_message, ${reviewRequests.errorMessage})`,
+            updatedAt: sql`now()`,
+          },
+        });
+      reviewsUpserted++;
+    } catch (err) {
+      rowErrors.push(`review ${r.tracking_id}: ${err instanceof Error ? err.message : err}`);
+    }
   }
 
   let catchupsUpserted = 0;
   let catchupsSkipped = 0;
   for (const c of catchups) {
     const phone = normalizePhone(c.customer_phone);
+    try {
     const [row] = await db
       .insert(catchupTexts)
       .values({
@@ -158,10 +181,17 @@ async function main() {
       .returning({ id: catchupTexts.id });
     if (row) catchupsUpserted++;
     else catchupsSkipped++;
+    } catch (err) {
+      rowErrors.push(`catchup ${c.id}: ${err instanceof Error ? err.message : err}`);
+    }
   }
 
-  console.log(`reviews: ${reviewsUpserted} imported, ${reviewsSkipped} already present`);
+  console.log(`reviews: ${reviewsUpserted} upserted (state-advancing on re-run)`);
   console.log(`catchup: ${catchupsUpserted} imported, ${catchupsSkipped} already present`);
+  if (rowErrors.length) {
+    console.error(`✗ ${rowErrors.length} row(s) failed:`);
+    for (const e of rowErrors.slice(0, 10)) console.error(`   ${e}`);
+  }
 
   // The check that matters: every source tracking id must resolve here.
   const missing: string[] = [];
@@ -178,6 +208,7 @@ async function main() {
     process.exit(1);
   }
   console.log(`✓ all ${reviews.length} tracking ids resolve`);
+  if (rowErrors.length) process.exit(1);
 }
 
 main()

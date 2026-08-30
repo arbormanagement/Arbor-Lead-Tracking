@@ -15,9 +15,9 @@
  * into `tracking_numbers` (outreach pool, static) so its inbound texts hit
  * `/api/twilio/sms` and STOP handling; the send itself only needs the env var.
  */
-import { eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { db } from "@/lib/db/client";
-import { contacts, messages } from "@/lib/db/schema";
+import { contacts, conversations, messages } from "@/lib/db/schema";
 import { env } from "@/lib/env";
 import { preview, recordThreadActivity, upsertThread } from "@/lib/messaging/thread";
 import { getTwilioClient } from "@/lib/twilio/client";
@@ -39,13 +39,20 @@ export async function sendReviewSms(args: {
     return { ok: false, reason: "not_configured", detail: "REVIEW_SMS_FROM is not set" };
   }
 
-  const thread = await upsertThread(
-    { phone: args.toE164, name: args.customerName },
-    { endpointKey: from },
-  );
+  // No endpointKey here: `last_endpoint_key` is the thread's reply-to and must
+  // track the newest INBOUND endpoint (the repo invariant) — an outbound review
+  // send overwriting it would make the office's next inbox reply go out from
+  // the review number and start a second thread on the customer's phone. A
+  // thread that has NO endpoint yet (this customer never texted us) gets the
+  // review number as a fill-in below, so replies to it still work.
+  const thread = await upsertThread({ phone: args.toE164, name: args.customerName }, {});
   if (!thread) {
     return { ok: false, reason: "provider", detail: `could not resolve a contact for ${args.toE164}` };
   }
+  await db
+    .update(conversations)
+    .set({ lastEndpointKey: from, updatedAt: new Date() })
+    .where(and(eq(conversations.id, thread.conversationId), isNull(conversations.lastEndpointKey)));
 
   const [contact] = await db
     .select({ id: contacts.id, smsOptedOutAt: contacts.smsOptedOutAt })

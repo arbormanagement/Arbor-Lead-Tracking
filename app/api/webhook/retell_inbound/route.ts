@@ -1,6 +1,7 @@
 import { computeOfficeStatus, FAIL_SAFE_STATUS, TIME_ZONE } from "@/lib/retell/office-hours";
 import { UNKNOWN_CALLER } from "@/lib/retell/caller-context";
 import { lookupCaller } from "@/lib/retell/caller-lookup";
+import { webhookAuthorized } from "@/lib/intake/webhook-auth";
 
 export const runtime = "nodejs";
 
@@ -27,6 +28,9 @@ export const runtime = "nodejs";
  * behaving exactly as she does with no caller context at all.
  */
 export async function POST(req: Request) {
+  // The response describes real customers (name, address, email), so once the
+  // shared secret is configured a request without it gets nothing.
+  if (!webhookAuthorized(req)) return new Response("forbidden", { status: 403 });
   const startedAt = Date.now();
 
   let inbound: { from_number?: string; to_number?: string } = {};
@@ -83,6 +87,7 @@ export async function POST(req: Request) {
  * JSON body carrying this field proves which app answered.
  */
 export async function GET(req: Request) {
+  if (!webhookAuthorized(req)) return new Response("forbidden", { status: 403 });
   const status = computeOfficeStatus();
   const from = new URL(req.url).searchParams.get("from") ?? "";
   const caller = from ? await lookupCaller(from) : UNKNOWN_CALLER;

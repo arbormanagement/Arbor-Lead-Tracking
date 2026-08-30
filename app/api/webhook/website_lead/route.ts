@@ -5,6 +5,7 @@ import { automationIntakes } from "@/lib/db/schema";
 import { env } from "@/lib/env";
 import { sendFailureAlert } from "@/lib/email/sendgrid";
 import { createIntake, processIntake, updateIntakeFailed } from "@/lib/intake/process";
+import { formatPhoneNumber } from "@/lib/integrations/housecallpro-write";
 import { normalizePhone as toE164 } from "@/lib/phone";
 import { secretEquals } from "@/lib/secret-compare";
 
@@ -34,10 +35,7 @@ export async function POST(req: Request) {
     const str = (v: unknown) => (typeof v === "string" ? v : v == null ? "" : String(v));
 
     const rawPhone = str(b.phone || b.mobile_number);
-    const digits = rawPhone.replace(/\D/g, "");
-    let phone = digits;
-    if (digits.length === 11 && digits.startsWith("1")) phone = digits.slice(1);
-    else if (digits.length > 10) phone = digits.slice(-10);
+    const phone = formatPhoneNumber(rawPhone);
 
     let firstName = str(b.firstName || b.first_name).trim();
     let lastName = str(b.lastName || b.last_name).trim();

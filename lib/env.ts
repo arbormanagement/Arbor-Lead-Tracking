@@ -100,6 +100,14 @@ export const env = createEnv({
     ALERT_EMAIL_TO: z.string().optional(),
     // Shared secret the website form sends as X-Webhook-Secret.
     WEBSITE_LEAD_SECRET: z.string().optional(),
+    // Shared secret for the ported automation webhooks (retell_inbound,
+    // retell_estimate, call_summary, review_request), carried as ?secret= in
+    // the URL configured at each sender (Retell dashboard/tools, HCP webhook).
+    // Unset = open, matching the old app during the transition; SET THIS AT
+    // CUTOVER — retell_inbound answers caller lookups (customer names,
+    // addresses, emails) and the others accept writes, so leaving it open on a
+    // public domain is a PII/abuse exposure.
+    AUTOMATION_WEBHOOK_SECRET: z.string().optional(),
     // ⚠️ CUTOVER GATES — both default OFF so merging this code changes nothing.
     // REVIEW_WORKFLOW_ENABLED: the review-sequence cron sends real SMS/email to
     // real customers. Exactly ONE deployment may run the sequence — flip this on
@@ -192,6 +200,7 @@ export const env = createEnv({
     SENDGRID_FROM_NAME: process.env.SENDGRID_FROM_NAME,
     ALERT_EMAIL_TO: process.env.ALERT_EMAIL_TO,
     WEBSITE_LEAD_SECRET: process.env.WEBSITE_LEAD_SECRET,
+    AUTOMATION_WEBHOOK_SECRET: process.env.AUTOMATION_WEBHOOK_SECRET,
     REVIEW_WORKFLOW_ENABLED: process.env.REVIEW_WORKFLOW_ENABLED,
     FB_HCP_WRITE_ENABLED: process.env.FB_HCP_WRITE_ENABLED,
     REVIEW_SMS_FROM: process.env.REVIEW_SMS_FROM,

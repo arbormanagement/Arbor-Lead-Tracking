@@ -7,6 +7,7 @@ import { getCustomerById, getJobById } from "@/lib/integrations/housecallpro-wri
 import { normalizePhone as toE164 } from "@/lib/phone";
 import { determineCounty, getReviewUrl, shouldSkipReview } from "@/lib/reviews/county";
 import { resolveContact } from "@/lib/contacts/resolve";
+import { webhookAuthorized } from "@/lib/intake/webhook-auth";
 
 export const runtime = "nodejs";
 
@@ -28,6 +29,7 @@ export const runtime = "nodejs";
  *    sequence up front, recorded as a `suppressed` row so redeliveries settle.
  */
 export async function POST(req: Request) {
+  if (!webhookAuthorized(req)) return new Response("forbidden", { status: 403 });
   try {
     const body = await req.json().catch(() => ({}));
     const event = body.event;
@@ -43,6 +45,11 @@ export async function POST(req: Request) {
 
     if (!jobId) {
       return Response.json({ message: "No job_id, skipping" });
+    }
+    // An empty invoice id would make (invoice_id, phone) collide across
+    // unrelated customers on the unique index — refuse rather than enroll.
+    if (!invoiceId) {
+      return Response.json({ message: "No invoice id, skipping" });
     }
 
     const job = await getJobById(jobId);
