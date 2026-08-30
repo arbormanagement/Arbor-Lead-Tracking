@@ -70,7 +70,7 @@ export async function POST(req: Request) {
     }
 
     const spam = await isHardSpamNumber(fromE164);
-    const { sourceKey, assignmentId, lease, conversionPage } = await resolveInboundAttribution(tn);
+    const { sourceKey, assignmentId, lease, conversionPage, staticCampaignId } = await resolveInboundAttribution(tn);
     const sourceId = await ensureSourceId(sourceKey);
 
     const thread = await upsertThread(
@@ -125,6 +125,7 @@ export async function POST(req: Request) {
       spam,
       lease,
       conversionPage,
+      staticCampaignId,
     });
 
     await db.update(messages).set({ leadId }).where(eq(messages.id, inserted.id));
@@ -168,8 +169,10 @@ async function attachToOpenLeadOrCreate(args: {
   lease: typeof numberAssignments.$inferSelect | null;
   /** Last page of the leased session — what they were reading when they texted. */
   conversionPage: string | null;
+  /** Set only for a static number that names a campaign — see resolveInboundAttribution. */
+  staticCampaignId: string | null;
 }): Promise<string> {
-  const { thread, fromE164, body, sourceId, location, spam, lease, conversionPage } = args;
+  const { thread, fromE164, body, sourceId, location, spam, lease, conversionPage, staticCampaignId } = args;
 
   const [open] = await db
     .select({ id: leads.id })
@@ -186,7 +189,9 @@ async function attachToOpenLeadOrCreate(args: {
   // nothing to send to the offline-conversion upload. Attribution is written only
   // on a NEW lead: a follow-up text joins the lead already in flight and must not
   // rewrite the source that earned it, which is the same rule threading follows.
-  const campaignId = await resolveCampaignIdByName(lease?.campaign);
+  // Static number → its configured campaign; pooled → the lease's utm_campaign.
+  // Same precedence as /voice, which is the point of sharing the resolver.
+  const campaignId = staticCampaignId ?? (await resolveCampaignIdByName(lease?.campaign));
 
   const [lead] = await db
     .insert(leads)

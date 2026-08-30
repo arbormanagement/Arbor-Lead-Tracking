@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import * as schema from "./schema";
 import { displayNameFor } from "@/lib/sources/naming";
 import type { Db } from "./client";
@@ -36,6 +36,40 @@ export const SEED_SOURCES: Array<{
   // stop sharing a nameless blank row with genuinely unattributed work.
   // See PRE_TRACKING_SOURCE_KEY in lib/sources/naming.ts.
   { key: "n/a", displayName: "N/A (before tracking)", platform: "other", costModel: "none" },
+];
+
+/**
+ * Campaigns that are not an ad platform's, so no sync can discover them.
+ *
+ * The two Google Business Profiles are one SOURCE (`gbp`) and two listings, and the
+ * listing is what is worth comparing — they are separate assets with separate
+ * reviews, photos and posts, optimised separately. That distinction used to ride on
+ * `location`, which was the wrong field for it: `location` reads as the customer's
+ * city, and for GBP it is not. Measured over the 12 GBP wins to 2026-08-30, the
+ * profile and the service-address city DISAGREE half the time — the Edwardsville
+ * listing produced work in Granite City, Bethalto, Alton, Fairview Heights and
+ * Collinsville, and the O'Fallon listing produced work in Swansea. A visitor
+ * searches "tree service near me" and clicks whichever listing Google shows them;
+ * where the tree is does not enter into it. So the listing is a marketing asset —
+ * a campaign — and `location` is free to mean where the WORK is.
+ *
+ * `platform: "other"` is load-bearing: `campaigns_platform_extid_uq` is
+ * (platform, external_campaign_id), and no spend sync ever writes `other`
+ * (PLATFORM_SOURCE_KEY covers google / google_lsa / facebook), so these can never
+ * collide with a synced row.
+ *
+ * `externalCampaignId` holds the `utm_campaign` token each profile tags its website
+ * link with, verbatim — that is what `resolveCampaignIdByName` matches web clicks
+ * on, which is why the display name is free to be prettier than the token.
+ */
+export const SEED_CAMPAIGNS: Array<{
+  sourceKey: string;
+  externalCampaignId: string;
+  name: string;
+  location: (typeof schema.locationEnum.enumValues)[number];
+}> = [
+  { sourceKey: "gbp", externalCampaignId: "edwardsville", name: "Edwardsville", location: "edwardsville" },
+  { sourceKey: "gbp", externalCampaignId: "ofallon", name: "O'Fallon", location: "ofallon" },
 ];
 
 // `isDni` = website DNI draws rotating numbers from this pool; the rest are
@@ -88,6 +122,71 @@ export async function seedDefaults(db: Db, onRow?: (label: string) => void) {
     onRow?.(`renamed source ${row.key}`);
   }
 
+  // Non-platform campaigns, and the two backfills that stop the GBP history
+  // splitting at the moment this shipped. Both only ever fill a NULL, so they are
+  // safe to re-run on every deploy and cannot overwrite a later correction.
+  for (const c of SEED_CAMPAIGNS) {
+    const [src] = await db
+      .select({ id: schema.sources.id })
+      .from(schema.sources)
+      .where(eq(schema.sources.key, c.sourceKey))
+      .limit(1);
+    if (!src) continue; // the source seed above failed; nothing to hang this on
+    await db
+      .insert(schema.campaigns)
+      .values({
+        sourceId: src.id,
+        platform: "other",
+        externalCampaignId: c.externalCampaignId,
+        name: c.name,
+        status: "active",
+        location: c.location,
+      })
+      .onConflictDoNothing({ target: [schema.campaigns.platform, schema.campaigns.externalCampaignId] });
+    onRow?.(`campaign ${c.externalCampaignId}`);
+
+    const [row] = await db
+      .select({ id: schema.campaigns.id })
+      .from(schema.campaigns)
+      .where(
+        and(
+          eq(schema.campaigns.platform, "other"),
+          eq(schema.campaigns.externalCampaignId, c.externalCampaignId),
+        ),
+      )
+      .limit(1);
+    if (!row) continue;
+
+    // 1. The listing's own tracking number. A static number carries no DNI lease,
+    //    so without this the CALLS — the large majority of GBP contacts — would
+    //    still reach roi_daily with a null campaign while the web clicks resolved
+    //    one, and the two halves of a profile would disagree exactly as they did
+    //    before `inferLocation` learned to read utm_campaign.
+    await db
+      .update(schema.trackingNumbers)
+      .set({ staticCampaignId: row.id })
+      .where(
+        and(
+          eq(schema.trackingNumbers.isStatic, true),
+          eq(schema.trackingNumbers.staticSourceId, src.id),
+          eq(schema.trackingNumbers.location, c.location),
+          isNull(schema.trackingNumbers.staticCampaignId),
+        ),
+      );
+
+    // 2. Leads already on this source whose listing is known only from `location`.
+    await db
+      .update(schema.leads)
+      .set({ campaignId: row.id })
+      .where(
+        and(
+          eq(schema.leads.sourceId, src.id),
+          eq(schema.leads.location, c.location),
+          isNull(schema.leads.campaignId),
+        ),
+      );
+  }
+
   for (const p of SEED_POOLS) {
     await db
       .insert(schema.pools)
@@ -95,5 +194,5 @@ export async function seedDefaults(db: Db, onRow?: (label: string) => void) {
       .onConflictDoNothing({ target: schema.pools.key });
     onRow?.(`pool ${p.key}`);
   }
-  return { sources: SEED_SOURCES.length, pools: SEED_POOLS.length };
+  return { sources: SEED_SOURCES.length, campaigns: SEED_CAMPAIGNS.length, pools: SEED_POOLS.length };
 }

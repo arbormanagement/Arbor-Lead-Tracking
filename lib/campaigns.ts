@@ -1,4 +1,4 @@
-import { eq, isNull, notInArray, or, type SQL } from "drizzle-orm";
+import { eq, isNull, notInArray, or, sql, type SQL } from "drizzle-orm";
 import type { AnyPgColumn } from "drizzle-orm/pg-core";
 import { db } from "@/lib/db/client";
 import { campaigns } from "@/lib/db/schema";
@@ -48,7 +48,32 @@ export function campaignNotExcluded(col: AnyPgColumn, excludedIds: string[]): SQ
  */
 export async function resolveCampaignIdByName(name: string | null | undefined): Promise<string | null> {
   if (!name) return null;
-  const [c] = await db.select({ id: campaigns.id }).from(campaigns).where(eq(campaigns.name, name)).limit(1);
+  // Matched against the campaign's NAME or its EXTERNAL ID, because a `utm_campaign`
+  // is written by whoever built the link and only sometimes equals what the campaign
+  // is called here. Two cases, both real:
+  //
+  //   - The Google Business Profiles tag their links `utm_campaign=edwardsville` /
+  //     `ofallon`. Those tokens live on the campaigns as `external_campaign_id`, so
+  //     the rows are free to be called "Edwardsville" and "O'Fallon" on screen
+  //     instead of carrying a lowercase slug as their display name.
+  //   - A Google Ads tracking template set to `{campaignid}` rather than
+  //     `{campaignname}` sends the numeric id — which is exactly what
+  //     `external_campaign_id` holds for a synced campaign. That combination used to
+  //     resolve to null and silently drop the campaign off the lead; the account
+  //     default still carries an old template, so it can still happen.
+  //
+  // Still an exact match against EXISTING rows, never a create: minting campaigns
+  // from query-string text is what this function exists to prevent.
+  const [c] = await db
+    .select({ id: campaigns.id })
+    .from(campaigns)
+    .where(or(eq(campaigns.name, name), eq(campaigns.externalCampaignId, name)))
+    // A name match wins if some other campaign's external id happens to equal this
+    // one's name, so the answer cannot depend on which row Postgres reaches first.
+    // Ordered rather than queried twice: this runs on the /voice hot path, where a
+    // MISS is the common case and a second round trip would cost every call.
+    .orderBy(sql`case when ${campaigns.name} = ${name} then 0 else 1 end`)
+    .limit(1);
   return c?.id ?? null;
 }
 

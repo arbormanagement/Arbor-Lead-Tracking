@@ -1,0 +1,2 @@
+ALTER TABLE "tracking_numbers" ADD COLUMN "static_campaign_id" text;--> statement-breakpoint
+ALTER TABLE "tracking_numbers" ADD CONSTRAINT "tracking_numbers_static_campaign_id_campaigns_id_fk" FOREIGN KEY ("static_campaign_id") REFERENCES "public"."campaigns"("id") ON DELETE no action ON UPDATE no action;

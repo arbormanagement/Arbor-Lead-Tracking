@@ -1,6 +1,6 @@
 import { and, desc, eq, gt, isNull, sql } from "drizzle-orm";
 import { db } from "@/lib/db/client";
-import { calls, numberAssignments, sources, trackingNumbers } from "@/lib/db/schema";
+import { calls, campaigns, numberAssignments, sources, trackingNumbers } from "@/lib/db/schema";
 import { formatPhoneDisplay } from "@/lib/phone";
 import { dateTime } from "@/lib/format";
 import { getDefaultForwardNumber } from "@/lib/routing";
@@ -15,6 +15,14 @@ export default async function NumbersPage() {
   // Source key per static number (for display + the editor).
   const srcRows = await db.select({ id: sources.id, key: sources.key, displayName: sources.displayName }).from(sources);
   const srcById = new Map(srcRows.map((s) => [s.id, s.key]));
+
+  // Campaigns a static number can name. Offered because a source is sometimes too
+  // coarse: the two Google Business Profile listings are both `gbp`, one number
+  // each, and the listing is the thing worth comparing.
+  const campRows = await db
+    .select({ id: campaigns.id, name: campaigns.name, sourceId: campaigns.sourceId })
+    .from(campaigns)
+    .orderBy(campaigns.name);
 
   // Call activity per number (count + last call) — the CallRail-style activity column.
   const activity = await db
@@ -56,6 +64,7 @@ export default async function NumbersPage() {
       isStatic: n.isStatic,
       location: n.location ?? "unknown",
       sourceKey: n.staticSourceId ? srcById.get(n.staticSourceId) ?? null : null,
+      staticCampaignId: n.staticCampaignId,
       forwardDestination: n.forwardDestination,
       whisperMessage: n.whisperMessage,
       recordCalls: n.recordCalls,
@@ -82,6 +91,11 @@ export default async function NumbersPage() {
     .limit(20);
 
   const sourceOpts = srcRows.map((s) => ({ key: s.key, displayName: s.displayName }));
+  const campaignOpts = campRows.map((c) => ({
+    id: c.id,
+    name: c.name ?? c.id,
+    sourceKey: c.sourceId ? srcById.get(c.sourceId) ?? null : null,
+  }));
 
   return (
     <>
@@ -111,7 +125,7 @@ export default async function NumbersPage() {
           (e.g. “GBP Edwardsville”), and pick where it forwards.
         </div>
       ) : (
-        <NumbersTable rows={rows} sources={sourceOpts} officeDefault={officeDefault} />
+        <NumbersTable rows={rows} sources={sourceOpts} campaigns={campaignOpts} officeDefault={officeDefault} />
       )}
 
       <h2 className="page-title" style={{ fontSize: 16, marginTop: 28 }}>

@@ -53,6 +53,17 @@ export interface InboundAttribution {
    * below; discarding it was pure loss.
    */
   lease: typeof numberAssignments.$inferSelect | null;
+  /**
+   * The campaign a STATIC number stands for (`tracking_numbers.static_campaign_id`).
+   *
+   * A static number has no lease, so there is no `utm_campaign` text for
+   * `resolveCampaignIdByName` to match and every call to one reached `roi_daily`
+   * with a null campaign. That is fine where the source IS the whole story, and
+   * wrong where one source runs several numbered assets — the two Google Business
+   * Profile listings share the source `gbp`, and the listing is the thing worth
+   * comparing. Null for a pooled number, whose campaign comes off the lease.
+   */
+  staticCampaignId: string | null;
 }
 
 /**
@@ -69,7 +80,13 @@ export async function resolveInboundAttribution(
       .from(sources)
       .where(eq(sources.id, tn.staticSourceId))
       .limit(1);
-    return { sourceKey: src?.key ?? null, assignmentId: null, lease: null, conversionPage: null };
+    return {
+      sourceKey: src?.key ?? null,
+      assignmentId: null,
+      lease: null,
+      conversionPage: null,
+      staticCampaignId: tn.staticCampaignId ?? null,
+    };
   }
 
   // Keyed on `expires_at`, NOT `released_at`, and deliberately so. `released_at` is
@@ -105,8 +122,9 @@ export async function resolveInboundAttribution(
         assignmentId: row.assignment.id,
         lease: row.assignment,
         conversionPage: row.conversionPage ?? null,
+        staticCampaignId: null,
       }
-    : { sourceKey: null, assignmentId: null, lease: null, conversionPage: null };
+    : { sourceKey: null, assignmentId: null, lease: null, conversionPage: null, staticCampaignId: null };
 }
 
 /**

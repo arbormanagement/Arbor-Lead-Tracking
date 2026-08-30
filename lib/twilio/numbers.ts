@@ -294,6 +294,7 @@ export async function updateNumber(
     pool?: Pool;
     isStatic?: boolean;
     staticSourceId?: string | null;
+    staticCampaignId?: string | null;
     location?: Loc;
     friendlyName?: string;
     forwardDestination?: string | null;

@@ -99,16 +99,16 @@ async function buildCallTwiml(params: Record<string, string>, dest: { current: s
     // 2) Resolve attribution.
     //    Static numbers map straight to their source; pooled numbers resolve to
     //    the most-recent (active or recently-released) session lease.
-    const { sourceKey, assignmentId, lease, conversionPage } = await resolveInboundAttribution(tn);
+    const { sourceKey, assignmentId, lease, conversionPage, staticCampaignId } = await resolveInboundAttribution(tn);
 
     // 3) Spam pre-check (hard rules only — keep it fast).
     if (fromE164 && (await isHardSpamNumber(fromE164))) {
-      await recordCall({ callSid, fromE164, tn, assignmentId, lease, conversionPage, sourceKey, destination, status: "rejected_spam" });
+      await recordCall({ callSid, fromE164, tn, assignmentId, lease, conversionPage, staticCampaignId, sourceKey, destination, status: "rejected_spam" });
       return rejectTwiml();
     }
 
     // 4) Persist the call + lead immediately (status callbacks fill in the rest).
-    await recordCall({ callSid, fromE164, tn, assignmentId, lease, conversionPage, sourceKey, destination, status: "ringing" });
+    await recordCall({ callSid, fromE164, tn, assignmentId, lease, conversionPage, staticCampaignId, sourceKey, destination, status: "ringing" });
 
     // 5) Forward with an optional pre-call message + whisper + (optional) recording.
     //    All three are per-number overrides.
@@ -156,18 +156,25 @@ async function recordCall(args: {
   lease: typeof numberAssignments.$inferSelect | null;
   /** Last page of the leased session — what the caller was reading when they dialled. */
   conversionPage: string | null;
+  /** Set only for a static number that names a campaign — see resolveInboundAttribution. */
+  staticCampaignId: string | null;
   sourceKey: string | null;
   destination: string;
   status: string;
 }) {
-  const { callSid, fromE164, tn, assignmentId, lease, conversionPage, sourceKey, destination, status } = args;
+  const { callSid, fromE164, tn, assignmentId, lease, conversionPage, staticCampaignId, sourceKey, destination, status } = args;
 
   // Resolve source id (best-effort) for the denormalized lead row.
   const sourceId = await ensureSourceId(sourceKey);
 
   // Link to an EXISTING campaign by the lease's `utm_campaign` text. Shared with
   // the form and SMS paths so all three agree on what a match means.
-  const campaignId = await resolveCampaignIdByName(lease?.campaign);
+  //
+  // A STATIC number has no lease, so it names its campaign directly. Checked first
+  // because it is a configured fact about the number rather than an inference from
+  // whatever a visitor's URL happened to carry — and the two cannot both apply, as
+  // only a pooled number ever has a lease.
+  const campaignId = staticCampaignId ?? (await resolveCampaignIdByName(lease?.campaign));
 
   // Repeat-caller detection (one quick indexed lookup — keep the webhook fast).
   // Runs BEFORE the call insert so it doesn't count this very call.

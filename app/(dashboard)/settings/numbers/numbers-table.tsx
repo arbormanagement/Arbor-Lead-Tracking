@@ -9,6 +9,12 @@ interface SourceOpt {
   key: string;
   displayName: string;
 }
+interface CampaignOpt {
+  id: string;
+  name: string;
+  /** Which source this campaign sits under, so the list can be narrowed to it. */
+  sourceKey: string | null;
+}
 export interface NumberRow {
   id: string;
   phoneNumber: string;
@@ -18,6 +24,7 @@ export interface NumberRow {
   isStatic: boolean;
   location: string;
   sourceKey: string | null;
+  staticCampaignId: string | null;
   forwardDestination: string | null;
   whisperMessage: string | null;
   recordCalls: boolean;
@@ -36,10 +43,12 @@ export interface NumberRow {
 export function NumbersTable({
   rows,
   sources,
+  campaigns,
   officeDefault,
 }: {
   rows: NumberRow[];
   sources: SourceOpt[];
+  campaigns: CampaignOpt[];
   officeDefault: string;
 }) {
   const [editing, setEditing] = useState<string | null>(null);
@@ -64,6 +73,7 @@ export function NumbersTable({
             key={n.id}
             n={n}
             sources={sources}
+            campaigns={campaigns}
             officeDefault={officeDefault}
             editing={editing === n.id}
             onEdit={() => setEditing(editing === n.id ? null : n.id)}
@@ -79,6 +89,7 @@ export function NumbersTable({
 function Row({
   n,
   sources,
+  campaigns,
   officeDefault,
   editing,
   onEdit,
@@ -86,6 +97,7 @@ function Row({
 }: {
   n: NumberRow;
   sources: SourceOpt[];
+  campaigns: CampaignOpt[];
   officeDefault: string;
   editing: boolean;
   onEdit: () => void;
@@ -99,6 +111,7 @@ function Row({
   const [sourceKey, setSourceKey] = useState(n.sourceKey ?? "");
   const [isStatic, setIsStatic] = useState(n.isStatic);
   const [location, setLocation] = useState(n.location);
+  const [campaignId, setCampaignId] = useState(n.staticCampaignId ?? "");
   const [forward, setForward] = useState(n.forwardDestination ?? "");
   const [whisper, setWhisper] = useState(n.whisperMessage ?? "");
   const [record, setRecord] = useState(n.recordCalls);
@@ -129,6 +142,9 @@ function Row({
       isStatic,
       location,
       staticSourceKey: isStatic ? sourceKey : "",
+      // Only a static number names a campaign — a pooled one takes it from the
+      // visitor's lease, so leaving one set here would silently lose that race.
+      staticCampaignId: isStatic ? campaignId || null : null,
       forwardDestination: forward || null,
       whisperMessage: whisper || null,
       recordCalls: record,
@@ -238,6 +254,27 @@ function Row({
                   </div>
                 </Field>
               )}
+              <Field label="Campaign (optional — when the source is too coarse)">
+                {isStatic ? (
+                  <select value={campaignId} onChange={(e) => setCampaignId(e.target.value)} style={input}>
+                    <option value="">None</option>
+                    {campaigns
+                      // Narrowed to the chosen source, because a number cannot
+                      // sensibly stand for a campaign belonging to another channel.
+                      // Campaigns with no source stay listed — they fit anywhere.
+                      .filter((c) => !c.sourceKey || c.sourceKey === sourceKey)
+                      .map((c) => (
+                        <option key={c.id} value={c.id}>
+                          {c.name}
+                        </option>
+                      ))}
+                  </select>
+                ) : (
+                  <div style={{ color: "var(--muted)", fontSize: 12, padding: "7px 0" }}>
+                    From the visitor&apos;s lease (utm_campaign)
+                  </div>
+                )}
+              </Field>
               <Field label="Location (branch this number represents)">
                 <select value={location} onChange={(e) => setLocation(e.target.value)} style={input}>
                   {LOCATIONS.map((l) => (
