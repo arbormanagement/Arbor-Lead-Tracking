@@ -12,17 +12,32 @@
   `leadgen` v25.0 — Meta's challenge validated the LT endpoint in passing). Ordering was
   deliberate: flag+deploy first so the seconds-wide double-create window against the
   :09/:24/:39/:54 poller closes immediately.
-- **Slice 4 (reviews): import machinery merged (PR #124)** — `POST
-  /api/admin/import-automations` runs the import server-side, the only place both DBs are
-  reachable. The old Postgres turned out to already carry a public TCP proxy
+- **Slice 4 (reviews): the production import has RUN and is clean.** `POST
+  /api/admin/import-automations` (PR #124) runs it server-side, the only place both DBs
+  are reachable. The old Postgres turned out to already carry a public TCP proxy
   (`roundhouse.proxy.rlwy.net:38186`, created 2026-08-02 — predates this migration; left in
-  place, flagged for retirement with the old project). Remaining sequence, in order: bulk
-  import now (old workflow keeps running, LT gate stays off — no double-send because only
-  one workflow is enabled at a time) → Justin repoints HCP `invoice.paid` webhook
+  place, flagged for retirement with the old project). First apply: 474/477 reviews + all
+  255 catchups; the 3 failures were old-DB duplicates — same (invoice, phone) under a
+  second trackingId — now absorbed into their sibling row by a state-advancing merge
+  (PR #125). Second apply: **zero errors, zero missing tracking ids, all 477 accounted
+  for.** Remaining sequence, in order: old workflow keeps running (LT gate stays off — no
+  double-send because only one workflow is enabled at a time) → Justin repoints HCP
+  `invoice.paid` webhook to
+  `https://app.arbor-mgmt.com/api/webhook/review_request?secret=<AUTOMATION_WEBHOOK_SECRET>`
   (dashboard-only) → disable old app's `ENABLE_REVIEW_WORKFLOW`/`ENABLE_CATCHUP_CAMPAIGN` →
   delta re-import (state-advancing, idempotent) → `REVIEW_WORKFLOW_ENABLED=true` here.
-- **Website form: NOT yet repointed** (needs the Arbor-Website repo or a manual edit;
-  target `POST /api/webhook/website_lead`, existing X-Webhook-Secret).
+- **Website form: NO REPOINT NEEDED — the assumption was wrong** (established 2026-08-30
+  against the Arbor-Website codebase and the old app's logs). The website's contact form
+  posts to its OWN Vercel function (`api/contact.ts`), which writes the HCP customer +
+  estimate directly (`server/housecallpro.ts`) — it never calls the old app's
+  `/api/webhook/website_lead`, and nothing in that repo carries the webhook secret. The
+  old app's endpoint logged zero hits in 2+ days of runtime logs; the estimate-creation
+  lines in those logs are Chloe's `retell_estimate` path (which tags `lead_source=Website`
+  — the parity quirk Justin closed). LT's `website_lead` route stays as a gated parity
+  endpoint. **Flagged, not done:** pointing the website at LT's route instead of direct
+  HCP would stamp the form→estimate link deterministically (the slice 5 rationale), but
+  that is a behavioral change to live lead flow on the website, not a repoint — Justin's
+  call, post-migration.
 Everything below the fold verified earlier stands: `tsc`, `next build`, four verify
 suites, byte-identical office-status parity, scratch-Postgres import rehearsal
 (dry/apply/idempotent re-run), workflow gate + due-step + retry cap, click redirect,
