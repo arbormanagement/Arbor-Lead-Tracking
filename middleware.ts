@@ -48,6 +48,8 @@ export const config = {
     // their legacy paths — external systems (Retell, HCP, Meta, the website form)
     // are configured against them, and the Retell inbound webhook URL can only be
     // changed in Retell's dashboard, per phone number.
-    "/((?!api/track|api/dni|api/twilio|api/webhooks|api/webhook|api/cron|api/admin|api/auth|api/oauth|api/mcp|api/health|\\.well-known|oauth/authorize|track.js|dni-test|login|_next|favicon.ico).*)",
+    // `track/review` is the review click-tracking redirect — links to it live in
+    // customers' SMS history and must work without a session forever.
+    "/((?!api/track|api/dni|api/twilio|api/webhooks|api/webhook|api/cron|api/admin|api/auth|api/oauth|api/mcp|api/health|\\.well-known|oauth/authorize|track.js|track/review|dni-test|login|_next|favicon.ico).*)",
   ],
 };

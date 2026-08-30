@@ -19,6 +19,8 @@
     "verify:hcp": "tsx scripts/verify-hcp-queries.ts",
     "verify:office-hours": "tsx scripts/verify-office-hours.ts",
     "verify:caller-context": "tsx scripts/verify-caller-context.ts",
+    "verify:reviews": "tsx scripts/verify-reviews.ts",
+    "db:import-automations": "tsx scripts/import-automations-db.ts",
     "db:reclassify-sources": "tsx scripts/reclassify-sources.ts",
     "db:backup": "tsx scripts/db-backup.ts",
     "db:transfer": "tsx scripts/db-transfer.ts",
