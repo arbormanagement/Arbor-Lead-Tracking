@@ -72,14 +72,17 @@ inbound webhook 3× with a 10s timeout, failing safe to v110's `default_dynamic_
 | React dashboard (client/) | **Do not migrate** — LT's dashboard supersedes it; add a small "Review requests" surface later if wanted |
 | `.agents/memory/*` | Fold the two lessons into this repo's CLAUDE.md watch-outs when the relevant slice lands |
 
-Tables to migrate (Automations Postgres → LT Postgres, one-time import):
+Tables to migrate (Automations Postgres → LT Postgres, one-time import). **Decision
+(Justin 2026-08-30): lean import — merge only what has a live function; the rest is
+dump-only.** The Automations database ceases to exist entirely at retirement; there is no
+ongoing sync or second connection at any point, only the one-time import in slice 3.
 
 | Table | Import? | Notes |
 |---|---|---|
-| `review_requests` | **Yes, fully** | Tracking IDs are live in sent texts; convert stringly `'true'/'false'` to real booleans; add `attempts` columns |
+| `review_requests` | **Yes, fully** | The only table with live state: tracking IDs sit in sent texts, rows are mid-sequence, and the dedupe rules need history. Convert stringly `'true'/'false'` to real booleans; add `attempts` columns |
 | `catchup_texts` | Yes (read-only history) | Campaign is drained; rows only serve `/track/review` clicks |
-| `service_requests` | Yes, as archive table | Historical intake log; new intakes flow through LT's own leads/threads |
-| `call_summaries` | Yes, as archive table | Only used for `call_id` idempotency + history; LT's `calls` table takes over going forward |
+| `service_requests` | **No — dump-only archive** | Historical intake log; LT's leads/form_submissions/facebook_leads replace it going forward. `fb_leadgen_id` dedupe doesn't reach backward (Meta only redelivers recent events, and LT's pipeline has its own key) |
+| `call_summaries` | **No — dump-only archive** | LT's `calls` table (recordings + transcripts) is richer. `call_id` idempotency only matters for near-term Retell redeliveries, so post-cutover dedupe starts empty and that's fine |
 | `users` | No | Vestigial Replit scaffold |
 
 ## The cutover trick: keep every external URL alive
@@ -126,25 +129,44 @@ cutover, never parallel running.
 
 ### Slice 0 — Pre-flight discovery (no code)
 
-- [ ] **Which Twilio account/number does Automations send review texts from?**
-      (`TWILIO_PHONE_NUMBER` on the Railway service.) Is it in the A2P 10DLC campaign
-      `CZPD8CT` sender pool on messaging service `MG2fea0b23db4aa369705393147cc857ba`?
-      If not, review texts from LT rails need it added (or a decision on which number
-      sends them).
+Findings so far (checked live 2026-08-30):
+
+- ✅ **Postgres versions:** LT runs `postgres-ssl:17` (current major, daily + weekly
+  backups on the volume). Automations runs `postgres-ssl:16` — and its volume had **zero
+  backup schedules, never backed up once**. Fixed same day: one-off backup taken
+  (`62f4002a…`, 16:46 UTC) and a DAILY schedule enabled for the remainder of its life.
+  No version-upgrade work is needed anywhere: the merge direction is 16 → 17, `pg_dump`
+  restores forward across majors cleanly, and the 16 instance is deleted at retirement.
+- ✅ **Both apps use the SAME Twilio account** (`AC9c81b984…` on both Railway services).
+  The review sender is **+16183103486**. It has delivered texts since the A2P fix of
+  2026-07-24, so it is 10DLC-registered; what remains open is only whether it sits in
+  messaging service `MG2fea0b23db4aa369705393147cc857ba`'s sender pool or on a separate
+  registration.
+- ⚠️ `ENABLE_CATCHUP_CAMPAIGN` is still `"true"` on the Automations service. Harmless
+  (the queue is drained, the tick no-ops) but flip it to false along with
+  `ENABLE_REVIEW_WORKFLOW` at the slice 4 cutover so nothing on the old box can ever
+  send again.
+
+Still to check / decide:
+
+- [ ] Is +16183103486 in the `MG2fea…` sender pool? (Twilio console or API — the Arbor
+      MCP has no Twilio integration, so this is checked from LT's credentials or the
+      console.)
 - [ ] **Which Meta app receives the leadgen webhook today**, and do LT's
       `FACEBOOK_APP_SECRET`/verify token and Automations' `META_APP_SECRET` belong to the
       same app? (Both repos carry a full webhook; only one can be the page's subscriber.)
-- [ ] Snapshot the Automations Postgres (pg_dump to Drive) and record row counts per
-      table for import verification.
+- [ ] pg_dump the Automations Postgres to Drive (the Railway volume backup covers
+      disaster recovery; the dump is the long-term archive that outlives the project)
+      and record row counts per table for import verification.
 - [ ] Confirm Automations still deploys from `main` with auto-deploy ON
       (`railway_list_deployments` → `meta.branch`) — fixed 2026-08-27, verify it stuck.
 - [ ] Enumerate live config: Retell LLM tool URLs (`create_estimate`), agent webhook
       (`call_summary`), HCP webhook registration, website form target + secret, DNS TTL
       on `automations.arbor-mgmt.com`.
-- [ ] **Decision (Justin): review-text sender number.** Recommended: import the current
-      sending number into `tracking_numbers` as a static number in a new `outreach` pool
+- [ ] **Decision (Justin): review-text sender number.** Recommended: import
+      +16183103486 into `tracking_numbers` as a static number in a new `outreach` pool
       (not DNI), so replies thread into the inbox and STOP is enforced by the existing
-      `/sms` route.
+      `/sms` route. Same Twilio account, so this is a plain import, not a port.
 
 ### Slice 1 — Retell inbound (office hours + caller context) on LT
 
@@ -201,11 +223,12 @@ Build:
   through `/api/twilio/voice` minutes earlier), and stamp `leads.hcp_estimate_id` +
   `contacts.hcp_customer_id` at creation. Attribution becomes deterministic for
   voice-agent estimates; `matchLeadsToEstimates` remains for everything else.
-- `app/api/webhook/call_summary/route.ts` — idempotent on `call_id` (archive table
-  imported in the data slice enforces the unique), email to info@ preserved verbatim.
-  Optionally also attach the summary to the LT call row (match on Retell call metadata /
-  from_number + time) so the inbox thread shows it — nice-to-have, not gating.
-- Migration: `automation_service_requests`, `automation_call_summaries` tables (+ import).
+- `app/api/webhook/call_summary/route.ts` — idempotent on `call_id` via a small
+  `retell_call_summaries` log table with a unique on it (starts empty at cutover —
+  lean-import decision; Retell only redelivers near-term, so history buys nothing),
+  email to info@ preserved verbatim. Optionally also attach the summary to the LT call
+  row (match on Retell call metadata / from_number + time) so the inbox thread shows
+  it — nice-to-have, not gating.
 
 Verify: dry-run mode first (create against HCP with a test customer, then delete);
 `retell_estimate` exercised via curl with a captured production payload; confirm the
@@ -217,15 +240,15 @@ applies**: draft version, simulation batch (in-hours AND after-hours, ≥3 sampl
 transfer case, inject `office_status`/`caller_context` generated by running the source),
 separate approval from Justin, publish. Old endpoints stay up as dead men until slice 6.
 
-### Slice 3 — Data import (reviews + archives)
+### Slice 3 — Data import (reviews + click history)
 
 Build:
 - Drizzle migration: `review_requests` (typed: booleans, timestamps, `attempts_sms1/
-  email/sms2` int columns), `catchup_texts` (as-is, read-only), plus the two archive
-  tables from slice 2 if not already landed.
+  email/sms2` int columns) and `catchup_texts` (as-is, read-only). Nothing else — the
+  lean-import decision keeps `service_requests`/`call_summaries` in the Drive dump only.
 - `scripts/import-automations-db.ts` — reads a pg_dump/CSV export, converts
   `'true'/'false'` strings, verifies row counts against slice 0's snapshot. Idempotent
-  (upsert on tracking_id / call_id / leadgen_id).
+  (upsert on tracking_id).
 - `app/track/review/route.ts` — click tracking redirect, same URL shape
   (`/track/review?id=<uuid>`), marks clicked + redirects to the county's Google review
   URL. Middleware matcher: exclude `track/review`.
@@ -300,8 +323,10 @@ write).
    loop.
 3. Watch one quiet week: `/api/diagnostics` clean, Twilio Monitor Alerts zero
    11200/15003, review sequence firing, call summaries arriving, estimates linking.
-4. Scale the old Railway service to zero (don't delete for a month). Final pg_dump to
-   Drive. Archive the `Arbor-Automations` repo with a README pointer here.
+4. Scale the old Railway app service to zero (don't delete for a month). Final pg_dump
+   to Drive, then the whole "Arbor Automations" Railway project — app service **and the
+   Postgres 16 database** — is deleted after the quiet month; the Drive dump is the
+   permanent archive. Archive the `Arbor-Automations` repo with a README pointer here.
 5. Update `arbor-general/CLAUDE.md`: the Retell webhook section, the "where it should
    live" note (the answer is now this app), and the Infrastructure section.
 
