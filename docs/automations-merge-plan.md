@@ -1,6 +1,16 @@
 # Migrating Arbor-Automations into Arbor-Lead-Tracking
 
-**Status: PLAN — nothing here is built yet.** Written 2026-08-30 from a full read of both
+**Status (2026-08-30): CODE FOR SLICES 1–5 IS BUILT AND VERIFIED on this branch; nothing
+is deployed and no cutover has happened.** Every webhook is dormant until its external
+config repoints here, and the two paths that could act on their own — the review-sequence
+cron and the Facebook HCP write — default OFF behind `REVIEW_WORKFLOW_ENABLED` /
+`FB_HCP_WRITE_ENABLED`, so merging to `main` changes nothing observable. Verified:
+`tsc`, `next build`, four verify suites (office-hours 29 cases, caller-context 67 checks,
+reviews, plus the existing hcp), byte-identical office-status parity against the live
+production webhook, and a scratch-Postgres rehearsal of the import (dry/apply/idempotent
+re-run), the workflow gate + due-step + persisted retry cap, the click redirect, and the
+call-summary idempotency. Remaining: slice 0's open checks, the real import, and the
+cutovers — each needing Justin. Written 2026-08-30 from a full read of both
 codebases. The goal: one app (this one) owns the entire inbound-lead pipeline — call in,
 attribution, Chloe's context, estimate creation, review follow-up — and the
 `Arbor-Automations` Express app on Railway is retired.
