@@ -16,6 +16,7 @@ import { landingPathSql } from "@/lib/landing-page";
 import { PRE_TRACKING_SOURCE_KEY, displayNameFor } from "@/lib/sources/naming";
 import { TRACKING_STARTED_AT } from "@/lib/tracking-coverage";
 import { resolveWindow, type WindowInput } from "@/lib/window";
+import type { ESTIMATE_DATE_FIELDS } from "@/lib/api-contracts/tools";
 
 /**
  * The estimate list — what /estimates renders and what the MCP `list_estimates`
@@ -157,19 +158,33 @@ export interface EstimateListAgg {
   wonCents: number;
 }
 
+export type EstimateDateField = (typeof ESTIMATE_DATE_FIELDS)[number];
+
+// The two dates an estimate carries. `created` is the safe default: every estimate
+// has one. `scheduled` is null on every estimate nobody has booked a visit for, so a
+// window on it drops them — which is correct for "whose visit is this week" and wrong
+// for anything counting opportunities. See the scope comment below.
+const ESTIMATE_DATE_COLUMN = {
+  created: hcpEstimates.createdAtHcp,
+  scheduled: hcpEstimates.scheduledStartHcp,
+} as const;
+
 export async function listEstimates(opts: WindowInput & {
+  dateField?: EstimateDateField;
   filters?: EstimateFilters;
   limit?: number;
   offset?: number;
 }): Promise<{
   rows: EstimateListRow[];
   agg: EstimateListAgg;
+  dateField: EstimateDateField;
   total: number;
   hasMore: boolean;
   nextOffset: number | null;
 }> {
-  const { filters = {}, limit = 50, offset = 0 } = opts;
+  const { dateField = "created", filters = {}, limit = 50, offset = 0 } = opts;
   const { since, until } = resolveWindow(opts, 7);
+  const dateCol = ESTIMATE_DATE_COLUMN[dateField];
 
   // Recruiting/brand campaigns are not customer acquisition, so their estimates
   // stay out of this list and its totals — the same exclusion roi_daily applies.
@@ -178,15 +193,22 @@ export async function listEstimates(opts: WindowInput & {
   // At most one lead per estimate: matchLeadsToEstimates claims each lead exactly
   // once, so this join cannot fan out and double-count an estimate or its revenue.
   //
-  // Windowed on CREATED. Every estimate has one, so an estimate with no appointment
-  // still appears — windowing on `scheduled_start` alone is precisely what hid 34 of
-  // them — and unlike `coalesce(scheduled, created)` the population does not change
-  // shape when someone books a visit.
+  // Windowed on CREATED by default. Every estimate has that date, so an estimate with
+  // no appointment still appears — windowing on `scheduled_start` alone is precisely
+  // what hid 34 of them — and unlike `coalesce(scheduled, created)` the population does
+  // not change shape when someone books a visit.
+  //
+  // `dateField: "scheduled"` opts into exactly that narrowing, deliberately: SQL
+  // comparisons against NULL are false, so every unbooked estimate falls out. That is
+  // the right population for "whose visit lands in this period" and the wrong one for
+  // volume, attribution or close rate — the agg below is computed over whichever scope
+  // ran, so a caller who picks `scheduled` gets counts consistent with the rows they
+  // can see, not with the book as a whole.
   const scope = and(
     isLiveEstimate,
-    gte(hcpEstimates.createdAtHcp, since),
+    gte(dateCol, since),
     // Only bounded when the caller named a fixed period; a rolling window runs to now.
-    until ? lte(hcpEstimates.createdAtHcp, until) : undefined,
+    until ? lte(dateCol, until) : undefined,
     campaignNotExcluded(leads.campaignId, excludedIds),
     filterSql(filters),
   );
@@ -293,6 +315,7 @@ export async function listEstimates(opts: WindowInput & {
     total,
     hasMore,
     nextOffset: hasMore ? offset + rows.length : null,
+    dateField,
     agg: agg ?? {
       total: 0,
       countable: 0,
