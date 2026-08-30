@@ -1,3 +1,4 @@
+import { locationLabel } from "@/lib/locations";
 import {
   FILTER_KEYS,
   NONE,
@@ -30,8 +31,7 @@ export function filterLabel(key: (typeof FILTER_KEYS)[number], value: string): s
     const none = key === "type" ? "no tracked contact" : key === "arborist" ? "unassigned" : "none";
     return `${noun}: ${none}`;
   }
-  const pretty =
-    key === "location" ? (value === "ofallon" ? "O'Fallon" : value === "edwardsville" ? "Edwardsville" : value) : value;
+  const pretty = key === "location" ? locationLabel(value) : value;
   return `${noun}: ${pretty}`;
 }
 

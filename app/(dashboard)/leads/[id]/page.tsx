@@ -2,6 +2,7 @@ import { asc, eq } from "drizzle-orm";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { db } from "@/lib/db/client";
+import { locationLabel } from "@/lib/locations";
 import {
   attributions,
   calls,
@@ -113,7 +114,7 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
           <h1 className="page-title">{t.ic} {who}</h1>
           <p className="page-sub">
             {t.label} lead · {dateTime(lead.occurredAt)}
-            {lead.location && lead.location !== "unknown" ? <> · {lead.location === "ofallon" ? "O'Fallon" : "Edwardsville"}</> : null}
+            {lead.location && lead.location !== "unknown" ? <> · {locationLabel(lead.location)}</> : null}
           </p>
         </div>
         <div className="controls">

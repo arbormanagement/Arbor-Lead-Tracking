@@ -15,6 +15,7 @@ import {
 } from "drizzle-orm/pg-core";
 import { relations, sql } from "drizzle-orm";
 import { ulid } from "ulid";
+import { LOCATIONS } from "@/lib/locations";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Conventions
@@ -34,7 +35,7 @@ const updatedAt = () =>
     .$onUpdate(() => new Date());
 
 // ── Enums ────────────────────────────────────────────────────────────────────
-export const locationEnum = pgEnum("location", ["edwardsville", "ofallon", "unknown"]);
+export const locationEnum = pgEnum("location", [...LOCATIONS]);
 // Pools are user-managed rows in `pools` (not a fixed enum), so a number's `pool`
 // is a plain text key referencing pools.key. Defaults seeded by the migrate/seed.
 export const numberStatusEnum = pgEnum("number_status", ["active", "disabled"]);

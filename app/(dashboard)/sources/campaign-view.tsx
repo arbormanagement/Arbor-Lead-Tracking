@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { dollars } from "@/lib/format";
+import { locationLabel } from "@/lib/locations";
 import { campaignPerformance } from "@/lib/queries/sources";
 import { estimateDrilldown } from "./drilldown";
 import type { TouchModel } from "@/lib/attribution/model";
@@ -181,9 +182,9 @@ export async function CampaignView({ days, touch }: { days: number; touch: Touch
           <tbody>
             {byLocation.map((l) => (
               <tr key={l.location ?? "unknown"}>
-                <td style={{ textTransform: "capitalize" }}>
+                <td>
                   <Link href={estimateDrilldown({ location: l.location ?? "unknown" }, days)} className="link">
-                    {l.location === "ofallon" ? "O'Fallon" : (l.location ?? "unknown")}
+                    {locationLabel(l.location)}
                   </Link>
                 </td>
                 <td className="mono">{l.contacts}</td>

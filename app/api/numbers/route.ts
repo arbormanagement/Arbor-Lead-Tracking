@@ -5,6 +5,7 @@ import { authorizeAdmin, unauthorized, forbidden } from "@/lib/admin-auth";
 import { db } from "@/lib/db/client";
 import { pools, sources, trackingNumbers } from "@/lib/db/schema";
 import { provisionNumber } from "@/lib/twilio/numbers";
+import { LOCATIONS } from "@/lib/locations";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -24,7 +25,7 @@ const Body = z.object({
   forceImport: z.boolean().default(false),
   isStatic: z.boolean().default(false),
   staticSourceKey: z.string().optional(),
-  location: z.enum(["edwardsville", "ofallon", "unknown"]).default("unknown"),
+  location: z.enum(LOCATIONS).default("unknown"),
   friendlyName: z.string().max(120).optional(),
   forwardDestination: z.string().max(20).optional(),
   whisperMessage: z.string().max(300).optional(),

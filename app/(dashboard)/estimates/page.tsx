@@ -1,6 +1,7 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
 import { dateTime, dollars } from "@/lib/format";
+import { locationLabel } from "@/lib/locations";
 import { formatPhoneDisplay } from "@/lib/phone";
 import { listEstimates, type EstimateListRow } from "@/lib/queries/estimates";
 import { pickDays, timeframeLabel } from "@/lib/timeframes";
@@ -134,7 +135,7 @@ function dimLabel(key: string, dim: Dim): string {
   switch (dim) {
     case "type": return key === "untracked" ? "No tracked contact" : (TYPE_META[key]?.label ?? key);
     case "location":
-      return key === "edwardsville" ? "Edwardsville" : key === "ofallon" ? "O'Fallon" : "Unknown";
+      return locationLabel(key);
     case "day":
       return new Date(key + "T00:00:00Z").toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
     case "week":

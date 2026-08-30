@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { Fragment } from "react";
 import { dollars } from "@/lib/format";
+import { qualifiedLocationLabel } from "@/lib/locations";
 import { sourceBreakdowns, sourcePerformance } from "@/lib/queries/sources";
 import { timeframeLabel } from "@/lib/timeframes";
 import { estimateDrilldown } from "./drilldown";
@@ -51,12 +52,6 @@ export async function ChannelView({ days, touch }: { days: number; touch: TouchM
     // sub-rows that do not add up to the row above them, which is its own confusion.
     if (named.length < 2 || namedContacts * 2 <= allContacts) byKeyLocation.delete(k);
   }
-
-  const LOCATION_LABEL: Record<string, string> = {
-    edwardsville: "Edwardsville",
-    ofallon: "O'Fallon",
-    unknown: "Location unknown",
-  };
 
   const totals = rows.reduce(
     (a, r) => ({
@@ -155,7 +150,7 @@ export async function ChannelView({ days, touch }: { days: number; touch: TouchM
                     <td style={{ paddingLeft: 34 }}>
                       <span style={{ color: "var(--faint)", marginRight: 7 }}>↳</span>
                       <Link href={estimateDrilldown({ source: r.key ?? "none", location: sub.location ?? "unknown" }, days)} className="link muted">
-                        {LOCATION_LABEL[sub.location ?? "unknown"] ?? sub.location}
+                        {qualifiedLocationLabel(sub.location)}
                       </Link>
                     </td>
                     <td className="mono muted">{sub.contacts}</td>

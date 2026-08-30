@@ -6,6 +6,7 @@ import { getSession } from "@/lib/auth";
 import { db } from "@/lib/db/client";
 import { sources } from "@/lib/db/schema";
 import { releaseNumber, setNumberStatus, updateNumber } from "@/lib/twilio/numbers";
+import { LOCATIONS } from "@/lib/locations";
 
 export const runtime = "nodejs";
 export const maxDuration = 30;
@@ -28,7 +29,7 @@ const Patch = z.object({
   pool: z.string().min(2).max(40).optional(),
   isStatic: z.boolean().optional(),
   staticSourceKey: z.string().optional(),
-  location: z.enum(["edwardsville", "ofallon", "unknown"]).optional(),
+  location: z.enum(LOCATIONS).optional(),
   status: z.enum(["active", "disabled"]).optional(),
   friendlyName: z.string().max(120).optional(),
   forwardDestination: z.string().max(20).nullable().optional(),

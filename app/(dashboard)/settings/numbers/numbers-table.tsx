@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { LOCATIONS, locationLabel } from "@/lib/locations";
 import { formatPhoneDisplay } from "@/lib/phone";
 
 interface SourceOpt {
@@ -97,6 +98,7 @@ function Row({
   const [friendlyName, setFriendlyName] = useState(n.friendlyName ?? "");
   const [sourceKey, setSourceKey] = useState(n.sourceKey ?? "");
   const [isStatic, setIsStatic] = useState(n.isStatic);
+  const [location, setLocation] = useState(n.location);
   const [forward, setForward] = useState(n.forwardDestination ?? "");
   const [whisper, setWhisper] = useState(n.whisperMessage ?? "");
   const [record, setRecord] = useState(n.recordCalls);
@@ -124,8 +126,8 @@ function Row({
   async function save() {
     const ok = await patch({
       friendlyName,
-      pool: "reserved",
       isStatic,
+      location,
       staticSourceKey: isStatic ? sourceKey : "",
       forwardDestination: forward || null,
       whisperMessage: whisper || null,
@@ -168,6 +170,9 @@ function Row({
             <span className="badge">{n.sourceKey ?? "no source"}</span>
           ) : (
             <span className="badge">website{n.leased ? " · leased" : ""}</span>
+          )}
+          {n.location !== "unknown" && (
+            <span style={{ color: "var(--muted)", fontSize: 11 }}> · {locationLabel(n.location)}</span>
           )}
         </td>
         <td>{n.forwardDestination ? formatPhoneDisplay(n.forwardDestination) : <span style={{ color: "var(--muted)" }}>default</span>}</td>
@@ -233,6 +238,15 @@ function Row({
                   </div>
                 </Field>
               )}
+              <Field label="Location (branch this number represents)">
+                <select value={location} onChange={(e) => setLocation(e.target.value)} style={input}>
+                  {LOCATIONS.map((l) => (
+                    <option key={l} value={l}>
+                      {locationLabel(l)}
+                    </option>
+                  ))}
+                </select>
+              </Field>
               <Field label="Whisper (blank = default)">
                 <input value={whisper} onChange={(e) => setWhisper(e.target.value)} style={input} placeholder="“Tree lead from {source}”" />
               </Field>
