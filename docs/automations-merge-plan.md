@@ -1,7 +1,7 @@
 # Migrating Arbor-Automations into Arbor-Lead-Tracking
 
-**Status (2026-08-30): CODE FOR SLICES 1–5 IS BUILT AND VERIFIED on this branch; nothing
-is deployed and no cutover has happened.** Every webhook is dormant until its external
+**Status (2026-08-30): SLICES 1–5 MERGED TO MAIN AND DEPLOYED, DORMANT (PR #123,
+approved by Justin); no cutover has happened.** Every webhook is dormant until its external
 config repoints here, and the two paths that could act on their own — the review-sequence
 cron and the Facebook HCP write — default OFF behind `REVIEW_WORKFLOW_ENABLED` /
 `FB_HCP_WRITE_ENABLED`, so merging to `main` changes nothing observable. Verified:
@@ -173,10 +173,19 @@ Still to check / decide:
 - [ ] Enumerate live config: Retell LLM tool URLs (`create_estimate`), agent webhook
       (`call_summary`), HCP webhook registration, website form target + secret, DNS TTL
       on `automations.arbor-mgmt.com`.
-- [ ] **Decision (Justin): review-text sender number.** Recommended: import
-      +16183103486 into `tracking_numbers` as a static number in a new `outreach` pool
-      (not DNI), so replies thread into the inbox and STOP is enforced by the existing
-      `/sms` route. Same Twilio account, so this is a plain import, not a port.
+- [x] **Decision (Justin 2026-08-30): review-text sender number — import +16183103486
+      into `tracking_numbers`** as a static number in a new `outreach` pool (not DNI),
+      so replies thread into the inbox and STOP is enforced by the existing `/sms`
+      route. ⚠️ **Execute this import ONLY at the slice 4 cutover, immediately after
+      `ENABLE_REVIEW_WORKFLOW` is turned off on the old app** — `provisionNumber`
+      rewrites every Twilio webhook on the number, which would hijack its inbound SMS
+      away from the old app's reply-forwarding while its workflow is still live (and
+      the hourly `twilio-fallback` cron would keep re-asserting that). Same Twilio
+      account, so it is a plain import, and `assertImportIsSafe` will flag the old
+      app's webhooks — the cutover is the one moment `forceImport` is correct.
+- [x] **Decision (Justin 2026-08-30): HCP `lead_source` on Chloe's estimates stays
+      "Website".** The field isn't used by the office, so the parity label stands and
+      the post-cutover rename idea is closed — don't re-propose it.
 
 ### Slice 1 — Retell inbound (office hours + caller context) on LT
 
@@ -363,10 +372,8 @@ Plus, added by the build (all default-off/unset so merging changes nothing):
 
 ## Decisions flagged for post-cutover (deliberate parity kept for now)
 
-- **HCP `lead_source` labels retell estimates "Website"** — ported as-is because the
-  office's HCP reports have read that way since launch, and changing the string
-  mid-migration would split the voice channel across two labels. Cheap to change to
-  e.g. "Voice Agent" after cutover if wanted (`lib/intake/process.ts`).
+- ~~HCP `lead_source` labels retell estimates "Website"~~ — **CLOSED (Justin
+  2026-08-30): the field isn't used, keep the parity label.**
 - **`sendReviewSms` duplicates the outbound-SMS core of `lib/messaging/send.ts`**
   (queued-row insert, status update, 21610 opt-out writeback) rather than refactoring
   the live inbox send path mid-merge. Consolidate into a shared helper in a calm week.
