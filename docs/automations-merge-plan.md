@@ -159,12 +159,26 @@ Findings so far (checked live 2026-08-30):
 
 Still to check / decide:
 
-- [ ] Is +16183103486 in the `MG2fea…` sender pool? (Twilio console or API — the Arbor
-      MCP has no Twilio integration, so this is checked from LT's credentials or the
-      console.)
-- [ ] **Which Meta app receives the leadgen webhook today**, and do LT's
-      `FACEBOOK_APP_SECRET`/verify token and Automations' `META_APP_SECRET` belong to the
-      same app? (Both repos carry a full webhook; only one can be the page's subscriber.)
+- [x] ✅ **+16183103486 IS in the `MG2fea…` sender pool** (checked live 2026-08-30 via the
+      Arbor MCP's Twilio tools — which exist; the "no Twilio integration" note above was
+      tool-inventory rot). Added to the pool 2026-07-24, the A2P-fix date; the pool holds
+      12 numbers including it. Review texts from this app send under the verified
+      campaign with zero additional A2P work. Its SID is `PN34c4ea732142bea0a274be472b753389`.
+      ⚠️ **Its `sms_url` does NOT point at the old app — it points at the ARBOR MCP
+      SERVER** (`arbor-mcp.up.railway.app/webhooks/twilio/sms/…`, set 2026-08-17), so
+      review replies currently flow through the MCP server, not Automations'
+      `/api/webhook/twilio`. Before the slice-4 import overwrites that webhook, check
+      what the MCP's SMS handler does with those replies so nothing it feeds goes dark.
+      Its `voice_url` is Twilio's demo placeholder — no voice traffic to preserve.
+- [x] ✅ **One Meta app owns the whole leadgen pipeline: "MCP management"
+      (`1620806332503441`) — the Arbor MCP's own app** (checked live 2026-08-30). It holds
+      the single app-level subscription (callback → the old app's
+      `/api/webhook/facebook_leads`, active, leadgen v25.0) and is the page's only
+      subscribed app. No split-brain. The slice-5 repoint is one MCP call
+      (`facebook_ads_subscribe_leadgen_webhook` with this app's callback pointed at
+      `app.arbor-mgmt.com/api/webhooks/facebook` + LT's verify token) — and Meta's GET
+      handshake at subscribe time verifies the token, so a credential mismatch fails
+      loudly there rather than silently later; the 15-min poller backstops regardless.
 - [ ] pg_dump the Automations Postgres to Drive (the Railway volume backup covers
       disaster recovery; the dump is the long-term archive that outlives the project)
       and record row counts per table for import verification.
