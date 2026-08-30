@@ -26,6 +26,9 @@ async function main() {
     return;
   }
   console.log(`reviews: ${r.reviewsUpserted} upserted (state-advancing on re-run)`);
+  if (r.mergedDuplicateTrackingIds.length) {
+    console.log(`         ${r.mergedDuplicateTrackingIds.length} old-DB duplicate(s) merged into their (invoice, phone) sibling: ${r.mergedDuplicateTrackingIds.join(", ")}`);
+  }
   console.log(`catchup: ${r.catchupsImported} imported, ${r.catchupsSkipped} already present`);
   if (r.rowErrors.length) {
     console.error(`✗ ${r.rowErrors.length} row(s) failed:`);

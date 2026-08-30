@@ -11,7 +11,7 @@
  * scripts/import-automations-db.ts for the exact semantics; the slice 4 cutover
  * depends on the re-run refreshing rows the old app progressed between runs.
  */
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { Client } from "pg";
 import { db } from "@/lib/db/client";
 import { catchupTexts, reviewRequests } from "@/lib/db/schema";
@@ -70,6 +70,11 @@ export interface ImportResult {
   catchupsSkipped: number;
   rowErrors: string[];
   missingTrackingIds: string[];
+  /** Old-DB duplicates — same (invoice, phone) under a second trackingId — whose
+   * state was merged into the surviving row. Their tracking links won't resolve
+   * (the click route falls back to the Madison review URL), which is the accepted
+   * cost of the one-sequence-per-invoice constraint. */
+  mergedDuplicateTrackingIds: string[];
   dryRunSample?: Record<string, unknown>;
 }
 
@@ -95,6 +100,7 @@ export async function importAutomationsData(opts: { oldUrl: string; apply: boole
     catchupsSkipped: 0,
     rowErrors: [],
     missingTrackingIds: [],
+    mergedDuplicateTrackingIds: [],
   };
 
   if (!apply) {
@@ -151,7 +157,43 @@ export async function importAutomationsData(opts: { oldUrl: string; apply: boole
         });
       result.reviewsUpserted++;
     } catch (err) {
-      result.rowErrors.push(`review ${r.tracking_id}: ${err instanceof Error ? err.message : err}`);
+      // The old DB holds a few duplicate rows: same (invoice, phone) minted a
+      // second trackingId. LT deliberately allows one sequence per invoice
+      // (review_requests_invoice_phone_uq), so absorb the duplicate's progress
+      // into the surviving row instead. Merging only ever ADVANCES state, and
+      // both rows target the same customer + invoice, so absorbing can only
+      // prevent a re-send — never cause one.
+      const pgErr = err as { code?: string; constraint?: string };
+      if (pgErr.code === "23505" && pgErr.constraint === "review_requests_invoice_phone_uq") {
+        try {
+          // The duplicate's values are known here, so only the fields it can
+          // ADVANCE are set at all — everything else is left untouched.
+          const advance: Partial<typeof reviewRequests.$inferInsert> = { updatedAt: new Date() };
+          if (bool(r.clicked)) {
+            advance.clicked = true;
+            advance.clickedAt = sql`coalesce(${reviewRequests.clickedAt}, ${r.clicked_at})` as never;
+          }
+          if (bool(r.sms_sent)) advance.smsSent = true;
+          if (bool(r.final_sms_sent)) advance.finalSmsSent = true;
+          const email = mapEmailSent(r.email_sent);
+          if (email === "sent" || email === "skipped") advance.emailSent = email;
+          if (r.status !== "pending") advance.status = r.status;
+          await db
+            .update(reviewRequests)
+            .set(advance)
+            .where(
+              and(
+                eq(reviewRequests.invoiceId, r.invoice_id),
+                eq(reviewRequests.customerPhoneE164, phone ?? r.customer_phone),
+              ),
+            );
+          result.mergedDuplicateTrackingIds.push(r.tracking_id);
+        } catch (mergeErr) {
+          result.rowErrors.push(`review ${r.tracking_id} (dup merge): ${mergeErr instanceof Error ? mergeErr.message : mergeErr}`);
+        }
+      } else {
+        result.rowErrors.push(`review ${r.tracking_id}: ${err instanceof Error ? err.message : err}`);
+      }
     }
   }
 
@@ -183,7 +225,9 @@ export async function importAutomationsData(opts: { oldUrl: string; apply: boole
     }
   }
 
+  const merged = new Set(result.mergedDuplicateTrackingIds);
   for (const r of reviews) {
+    if (merged.has(r.tracking_id)) continue; // absorbed into the sibling row, absent by design
     const [found] = await db
       .select({ id: reviewRequests.id })
       .from(reviewRequests)
