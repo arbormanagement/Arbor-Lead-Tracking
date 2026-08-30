@@ -347,6 +347,30 @@ write).
 `META_APP_SECRET`/`META_WEBHOOK_VERIFY_TOKEN`/`META_PAGE_ACCESS_TOKEN` under LT's
 `FACEBOOK_*` names. All added to `lib/env.ts`; nothing reads `process.env` directly.
 
+Plus, added by the build (all default-off/unset so merging changes nothing):
+
+- **`AUTOMATION_WEBHOOK_SECRET`** — shared secret for the four ported webhooks
+  (`retell_inbound`, `retell_estimate`, `call_summary`, `review_request`), carried as
+  `?secret=` in each configured URL. Unset = open (old-app parity for the transition).
+  **Set it at cutover and include the secret in every repointed URL** — the inbound
+  webhook answers caller lookups (names, addresses, emails) and the others accept
+  writes, so they must not sit open on a public domain. The old app never had this.
+- **`REVIEW_WORKFLOW_ENABLED`** — the review-sequence cron sends nothing until `"true"`
+  (the slice 4 ordered cutover's final step).
+- **`FB_HCP_WRITE_ENABLED`** — Facebook leads create HCP customers/estimates only when
+  `"true"` (the slice 5 cutover, once the old app is retired from that job).
+- **`REVIEW_SMS_FROM`** — the review-text sender; production `+16183103486`.
+
+## Decisions flagged for post-cutover (deliberate parity kept for now)
+
+- **HCP `lead_source` labels retell estimates "Website"** — ported as-is because the
+  office's HCP reports have read that way since launch, and changing the string
+  mid-migration would split the voice channel across two labels. Cheap to change to
+  e.g. "Voice Agent" after cutover if wanted (`lib/intake/process.ts`).
+- **`sendReviewSms` duplicates the outbound-SMS core of `lib/messaging/send.ts`**
+  (queued-row insert, status update, 21610 opt-out writeback) rather than refactoring
+  the live inbox send path mid-merge. Consolidate into a shared helper in a calm week.
+
 ## Risks and accepted trade-offs
 
 - **Deploy cadence now touches Chloe's inbound webhook.** Accepted: Railway health-checked
