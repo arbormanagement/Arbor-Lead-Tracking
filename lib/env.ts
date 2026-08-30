@@ -90,6 +90,39 @@ export const env = createEnv({
     GA4_PROPERTY_ID: z.string().optional(),
     FACEBOOK_VERIFY_TOKEN: z.string().optional(),
 
+    // ── Ported from Arbor-Automations (the merge; docs/automations-merge-plan.md) ──
+    // SendGrid: review follow-up emails, lead/call-summary notifications, failure
+    // alerts. FROM must be a verified sender or SendGrid rejects with 403.
+    SENDGRID_API_KEY: z.string().optional(),
+    SENDGRID_FROM_EMAIL: z.string().optional(),
+    SENDGRID_FROM_NAME: z.string().optional(),
+    // Failure-alert recipient. Defaults to jhays@ in lib/email/sendgrid.ts.
+    ALERT_EMAIL_TO: z.string().optional(),
+    // Shared secret the website form sends as X-Webhook-Secret.
+    WEBSITE_LEAD_SECRET: z.string().optional(),
+    // Shared secret for the ported automation webhooks (retell_inbound,
+    // retell_estimate, call_summary, review_request), carried as ?secret= in
+    // the URL configured at each sender (Retell dashboard/tools, HCP webhook).
+    // Unset = open, matching the old app during the transition; SET THIS AT
+    // CUTOVER — retell_inbound answers caller lookups (customer names,
+    // addresses, emails) and the others accept writes, so leaving it open on a
+    // public domain is a PII/abuse exposure.
+    AUTOMATION_WEBHOOK_SECRET: z.string().optional(),
+    // ⚠️ CUTOVER GATES — both default OFF so merging this code changes nothing.
+    // REVIEW_WORKFLOW_ENABLED: the review-sequence cron sends real SMS/email to
+    // real customers. Exactly ONE deployment may run the sequence — flip this on
+    // only after ENABLE_REVIEW_WORKFLOW is off on the old app and the data import
+    // has run (slice 4's ordered cutover).
+    REVIEW_WORKFLOW_ENABLED: z.string().optional(),
+    // FB_HCP_WRITE_ENABLED: the old app also creates HCP customers/estimates from
+    // Facebook leads, and LT's poller sees every lead regardless of where Meta's
+    // webhook points — running both writers double-creates. Flip on only when the
+    // old app is retired from that job.
+    FB_HCP_WRITE_ENABLED: z.string().optional(),
+    // The number review-request texts send from (E.164). Production:
+    // +16183103486, the number the old app has always sent them from.
+    REVIEW_SMS_FROM: z.string().optional(),
+
     // Shared secret the cron worker sends (Authorization: Bearer) to trigger
     // /api/cron/* — keeps the sync jobs from being runnable by anyone.
     CRON_SECRET: z.string().optional(),
@@ -162,6 +195,15 @@ export const env = createEnv({
     GOOGLE_ADS_CUSTOMER_ID: process.env.GOOGLE_ADS_CUSTOMER_ID,
     GA4_PROPERTY_ID: process.env.GA4_PROPERTY_ID,
     FACEBOOK_VERIFY_TOKEN: process.env.FACEBOOK_VERIFY_TOKEN,
+    SENDGRID_API_KEY: process.env.SENDGRID_API_KEY,
+    SENDGRID_FROM_EMAIL: process.env.SENDGRID_FROM_EMAIL,
+    SENDGRID_FROM_NAME: process.env.SENDGRID_FROM_NAME,
+    ALERT_EMAIL_TO: process.env.ALERT_EMAIL_TO,
+    WEBSITE_LEAD_SECRET: process.env.WEBSITE_LEAD_SECRET,
+    AUTOMATION_WEBHOOK_SECRET: process.env.AUTOMATION_WEBHOOK_SECRET,
+    REVIEW_WORKFLOW_ENABLED: process.env.REVIEW_WORKFLOW_ENABLED,
+    FB_HCP_WRITE_ENABLED: process.env.FB_HCP_WRITE_ENABLED,
+    REVIEW_SMS_FROM: process.env.REVIEW_SMS_FROM,
     CRON_SECRET: process.env.CRON_SECRET,
     ADMIN_API_TOKEN: process.env.ADMIN_API_TOKEN,
     MCP_API_TOKEN: process.env.MCP_API_TOKEN,

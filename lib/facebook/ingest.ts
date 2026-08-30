@@ -4,6 +4,7 @@ import { db } from "@/lib/db/client";
 import { campaigns, facebookLeads, leads, sources } from "@/lib/db/schema";
 import { preview, recordThreadActivity, upsertThread } from "@/lib/messaging/thread";
 import { normalizeEmail, normalizePhone } from "@/lib/phone";
+import { createHcpEstimateForFbLead, fbHcpWriteEnabled } from "@/lib/facebook/hcp-write";
 import type { FbLeadDetail } from "@/lib/integrations/facebook";
 
 /** Outcome of an ingest attempt — `excluded` means the ad's campaign is flagged as
@@ -106,6 +107,14 @@ export async function ingestFacebookLead(detail: FbLeadDetail): Promise<IngestRe
     }
   } catch (err) {
     console.error("[facebook] threading failed (lead recorded)", err);
+  }
+
+  // The merge's slice 5: turn the lead into an HCP customer + estimate, the job
+  // Arbor-Automations used to do — but ONLY for a lead this function CREATED,
+  // so excluded (recruiting), deferred, and duplicate submissions never reach
+  // HCP. Gated off by default; see lib/facebook/hcp-write.ts for why.
+  if (fbHcpWriteEnabled()) {
+    await createHcpEstimateForFbLead(detail);
   }
 
   return "created";
