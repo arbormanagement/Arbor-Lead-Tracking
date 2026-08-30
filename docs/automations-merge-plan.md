@@ -1,16 +1,32 @@
 # Migrating Arbor-Automations into Arbor-Lead-Tracking
 
-**Status (2026-08-30): SLICES 1–5 MERGED TO MAIN AND DEPLOYED, DORMANT (PR #123,
-approved by Justin); no cutover has happened.** Every webhook is dormant until its external
-config repoints here, and the two paths that could act on their own — the review-sequence
-cron and the Facebook HCP write — default OFF behind `REVIEW_WORKFLOW_ENABLED` /
-`FB_HCP_WRITE_ENABLED`, so merging to `main` changes nothing observable. Verified:
-`tsc`, `next build`, four verify suites (office-hours 29 cases, caller-context 67 checks,
-reviews, plus the existing hcp), byte-identical office-status parity against the live
-production webhook, and a scratch-Postgres rehearsal of the import (dry/apply/idempotent
-re-run), the workflow gate + due-step + persisted retry cap, the click redirect, and the
-call-summary idempotency. Remaining: slice 0's open checks, the real import, and the
-cutovers — each needing Justin. Written 2026-08-30 from a full read of both
+**Status (2026-08-30 evening): CUTOVER IN PROGRESS — Retell and Meta are LIVE on LT.**
+- **Retell: DONE.** v116 published (base v115): `create_estimate` tool URL and the agent's
+  `call_summary` webhook both point at `app.arbor-mgmt.com` with `?secret=`, draft verified
+  (prompt byte-identical, 4 tools intact), 9/9 simulation pass before publish. Chloe's
+  estimates and call summaries now flow through this app. The *inbound* webhook (office
+  status + caller context) still points at the old app — that URL is dashboard-only on
+  +16185911316 and moves at the domain move (slice 6).
+- **Meta leadgen: DONE.** `FB_HCP_WRITE_ENABLED=true` deployed first, then the app-level
+  callback repointed to `app.arbor-mgmt.com/api/webhooks/facebook` (verified active,
+  `leadgen` v25.0 — Meta's challenge validated the LT endpoint in passing). Ordering was
+  deliberate: flag+deploy first so the seconds-wide double-create window against the
+  :09/:24/:39/:54 poller closes immediately.
+- **Slice 4 (reviews): import machinery merged (PR #124)** — `POST
+  /api/admin/import-automations` runs the import server-side, the only place both DBs are
+  reachable. The old Postgres turned out to already carry a public TCP proxy
+  (`roundhouse.proxy.rlwy.net:38186`, created 2026-08-02 — predates this migration; left in
+  place, flagged for retirement with the old project). Remaining sequence, in order: bulk
+  import now (old workflow keeps running, LT gate stays off — no double-send because only
+  one workflow is enabled at a time) → Justin repoints HCP `invoice.paid` webhook
+  (dashboard-only) → disable old app's `ENABLE_REVIEW_WORKFLOW`/`ENABLE_CATCHUP_CAMPAIGN` →
+  delta re-import (state-advancing, idempotent) → `REVIEW_WORKFLOW_ENABLED=true` here.
+- **Website form: NOT yet repointed** (needs the Arbor-Website repo or a manual edit;
+  target `POST /api/webhook/website_lead`, existing X-Webhook-Secret).
+Everything below the fold verified earlier stands: `tsc`, `next build`, four verify
+suites, byte-identical office-status parity, scratch-Postgres import rehearsal
+(dry/apply/idempotent re-run), workflow gate + due-step + retry cap, click redirect,
+call-summary idempotency, and six live smoke tests after the env staging deploy. Written 2026-08-30 from a full read of both
 codebases. The goal: one app (this one) owns the entire inbound-lead pipeline — call in,
 attribution, Chloe's context, estimate creation, review follow-up — and the
 `Arbor-Automations` Express app on Railway is retired.
