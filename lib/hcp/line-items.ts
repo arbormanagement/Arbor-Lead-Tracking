@@ -172,12 +172,59 @@ export const lineItemCountSql = (col: SQLWrapper): SQL<number> => sql<number>`(
  *
  * A one-cent tolerance, because per-line rounding on a percent discount cannot be
  * guaranteed to land on the same cent as whatever HCP does internally.
+ *
+ * ⚠️ THE TWO SIDES ARE READ AT DIFFERENT TIMES, and that is the check's one real
+ * false positive. The parent row comes from the estimate/job sync; the line items
+ * come from the hydration job, on its own clock. A record RE-PRICED in HCP between
+ * the two reads disagrees for a completely innocent reason — both numbers are
+ * right, about different moments.
+ *
+ * Found on the first production run, which is why these parameters exist: estimate
+ * csr_dd8d8c18... reconciled to $1,295 against a stored total of $1,400, with NO
+ * discount on it at all, so the discount maths could not have been implicated. HCP
+ * itself now reports $1,295 — the estimate had simply been re-priced and the stored
+ * total had not caught up.
+ *
+ * So a disagreement only counts when the parent was read at or AFTER the items, i.e.
+ * both sides describe the same state of HousecallPro. Self-correcting rather than a
+ * blanket exclusion: the hot zone re-reads recent records every hour and the cold
+ * crawl laps in ~1.6 days, so a genuinely wrong formula is hidden for at most one
+ * lap and counted forever after.
  */
-export const lineItemReconcileSql = (col: SQLWrapper, total: SQLWrapper): SQL<boolean> =>
+export const lineItemReconcileSql = (
+  col: SQLWrapper,
+  total: SQLWrapper,
+  /** The parent row's own `synced_at`, and the item read's `line_items_synced_at`. */
+  parentSyncedAt: SQLWrapper,
+  itemsSyncedAt: SQLWrapper,
+): SQL<boolean> =>
   sql<boolean>`(
     ${lineItemCountSql(col)} > 0
     and coalesce(${total}, 0) <> 0
     and abs(${netCentsSql(col)} - coalesce(${total}, 0)) > 1
+    and ${parentSyncedAt} >= ${itemsSyncedAt}
+  )`;
+
+/**
+ * The other half of the same picture: records that disagree ONLY because the parent
+ * is older than the item read.
+ *
+ * Reported rather than silently dropped. A count that quietly discards its
+ * inconvenient rows is how a check stops meaning anything — and this is a useful
+ * number in its own right: one that stays high says the parent sync is not lapping,
+ * which is a different problem from the maths being wrong and needs saying so.
+ */
+export const lineItemStaleSql = (
+  col: SQLWrapper,
+  total: SQLWrapper,
+  parentSyncedAt: SQLWrapper,
+  itemsSyncedAt: SQLWrapper,
+): SQL<boolean> =>
+  sql<boolean>`(
+    ${lineItemCountSql(col)} > 0
+    and coalesce(${total}, 0) <> 0
+    and abs(${netCentsSql(col)} - coalesce(${total}, 0)) > 1
+    and ${parentSyncedAt} < ${itemsSyncedAt}
   )`;
 
 /**

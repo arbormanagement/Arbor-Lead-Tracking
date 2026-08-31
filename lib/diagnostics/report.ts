@@ -28,6 +28,7 @@ import {
   grossCentsSql,
   lineItemCountSql,
   lineItemReconcileSql,
+  lineItemStaleSql,
   netCentsSql,
 } from "@/lib/hcp/line-items";
 import { getSetting } from "@/lib/settings";
@@ -468,7 +469,8 @@ export async function diagnosticsReport(): Promise<{ httpStatus: number; report:
       hydrated: sql<number>`count(*) filter (where ${hcpJobs.lineItemsSyncedAt} is not null)::int`,
       withItems: sql<number>`count(*) filter (where ${lineItemCountSql(hcpJobs.lineItems)} > 0)::int`,
       discounted: sql<number>`count(*) filter (where ${discountCentsSql(hcpJobs.lineItems)} > 0)::int`,
-      mismatched: sql<number>`count(*) filter (where ${lineItemReconcileSql(hcpJobs.lineItems, hcpJobs.totalAmountCents)})::int`,
+      mismatched: sql<number>`count(*) filter (where ${lineItemReconcileSql(hcpJobs.lineItems, hcpJobs.totalAmountCents, hcpJobs.syncedAt, hcpJobs.lineItemsSyncedAt)})::int`,
+      stale: sql<number>`count(*) filter (where ${lineItemStaleSql(hcpJobs.lineItems, hcpJobs.totalAmountCents, hcpJobs.syncedAt, hcpJobs.lineItemsSyncedAt)})::int`,
     })
     .from(hcpJobs);
   const [liEstimates] = await db
@@ -477,7 +479,8 @@ export async function diagnosticsReport(): Promise<{ httpStatus: number; report:
       hydrated: sql<number>`count(*) filter (where ${hcpEstimates.lineItemsSyncedAt} is not null)::int`,
       withItems: sql<number>`count(*) filter (where ${lineItemCountSql(hcpEstimates.lineItems)} > 0)::int`,
       discounted: sql<number>`count(*) filter (where ${discountCentsSql(hcpEstimates.lineItems)} > 0)::int`,
-      mismatched: sql<number>`count(*) filter (where ${optionCountSql} = 1 and ${lineItemReconcileSql(hcpEstimates.lineItems, hcpEstimates.totalAmountCents)})::int`,
+      mismatched: sql<number>`count(*) filter (where ${optionCountSql} = 1 and ${lineItemReconcileSql(hcpEstimates.lineItems, hcpEstimates.totalAmountCents, hcpEstimates.syncedAt, hcpEstimates.lineItemsSyncedAt)})::int`,
+      stale: sql<number>`count(*) filter (where ${optionCountSql} = 1 and ${lineItemStaleSql(hcpEstimates.lineItems, hcpEstimates.totalAmountCents, hcpEstimates.syncedAt, hcpEstimates.lineItemsSyncedAt)})::int`,
     })
     .from(hcpEstimates);
 
@@ -496,6 +499,8 @@ export async function diagnosticsReport(): Promise<{ httpStatus: number; report:
     table: typeof hcpJobs | typeof hcpEstimates,
     items: SQLWrapper,
     total: PgColumn,
+    parentSyncedAt: PgColumn,
+    itemsSyncedAt: PgColumn,
     label: PgColumn,
     extra?: SQL,
   ) =>
@@ -508,7 +513,11 @@ export async function diagnosticsReport(): Promise<{ httpStatus: number; report:
         hcpTotal: total,
       })
       .from(table)
-      .where(extra ? and(lineItemReconcileSql(items, total), extra) : lineItemReconcileSql(items, total))
+      .where(
+        extra
+          ? and(lineItemReconcileSql(items, total, parentSyncedAt, itemsSyncedAt), extra)
+          : lineItemReconcileSql(items, total, parentSyncedAt, itemsSyncedAt),
+      )
       .limit(5);
 
   const lineItems = {
@@ -518,8 +527,12 @@ export async function diagnosticsReport(): Promise<{ httpStatus: number; report:
       withItems: liJobs?.withItems ?? 0,
       discounted: liJobs?.discounted ?? 0,
       mismatched: liJobs?.mismatched ?? 0,
+      staleParent: liJobs?.stale ?? 0,
       mismatchSample: (liJobs?.mismatched ?? 0) > 0
-        ? await mismatchSample(hcpJobs, hcpJobs.lineItems, hcpJobs.totalAmountCents, hcpJobs.invoiceNumber)
+        ? await mismatchSample(
+            hcpJobs, hcpJobs.lineItems, hcpJobs.totalAmountCents,
+            hcpJobs.syncedAt, hcpJobs.lineItemsSyncedAt, hcpJobs.invoiceNumber,
+          )
         : [],
     },
     estimates: {
@@ -528,20 +541,27 @@ export async function diagnosticsReport(): Promise<{ httpStatus: number; report:
       withItems: liEstimates?.withItems ?? 0,
       discounted: liEstimates?.discounted ?? 0,
       mismatched: liEstimates?.mismatched ?? 0,
+      staleParent: liEstimates?.stale ?? 0,
       mismatchSample: (liEstimates?.mismatched ?? 0) > 0
         ? await mismatchSample(
             hcpEstimates,
             hcpEstimates.lineItems,
             hcpEstimates.totalAmountCents,
+            hcpEstimates.syncedAt,
+            hcpEstimates.lineItemsSyncedAt,
             hcpEstimates.hcpEstimateId,
             sql`${optionCountSql} = 1`,
           )
         : [],
     },
     note:
-      "mismatched = records where line-item gross minus discounts does not equal HCP's own total. " +
-      "It is the check on the discount maths (a 'percent discount' line carries basis points, not cents) " +
-      "and should be 0. Estimates are checked only at optionCount = 1, where a flat total is comparable.",
+      "mismatched = records where line-item gross minus discounts does not equal HCP's own total, " +
+      "counting only those whose PARENT row was read at or after their line items — so both sides " +
+      "describe the same state of HousecallPro. It is the check on the discount maths (a 'percent " +
+      "discount' line carries basis points, not cents) and should be 0. staleParent is the same " +
+      "disagreement where the parent is the OLDER read: a record re-priced in HCP between the two " +
+      "reads, which is innocent and clears on the next sync lap. Estimates are checked only at " +
+      "optionCount = 1, where a flat total is comparable at all.",
   };
 
   const expandCoverage = {
@@ -672,8 +692,9 @@ export async function diagnosticsReport(): Promise<{ httpStatus: number; report:
     if (li.mismatched > 0) {
       warnings.push(
         `${li.mismatched} ${what}(s) do NOT reconcile: line-item gross minus discounts differs from ` +
-          `HousecallPro's own total. The discount derivation in lib/hcp/line-items.ts is wrong for some ` +
-          `shape in the data — do not report discountCents until this is 0`,
+          `HousecallPro's own total on records where BOTH sides were read from the same state of HCP, ` +
+          `so this is not staleness. The discount derivation in lib/hcp/line-items.ts is wrong for some ` +
+          `shape in the data — do not report discountCents until this is 0. See lineItems.${what}s.mismatchSample`,
       );
     }
   }

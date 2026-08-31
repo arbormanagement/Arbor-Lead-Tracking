@@ -37,6 +37,8 @@ import { db } from "@/lib/db/client";
 import { hcpEstimates, hcpJobs } from "@/lib/db/schema";
 import {
   discountCentsSql,
+  lineItemReconcileSql,
+  lineItemStaleSql,
   discountNamesSql,
   grossCentsSql,
   netCentsSql,
@@ -216,7 +218,56 @@ async function checkDerivations() {
     `fixed + percent together: percent is taken on the GROSS (${Number(both!.d)} = 70,000 + 50,000). ` +
       "If HCP ever disagrees, /api/diagnostics lineItems.mismatched is what says so",
   );
-  await db.delete(hcpJobs).where(inArray(hcpJobs.id, [...ids, "lix_fx_both"]));
+  // ── The reconcile check's own false positive ──────────────────────────────
+  //
+  // The parent row and the line items are read at DIFFERENT times, by different
+  // jobs. A record re-priced in HousecallPro between the two reads disagrees for a
+  // completely innocent reason, and the first production run found exactly one:
+  // csr_dd8d8c18… computed $1,295 against a stored $1,400, with no discount on it at
+  // all — so the discount maths could not have been implicated. HCP itself now says
+  // $1,295; the estimate had been re-priced and the parent had not caught up.
+  //
+  // Both rows below disagree by the same amount. Only the one whose PARENT is the
+  // newer read is a real mismatch; the other is staleness and must be counted
+  // separately rather than raising a false alarm about the maths — or, worse, being
+  // quietly dropped, which is how a check stops meaning anything.
+  const T0 = new Date("2026-08-31T12:00:00Z"), T1 = new Date("2026-08-31T13:00:00Z");
+  const disagreeing = [HOUR(10)]; // gross 700,000 against a stored total of 800,000
+  await db.delete(hcpJobs).where(inArray(hcpJobs.id, ["lix_fx_realmiss", "lix_fx_stale"]));
+  await db.insert(hcpJobs).values([
+    // Parent read AFTER the items — both describe the same state of HCP, so a
+    // disagreement is the maths.
+    { id: "lix_fx_realmiss", hcpJobId: "lix_fx_realmiss", totalAmountCents: 800_000,
+      lineItems: disagreeing, lineItemsSyncedAt: T0, syncedAt: T1 },
+    // Parent read BEFORE the items — the stored total may simply predate an edit.
+    { id: "lix_fx_stale", hcpJobId: "lix_fx_stale", totalAmountCents: 800_000,
+      lineItems: disagreeing, lineItemsSyncedAt: T1, syncedAt: T0 },
+  ]);
+  const recon = await db
+    .select({
+      id: hcpJobs.id,
+      mismatch: lineItemReconcileSql(hcpJobs.lineItems, hcpJobs.totalAmountCents, hcpJobs.syncedAt, hcpJobs.lineItemsSyncedAt),
+      stale: lineItemStaleSql(hcpJobs.lineItems, hcpJobs.totalAmountCents, hcpJobs.syncedAt, hcpJobs.lineItemsSyncedAt),
+    })
+    .from(hcpJobs)
+    .where(inArray(hcpJobs.id, ["lix_fx_realmiss", "lix_fx_stale"]));
+  const r = Object.fromEntries(recon.map((x) => [x.id, x]));
+  ok(r["lix_fx_realmiss"]!.mismatch === true, "a disagreement with the parent read LAST counts as a real mismatch");
+  ok(r["lix_fx_realmiss"]!.stale === false, "…and not as staleness");
+  ok(r["lix_fx_stale"]!.mismatch === false, "a disagreement with the parent read FIRST is NOT a mismatch — it may just be re-priced");
+  ok(r["lix_fx_stale"]!.stale === true, "…it is counted as staleness instead, not silently dropped");
+
+  // A record that reconciles is neither, whichever way round the two reads fall.
+  const [good] = await db
+    .select({
+      mismatch: lineItemReconcileSql(hcpJobs.lineItems, hcpJobs.totalAmountCents, hcpJobs.syncedAt, hcpJobs.lineItemsSyncedAt),
+      stale: lineItemStaleSql(hcpJobs.lineItems, hcpJobs.totalAmountCents, hcpJobs.syncedAt, hcpJobs.lineItemsSyncedAt),
+    })
+    .from(hcpJobs)
+    .where(eq(hcpJobs.id, "lix_fx_fixed"));
+  ok(good!.mismatch === false && good!.stale === false, "a record that reconciles is flagged as neither");
+
+  await db.delete(hcpJobs).where(inArray(hcpJobs.id, [...ids, "lix_fx_both", "lix_fx_realmiss", "lix_fx_stale"]));
 
 }
 
