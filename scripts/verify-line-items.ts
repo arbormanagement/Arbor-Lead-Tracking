@@ -55,7 +55,7 @@ const ok = (c: boolean, m: string) => {
 };
 
 const EST_IDS = ["lix_est_priced", "lix_est_two_opts", "lix_est_bare", "lix_est_fails"];
-const JOB_IDS = ["lix_job_ok", "lix_job_fails"];
+const JOB_IDS = ["lix_job_ok", "lix_job_fails", "lix_job_429"];
 
 /** Records the stub was asked about, so "cost zero requests" is assertable rather
  *  than inferred from the absence of data. */
@@ -79,6 +79,8 @@ const provider = {
   async jobLineItems(jobId: string): Promise<HcpLineItem[]> {
     asked.jobs.push(jobId);
     if (jobId === "hcp_job_fails") throw new Error("HCP 500 (simulated)");
+    // A rate limit must be counted apart from a real failure — see `rateLimited`.
+    if (jobId === "hcp_job_429") throw new Error('HCP 429 /jobs/x/line_items: {"error":"Too many requests"}');
     return [
       { id: "rli_a", name: "Tree Removal", kind: "labor", amount: 444_500 },
       { id: "rli_b", name: "Combo", kind: "fixed discount", amount: 50_000 },
@@ -305,10 +307,18 @@ async function main() {
   await db.insert(hcpJobs).values([
     { id: JOB_IDS[0]!, hcpJobId: "hcp_job_ok", updatedAtHcp: now },
     { id: JOB_IDS[1]!, hcpJobId: "hcp_job_fails", updatedAtHcp: now },
+    { id: JOB_IDS[2]!, hcpJobId: "hcp_job_429", updatedAtHcp: now },
   ]);
 
   // ── Pass 1 ────────────────────────────────────────────────────────────────
-  await syncHcpLineItems({ provider });
+  const pass1 = (await syncHcpLineItems({ provider })) as { failed: number; rateLimited: number };
+
+  // HCP rate-limits, and a 429 is a statement about pacing rather than about the
+  // record. Counting it as a failure is how a persistent 7% gets shrugged at as "some
+  // records are just bad" when the actual fix is to slow down — so the two are
+  // separate numbers, and a 429 must never inflate `failed`.
+  ok(pass1.rateLimited === 1, `a 429 is counted as rateLimited (${pass1.rateLimited})`);
+  ok(pass1.failed === 2, `…and NOT as a failure (failed ${pass1.failed} = the 404 and the 500 only)`);
 
   const est = Object.fromEntries(
     (await db.select().from(hcpEstimates).where(inArray(hcpEstimates.id, EST_IDS))).map((r) => [r.id, r]),
@@ -355,6 +365,7 @@ async function main() {
   ok(!asked.jobs.includes("hcp_job_ok"), "a hydrated job is NOT re-fetched");
   ok(asked.estimates.includes("hcp_est_fails"), "…while the failed estimate IS retried");
   ok(asked.jobs.includes("hcp_job_fails"), "…and so is the failed job");
+  ok(asked.jobs.includes("hcp_job_429"), "…and the rate-limited one, which was never stamped either");
 
   // ── Pass 3: an HCP-side edit re-queues ────────────────────────────────────
   // A discount applied after the fact, a price edit, an added tree — all bump the

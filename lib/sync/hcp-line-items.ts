@@ -44,23 +44,45 @@ import { withSyncRun } from "./run";
 /**
  * Parents hydrated per run, per collection.
  *
- * An estimate costs one request per option (1.27 on average), a job exactly one, so
- * a run is roughly 2.3 x this many requests. At 600 x 2.3 ≈ 1,380 requests every ten
- * minutes the ~30.6k cold start clears in about four hours, and nothing else in the
- * schedule is competing for HCP at the time.
+ * An estimate costs one request per option (1.22 measured), a job exactly one, so a
+ * run is roughly 2.2 x this many requests. Sized to what the pacer can actually get
+ * through inside the wall-clock budget: 5/s x 240s = 1,200 requests, and 500 x 2.2 =
+ * 1,100. Asking for more than that just means the budget cuts the run short — which
+ * is safe, but makes the batch size a lie about what a run does.
  */
-const BATCH = 600;
+const BATCH = 500;
 
 /**
  * Concurrent requests against HCP.
  *
- * Deliberately modest. HCP publishes no rate limit and `fetchWithRetry` already
- * honours a 429's `Retry-After`, but the failure mode of guessing high is throttling
- * the hourly sync — which shares this API key and matters more than hydration speed.
- * Six is fast enough that the wall-clock budget below, not the concurrency, is what
- * bounds a run.
+ * Concurrency is no longer what bounds the request rate — `RATE_PER_SECOND` is — so
+ * this only needs to be high enough to keep the pacer saturated while some requests
+ * are in flight.
  */
 const CONCURRENCY = 6;
+
+/**
+ * Sustained request rate, paced across ALL workers.
+ *
+ * ⚠️ HCP rate-limits, and per-request retry is the wrong tool for it. Measured
+ * 2026-08-31 at concurrency 6 with no pacing: the estimate pass (734 requests)
+ * came back clean, then the job pass in the same run took `HCP 429 {"error":"Too
+ * many requests"}` on 42 of 600 — about 7%, every run. `fetchWithRetry` retried each
+ * of those twice and gave up, while the other five workers carried on hammering, so
+ * the backoff never actually reduced the load that caused it. Sustained throttling
+ * needs the whole run to slow down, not one request.
+ *
+ * The failures were not lost work — an unstamped record simply returns to the queue —
+ * but they were ~7% of every run spent earning nothing, and they would have pinned a
+ * permanently non-zero `failed` count that nobody would trust after a week.
+ *
+ * 5/s is under the rate that produced clean passes and leaves headroom for the
+ * hourly `hcp` sync, which shares this API key and matters more than hydration speed.
+ */
+const RATE_PER_SECOND = 5;
+
+/** How long the whole run holds off after HCP says "too many requests". */
+const RATE_LIMIT_BACKOFF_MS = 5_000;
 
 /**
  * Wall-clock ceiling for one run, under the cron job's own 300s timeout.
@@ -82,6 +104,41 @@ interface Hydrated {
 }
 
 /**
+ * Paces requests across every worker in the run, and lets any one of them slow all
+ * the others down.
+ *
+ * This is the piece per-request retry cannot provide. A 429 is a statement about the
+ * whole client, so the response has to be a whole-client pause: without one, five
+ * workers keep firing while the sixth backs off, the limit stays breached, and the
+ * backoff accomplishes nothing but delay.
+ *
+ * `next` is the earliest permitted start for the NEXT request, claimed synchronously
+ * before any await — so two workers reaching here at the same instant get different
+ * slots rather than both reading the same one.
+ */
+function rateGate(perSecond: number) {
+  const interval = 1000 / perSecond;
+  let next = 0;
+  let pausedUntil = 0;
+  return {
+    async take(): Promise<void> {
+      const now = Date.now();
+      const at = Math.max(now, next, pausedUntil);
+      next = at + interval;
+      if (at > now) await new Promise((r) => setTimeout(r, at - now));
+    },
+    /** Hold the whole run off — every worker, not just the one that saw the 429. */
+    pause(ms: number): void {
+      pausedUntil = Math.max(pausedUntil, Date.now() + ms);
+    },
+  };
+}
+
+/** HCP answers a rate limit with a 429 the client surfaces as `HCP 429 …`. Matched on
+ *  the status rather than the body text, which is the provider's to change. */
+const isRateLimit = (err: unknown) => err instanceof Error && err.message.includes("HCP 429");
+
+/**
  * Run `work` over `rows` with bounded concurrency, stopping cleanly when the budget
  * is spent.
  *
@@ -93,10 +150,12 @@ interface Hydrated {
 async function hydrate<T extends { id: string }>(
   rows: T[],
   deadline: number,
+  gate: ReturnType<typeof rateGate>,
   work: (row: T) => Promise<HcpLineItem[]>,
-): Promise<{ done: Hydrated[]; failed: number; ranOutOfTime: boolean }> {
+): Promise<{ done: Hydrated[]; failed: number; rateLimited: number; ranOutOfTime: boolean }> {
   const done: Hydrated[] = [];
   let failed = 0;
+  let rateLimited = 0;
   let next = 0;
   let ranOutOfTime = false;
 
@@ -110,17 +169,27 @@ async function hydrate<T extends { id: string }>(
         const i = next++;
         const row = rows[i];
         if (!row) return;
+        await gate.take();
         try {
           done.push({ id: row.id, items: await work(row) });
         } catch (err) {
-          failed++;
-          console.error(`[hcp-lineitems] ${row.id} failed`, err);
+          // Counted apart from a real failure, because they mean different things and
+          // want different fixes. A rate limit says this job is going too fast — a
+          // pacing decision. A genuine error says something is wrong with the record
+          // or the API. Lumping them together is how a persistent 7% gets shrugged at.
+          if (isRateLimit(err)) {
+            rateLimited++;
+            gate.pause(RATE_LIMIT_BACKOFF_MS);
+          } else {
+            failed++;
+            console.error(`[hcp-lineitems] ${row.id} failed`, err);
+          }
         }
       }
     }),
   );
 
-  return { done, failed, ranOutOfTime };
+  return { done, failed, rateLimited, ranOutOfTime };
 }
 
 /**
@@ -174,12 +243,19 @@ export async function syncHcpLineItems({
 }: { limit?: number; provider?: LineItemSource } = {}) {
   return withSyncRun("hcp.lineitems", async () => {
     const deadline = Date.now() + BUDGET_MS;
+    // ONE gate for the whole run: the estimate pass and the job pass share an API key
+    // and therefore share a rate limit. Two independent pacers would each stay under
+    // the limit and together breach it, which is precisely what happened when the two
+    // passes were unpaced — the estimate pass came back clean and the job pass, having
+    // inherited the spent budget, took every 429.
+    const gate = rateGate(RATE_PER_SECOND);
     const stats = {
       estimates: 0,
       estimateOptions: 0,
       estimatesEmpty: 0,
       jobs: 0,
       failed: 0,
+      rateLimited: 0,
       budgetSpent: false,
       remainingEstimates: 0,
       remainingJobs: 0,
@@ -209,10 +285,11 @@ export async function syncHcpLineItems({
     stats.estimatesEmpty = noOptions.length;
     stats.estimateOptions = withOptions.reduce((n, e) => n + e.optionIds.length, 0);
 
-    const est = await hydrate(withOptions, deadline, (e) => provider.estimateLineItems(e.hcpId, e.optionIds));
+    const est = await hydrate(withOptions, deadline, gate, (e) => provider.estimateLineItems(e.hcpId, e.optionIds));
     await writeItems("hcp_estimates", [...noOptions, ...est.done]);
     stats.estimates = noOptions.length + est.done.length;
     stats.failed += est.failed;
+    stats.rateLimited += est.rateLimited;
     stats.budgetSpent ||= est.ranOutOfTime;
 
     // ── Jobs ──────────────────────────────────────────────────────────────────
@@ -226,10 +303,11 @@ export async function syncHcpLineItems({
       .orderBy(sql`coalesce(${hcpJobs.updatedAtHcp}, ${hcpJobs.createdAtHcp}) desc nulls last`)
       .limit(limit);
 
-    const job = await hydrate(jobRows, deadline, (j) => provider.jobLineItems(j.hcpId));
+    const job = await hydrate(jobRows, deadline, gate, (j) => provider.jobLineItems(j.hcpId));
     await writeItems("hcp_jobs", job.done);
     stats.jobs = job.done.length;
     stats.failed += job.failed;
+    stats.rateLimited += job.rateLimited;
     stats.budgetSpent ||= job.ranOutOfTime;
 
     // How much history is left, so the cold start is watchable from /api/diagnostics
