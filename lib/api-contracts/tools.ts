@@ -186,8 +186,20 @@ export type RoiCampaign = z.infer<typeof RoiCampaignRow>;
 export type RoiLocation = z.infer<typeof RoiLocationRow>;
 
 // ── list_estimates / estimate_detail ─────────────────────────────────────────
+export const ESTIMATE_DATE_FIELDS = ["created", "scheduled"] as const;
+
 export const ListEstimatesInput = z.object({
   ...windowFields(7),
+  dateField: z
+    .enum(ESTIMATE_DATE_FIELDS)
+    .default("created")
+    .describe(
+      "Which date the window runs on: created (when the estimate was WRITTEN — the default, and the only one every estimate has) " +
+        "or scheduled (the booked estimate visit). " +
+        "⚠️ `scheduled` structurally EXCLUDES estimates with no appointment — roughly a third of the book, and the entire unscheduled backlog — " +
+        "because they have no such date. Use it to answer 'whose visit falls in this period' (it also reaches FORWARD, so a future window lists upcoming visits); " +
+        "use `created` for anything about volume, attribution or close rate, whose denominator must include the unscheduled.",
+    ),
   source: z.string().max(200).optional().describe('sources.key, or "none" for unattributed'),
   campaign: z.string().max(200).optional().describe('campaigns.name, or "none"'),
   page: z.string().max(200).optional().describe('Normalised landing path (e.g. "/services/tree-removal"), or "none"'),
@@ -203,7 +215,7 @@ export const EstimateRow = z.object({
   id: z.string(),
   outcome: z.string().describe("open | won | lost — won is decided by option APPROVAL, never work_status"),
   scheduled: z.boolean().describe("False = no appointment in HCP (a won one was settled over the phone)"),
-  createdAt: isoDate.describe("When the estimate was written — what the window runs on"),
+  createdAt: isoDate.describe("When the estimate was written — what the window runs on unless dateField says scheduled"),
   scheduledStart: isoDate.nullable(),
   name: z.string().nullable(),
   phone: z.string().nullable().describe("E.164"),
@@ -483,6 +495,7 @@ export const RoiSummaryOutput = z.object({
 export const ListEstimatesOutput = z.object({
   rows: z.array(EstimateRow),
   agg: EstimateAgg.describe("Computed over the whole filtered window, not just this page"),
+  dateField: z.enum(ESTIMATE_DATE_FIELDS).describe("Which date the window actually ran on"),
   ...PagingFields,
 });
 

@@ -65,7 +65,13 @@ async function main() {
 
   await db.delete(campaigns).where(inArray(campaigns.externalCampaignId, [DUP_LIVE, DUP_DEAD]));
 
+  // Seed first, so this runs against a database straight out of `drizzle-kit push`
+  // rather than one someone remembered to seed by hand. The fixtures below hang off
+  // the `gbp` source, and on a fresh database that row does not exist yet.
+  await seedDefaults(db);
+
   const [gbp] = await db.select().from(sources).where(eq(sources.key, "gbp")).limit(1);
+  if (!gbp) throw new Error("seedDefaults did not create the gbp source — nothing else here can be trusted");
 
   // Pre-existing rows that predate the change: a static GBP number and a lead,
   // both carrying only `location`.

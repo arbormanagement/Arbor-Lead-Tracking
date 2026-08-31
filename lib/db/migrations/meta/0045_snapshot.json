@@ -1,6 +1,6 @@
 {
-  "id": "a3c3fb7a-e5a7-44ef-8929-06117b7d50b0",
-  "prevId": "3b447b42-3346-4b9c-a723-eeb45fcde47d",
+  "id": "0b630583-38a0-417c-a633-d9ed1629affd",
+  "prevId": "a3c3fb7a-e5a7-44ef-8929-06117b7d50b0",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -5633,6 +5633,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "static_campaign_id": {
+          "name": "static_campaign_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "location": {
           "name": "location",
           "type": "location",
@@ -5754,6 +5760,19 @@
           "tableTo": "sources",
           "columnsFrom": [
             "static_source_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "tracking_numbers_static_campaign_id_campaigns_id_fk": {
+          "name": "tracking_numbers_static_campaign_id_campaigns_id_fk",
+          "tableFrom": "tracking_numbers",
+          "tableTo": "campaigns",
+          "columnsFrom": [
+            "static_campaign_id"
           ],
           "columnsTo": [
             "id"

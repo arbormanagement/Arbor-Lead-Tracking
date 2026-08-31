@@ -165,16 +165,19 @@ const handler = createMcpHandler(
       {
         title: "List estimates",
         description:
-          "The opportunity list — every live estimate (not cancelled, not deleted) windowed on when it was WRITTEN, with its full attribution chain " +
+          "The opportunity list — every live estimate (not cancelled, not deleted), windowed on when it was WRITTEN unless `dateField` says otherwise, with its full attribution chain " +
           "(source → campaign → landing page → keyword → what the caller said). Filters accept `none` to mean unattributed — asking for the untracked ones directly is the point. " +
           "The returned agg is computed over the whole filtered window, not just the returned rows. Close rate = won ÷ agg.countable (scheduled or won), NEVER ÷ agg.total — " +
-          "dividing by the listed total is the 25%-vs-48% close-rate error this app exists to prevent. `outcome` is decided by customer option APPROVAL, never by HCP's work_status.",
+          "dividing by the listed total is the 25%-vs-48% close-rate error this app exists to prevent. `outcome` is decided by customer option APPROVAL, never by HCP's work_status. " +
+          "⚠️ `dateField: \"scheduled\"` windows on the booked estimate VISIT and therefore drops every estimate nobody has scheduled — about a third of the book, including the whole " +
+          "unscheduled backlog. It answers 'whose visit falls in this period' and reaches forward for upcoming ones; it is the wrong window for volume, attribution or close rate. " +
+          "The agg follows whichever window ran, so its totals always match the rows returned.",
         inputSchema: ListEstimatesInput.shape,
         outputSchema: ListEstimatesOutput.shape,
         annotations: { readOnlyHint: true },
       },
-      async ({ days, start, end, limit, offset, ...filters }) =>
-        json(await listEstimates({ days, start, end, filters, limit, offset })),
+      async ({ days, start, end, dateField, limit, offset, ...filters }) =>
+        json(await listEstimates({ days, start, end, dateField, filters, limit, offset })),
     );
 
     server.registerTool(
@@ -611,7 +614,8 @@ const handler = createMcpHandler(
     instructions:
       "Tools over Arbor Management's lead-tracking and ROI data: fifteen reads plus seven writes (replying to customers, triage, settings, syncs). " +
       "Money is integer cents. Window shapes differ by tool: roi_summary/arbor_funnel_overview bucket on America/Chicago business dates by CONTACT date; " +
-      "arbor_list_estimates windows on estimate CREATION; arbor_list_jobs and arbor_list_invoices take an explicit `dateField` (created/scheduled/completed, invoice/service/paid); " +
+      "arbor_list_estimates windows on estimate CREATION by default and takes a `dateField` (created/scheduled) to window on the booked visit instead — `scheduled` excludes every " +
+      "unscheduled estimate by construction; arbor_list_jobs and arbor_list_invoices take their own `dateField` (created/scheduled/completed, invoice/service/paid); " +
       "arbor_landing_pages uses raw timestamps. Totals across shapes will not reconcile at window edges — that is documented behavior, not a data bug. " +
       "FOUR different money numbers live here and must not be blended: estimate APPROVED value (the only ROI revenue), job QUOTED total, invoice BILLED, and invoice COLLECTED. " +
       "roi_summary and arbor_funnel_overview are the only revenue surfaces; jobs and invoices answer 'was the work done and did we get paid', never 'did the ads work'. " +

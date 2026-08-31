@@ -1407,3 +1407,148 @@ export const hcpInvoicesRelations = relations(hcpInvoices, ({ one }) => ({
     references: [hcpCustomers.id],
   }),
 }));
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Ported from Arbor-Automations (the merge — docs/automations-merge-plan.md).
+// Four tables, two characters: `review_requests` + `catchup_texts` carry LIVE
+// state imported from the old app's Postgres (tracking links in customers' SMS
+// history must resolve forever); `automation_intakes` + `retell_call_summaries`
+// start EMPTY at cutover (lean-import decision, Justin 2026-08-30) and are this
+// app's own intake log + idempotency keys going forward.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * One row per inbound lead the automation webhooks turned (or tried to turn)
+ * into an HCP customer + estimate — the successor to the old app's
+ * `service_requests`. Serves three live functions: `fb_leadgen_id` dedupe
+ * (Meta redelivers), the website form's 10-minute duplicate window, and a
+ * durable record of failures the alert email points back at.
+ */
+export const automationIntakes = pgTable(
+  "automation_intakes",
+  {
+    id: id(),
+    source: text("source").notNull(), // retell | website | facebook
+    status: text("status").notNull().default("received"), // received | processing | completed | failed
+    /** Meta leadgen id — the idempotency key for Facebook submissions. */
+    fbLeadgenId: text("fb_leadgen_id"),
+    firstName: text("first_name"),
+    lastName: text("last_name"),
+    email: text("email"),
+    phoneE164: text("phone_e164"),
+    street: text("street"),
+    city: text("city"),
+    state: text("state"),
+    zip: text("zip"),
+    serviceNeeded: text("service_needed"),
+    hcpCustomerId: text("hcp_customer_id"),
+    /** Whether the customer already existed in HCP (vs created by us). */
+    customerFound: boolean("customer_found"),
+    hcpEstimateId: text("hcp_estimate_id"),
+    /** The lead this estimate was linked to at creation — the deterministic
+     *  attribution the merge exists for. Null when linking found no open lead. */
+    leadId: text("lead_id").references(() => leads.id),
+    errorMessage: text("error_message"),
+    processedAt: timestamp("processed_at", { withTimezone: true }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    uniqueIndex("automation_intakes_fb_leadgen_uq").on(t.fbLeadgenId),
+    index("automation_intakes_phone_created_idx").on(t.phoneE164, t.createdAt),
+    index("automation_intakes_status_idx").on(t.status),
+  ],
+);
+
+/**
+ * Idempotency log for Retell `call_analyzed` events (the call-summary email to
+ * info@ — the ONLY record of estimate cancellations, so a duplicate email is
+ * noise the office reads twice). Starts empty at cutover: Retell only
+ * redelivers near-term, so old-app history buys nothing here.
+ */
+export const retellCallSummaries = pgTable(
+  "retell_call_summaries",
+  {
+    id: id(),
+    callId: text("call_id"),
+    callerPhone: text("caller_phone"),
+    summary: text("summary"),
+    status: text("status").notNull().default("sent"), // sent | failed
+    errorMessage: text("error_message"),
+    raw: jsonb("raw"),
+    createdAt: createdAt(),
+  },
+  (t) => [uniqueIndex("retell_call_summaries_call_uq").on(t.callId)],
+);
+
+/**
+ * Google-review follow-up requests: invoice.paid → 1min SMS → 24h email →
+ * +2d final SMS, each step skipped once the tracking link is clicked.
+ *
+ * Typed re-design of the old app's stringly table ('true'/'false' text
+ * booleans → real booleans; in-memory retry Map → attempts columns that
+ * survive restarts). `emailSent` keeps its third state: 'pending' | 'sent' |
+ * 'skipped' (no email on file). Imported rows keep their tracking ids —
+ * the links are in customers' SMS history and must resolve forever.
+ */
+export const reviewRequests = pgTable(
+  "review_requests",
+  {
+    id: id(),
+    trackingId: text("tracking_id").notNull(),
+    customerName: text("customer_name").notNull(),
+    customerPhoneE164: text("customer_phone_e164").notNull(),
+    customerEmail: text("customer_email"),
+    invoiceId: text("invoice_id").notNull(),
+    county: text("county").notNull().default("madison"), // madison | stclair
+    reviewUrl: text("review_url").notNull(),
+    trackingUrl: text("tracking_url").notNull(),
+    hcpCustomerId: text("hcp_customer_id"),
+    contactId: text("contact_id").references(() => contacts.id),
+    clicked: boolean("clicked").notNull().default(false),
+    clickedAt: timestamp("clicked_at", { withTimezone: true }),
+    smsSent: boolean("sms_sent").notNull().default(false),
+    emailSent: text("email_sent").notNull().default("pending"), // pending | sent | skipped
+    finalSmsSent: boolean("final_sms_sent").notNull().default(false),
+    // pending | completed | failed | suppressed (opted out / do-not-service)
+    status: text("status").notNull().default("pending"),
+    attemptsSms1: integer("attempts_sms1").notNull().default(0),
+    attemptsEmail: integer("attempts_email").notNull().default(0),
+    attemptsSms2: integer("attempts_sms2").notNull().default(0),
+    errorMessage: text("error_message"),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    uniqueIndex("review_requests_tracking_uq").on(t.trackingId),
+    // The invoice+phone dedupe the intake webhook enforces, as a constraint so
+    // an HCP redelivery racing itself cannot double-enroll.
+    uniqueIndex("review_requests_invoice_phone_uq").on(t.invoiceId, t.customerPhoneE164),
+    index("review_requests_phone_created_idx").on(t.customerPhoneE164, t.createdAt),
+    index("review_requests_status_idx").on(t.status),
+  ],
+);
+
+/**
+ * The July 2026 catch-up campaign's send log — DRAINED and read-only. Imported
+ * only because its texts pointed at review tracking links whose click history
+ * lives against these rows. Nothing writes here.
+ */
+export const catchupTexts = pgTable(
+  "catchup_texts",
+  {
+    id: id(),
+    reviewRequestId: text("review_request_id"),
+    customerName: text("customer_name").notNull(),
+    customerPhoneE164: text("customer_phone_e164").notNull(),
+    trackingId: text("tracking_id").notNull(),
+    trackingUrl: text("tracking_url").notNull(),
+    workMonth: text("work_month").notNull(),
+    scheduledFor: timestamp("scheduled_for", { withTimezone: true }).notNull(),
+    status: text("status").notNull().default("pending"),
+    errorMessage: text("error_message"),
+    sentAt: timestamp("sent_at", { withTimezone: true }),
+    createdAt: createdAt(),
+  },
+  (t) => [index("catchup_texts_tracking_idx").on(t.trackingId)],
+);
