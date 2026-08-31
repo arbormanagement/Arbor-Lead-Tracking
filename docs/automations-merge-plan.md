@@ -1,6 +1,20 @@
 # Migrating Arbor-Automations into Arbor-Lead-Tracking
 
-**Status (2026-08-30 evening): CUTOVER IN PROGRESS — Retell and Meta are LIVE on LT.**
+**Status (2026-08-31): FUNCTIONAL CUTOVER COMPLETE — all four paths live on LT.**
+Slice 4 finished 2026-08-31 ~15:00 UTC: Justin repointed the HCP `invoice.paid` webhook
+(test POST verified landing on LT at 14:48), the old app redeployed with
+`ENABLE_REVIEW_WORKFLOW`/`ENABLE_CATCHUP_CAMPAIGN` false, the final delta import ran clean
+(478 source rows — one new request had arrived at the old app overnight — all resolved),
+and `REVIEW_WORKFLOW_ENABLED=true` deployed here; the 15:00 cron tick reports
+`enabled:true`. Live-traffic verification the same morning: 8 real calls on Retell v116
+with 8/8 call summaries sent through LT, Chloe's first real estimate created through LT
+(`csr_05e57072…`, existing customer resolved from the local mirror, linked to its lead),
+and a Facebook lead → HCP estimate #15539 in 8 seconds with no double-create. Reading
+those logs also surfaced and fixed a PRE-EXISTING bug (PR #127): the inline contact→HCP
+link had thrown 22P02 on every attempt since 8/14 (JS array interpolated into a raw sql
+template); the post-sync sweep had been masking it. Only slice 6 remains (domain move +
+Retell inbound webhook dashboard change + old-app retirement, after a quiet week).
+The earlier per-leg detail below stands as written on 2026-08-30 evening:
 - **Retell: DONE.** v116 published (base v115): `create_estimate` tool URL and the agent's
   `call_summary` webhook both point at `app.arbor-mgmt.com` with `?secret=`, draft verified
   (prompt byte-identical, 4 tools intact), 9/9 simulation pass before publish. Chloe's
