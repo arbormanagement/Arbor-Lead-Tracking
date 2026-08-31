@@ -2,6 +2,7 @@ import { env } from "@/lib/env";
 import { secretEquals } from "@/lib/secret-compare";
 import { syncSpend } from "@/lib/sync/spend";
 import { syncHcp } from "@/lib/sync/hcp";
+import { syncHcpLineItems } from "@/lib/sync/hcp-line-items";
 import { runAttribution } from "@/lib/sync/attribution";
 import { syncTranscriptions } from "@/lib/sync/transcribe";
 import { syncMessageClassification } from "@/lib/sync/classify-messages";
@@ -25,6 +26,20 @@ export const runtime = "nodejs";
  * window policy (spend: 35d rolling + cold-start backfill; conversions: 90d to
  * match Google's click lookback), and passing an explicit `sinceDays` here
  * short-circuits that self-healing. Only pass one to deliberately narrow a run.
+ *
+ * ⚠️ THIS SWITCH IS A SECOND DISPATCH TABLE, and the duplication has already cost
+ * one silent outage. `lib/sync/run-job.ts` has the same job vocabulary for the
+ * admin button and the MCP `trigger_sync` tool; `hcp-lineitems` was added there and
+ * NOT here on 2026-08-31, so every ten-minute tick hit this switch, fell through to
+ * `default`, and 400'd. Nothing reported it: the cron worker logs the failure where
+ * nobody reads it, /api/diagnostics can only show a job that has RUN, and a job that
+ * has never run at all looks exactly like a job that is idle. The 30k-record
+ * backfill sat still for half an hour while every other job ticked normally.
+ *
+ * So when adding a job: it goes in `scripts/cron.ts` (the schedule), in
+ * `lib/sync/run-job.ts` (manual + MCP), and HERE. The check that catches a miss is
+ * `npm run verify:cron-jobs`, which asserts every scheduled name resolves to a case
+ * in this file — the two lists cannot silently disagree again.
  */
 export async function GET(req: Request, { params }: { params: Promise<{ job: string }> }) {
   const auth = req.headers.get("authorization");
@@ -49,6 +64,8 @@ export async function GET(req: Request, { params }: { params: Promise<{ job: str
         return Response.json({ ok: true, job, result: await backfillCallThreads() });
       case "hcp":
         return Response.json({ ok: true, job, result: await syncHcp() });
+      case "hcp-lineitems":
+        return Response.json({ ok: true, job, result: await syncHcpLineItems() });
       case "spend":
         return Response.json({ ok: true, job, result: await syncSpend() });
       case "attribution":
