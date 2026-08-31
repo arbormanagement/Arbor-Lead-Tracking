@@ -33,10 +33,18 @@ template); the post-sync sweep had been masking it. **Slice 6 executed the same 
   recommending it. `sleep_application` was added to that tool for this
   (`Arbor-MCP-Server` #223) and the stale advice corrected. Verified in the deployed
   manifest: `sleepApplication: true`. Reversible in one call if anything is ever missed.
-  Remaining, still deliberately delayed: final pg_dump to Drive, delete the old Railway
-  project (app + Postgres 16) after a quiet month, archive the repo. Its Postgres keeps
-  daily backups meanwhile, and the pre-existing TCP proxy
-  (`roundhouse.proxy.rlwy.net:38186`) dies with the project.
+  **Retirement is scheduled for Wednesday 2026-09-02 evening, and the pg_dump is WAIVED
+  (Justin, 2026-08-31).** Deleting Railway project `9efa0d39-…` removes the Express app,
+  its Postgres 16, that volume's daily backups and the `roundhouse.proxy.rlwy.net:38186`
+  proxy in one irreversible step, so what is not already in LT is gone for good. What that
+  costs is bounded and known: `review_requests` (478) and `catchup_texts` (255) are
+  imported and verified here, and the two tables the lean-import decision deliberately
+  skipped — `service_requests` and `call_summaries` — are the only history that dies with
+  it. Both are superseded going forward (website leads write straight to HCP; Chloe's
+  summaries land in `retell_call_summaries` plus the info@ mailbox), which is why the dump
+  stopped being worth its cost. The scheduled run re-checks that the app never woke, that
+  LT's four pipelines are healthy and that the imported rows are present BEFORE deleting,
+  and aborts to a report if any of that fails.
 The earlier per-leg detail below stands as written on 2026-08-30 evening:
 - **Retell: DONE.** v116 published (base v115): `create_estimate` tool URL and the agent's
   `call_summary` webhook both point at `app.arbor-mgmt.com` with `?secret=`, draft verified
