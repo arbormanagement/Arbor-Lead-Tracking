@@ -123,7 +123,7 @@ export async function POST(req: Request) {
   // classify lowercases its output; normalize raw UTM the same way so "CPC" and
   // "cpc" don't split dashboard groupings.
   const medium = utm.medium?.toLowerCase() ?? cls.medium;
-  const location = inferLocation(form?.pageUrl ?? url, utm.campaign);
+  const location = inferLocation(utm.campaign);
   // Recorded, never acted on here. /api/dni/assign refuses a crawler a pool number, but
   // nothing was storing what asked — so 'are bots draining the pool?' was unanswerable
   // both before and after that gate. The column already existed; it was simply never written.
@@ -373,26 +373,29 @@ async function getOrCreateSource(key: string): Promise<string | null> {
 }
 
 /**
- * Which branch a touch belongs to.
+ * Which BRANCH a touch came through — meaning which of the two Google Business
+ * Profiles, and nothing else.
  *
- * `utm_campaign` is checked FIRST and is not an afterthought: the two Google
- * Business Profiles each tag their website link explicitly
- * (`utm_campaign=edwardsville` / `ofallon`) while BOTH point at the homepage — so
- * the page URL carries no location at all and every GBP web click was landing as
- * `unknown`. The matching calls already split correctly, because each profile has
- * its own tracking number and `/voice` takes the location from the number, so the
- * two halves of GBP disagreed for no reason other than where this function looked.
+ * The two profiles each tag their website link (`utm_campaign=edwardsville` /
+ * `ofallon`) while both point at the homepage, so the campaign is the only thing
+ * that carries the branch on a web touch. Calls are the same signal by another
+ * route: each profile has its own tracking number and `/voice` reads the branch
+ * off `tracking_numbers.location`.
  *
- * Reading the campaign also picks up location-named ad campaigns for free, which is
- * the same signal by a different route.
+ * ⚠️ This used to fall back to matching the PAGE URL, and that was wrong. A page
+ * URL containing a city name says the visitor read a service-area page, not that
+ * they came through that branch — so a Google Ads visitor who landed on `/` and
+ * submitted a form on `/locations/edwardsville-tree-services` was recorded as an
+ * Edwardsville-branch contact. Four paid estimates carried a branch that way
+ * before this was removed. A service-area page view is a page view; do not let it
+ * back in. Anything that is not a branch touch is `unknown`, which is the honest
+ * answer for every ad, referral and direct contact.
  */
-function inferLocation(url?: string, utmCampaign?: string | null): "edwardsville" | "ofallon" | "unknown" {
-  const match = (v: string): "edwardsville" | "ofallon" | null => {
-    if (v.includes("edwardsville")) return "edwardsville";
-    if (v.includes("ofallon") || v.includes("o-fallon") || v.includes("o'fallon")) return "ofallon";
-    return null;
-  };
-  return match((utmCampaign ?? "").toLowerCase()) ?? match((url ?? "").toLowerCase()) ?? "unknown";
+function inferLocation(utmCampaign?: string | null): "edwardsville" | "ofallon" | "unknown" {
+  const v = (utmCampaign ?? "").toLowerCase();
+  if (v.includes("edwardsville")) return "edwardsville";
+  if (v.includes("ofallon") || v.includes("o-fallon") || v.includes("o'fallon")) return "ofallon";
+  return "unknown";
 }
 
 /** Field names that should never be stored, whatever their value. */
