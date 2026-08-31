@@ -1,7 +1,7 @@
 import { eq } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { calls, leads, numberAssignments, trackingNumbers } from "@/lib/db/schema";
-import { resolveCampaignIdByName } from "@/lib/campaigns";
+import { resolveCampaignId } from "@/lib/campaigns";
 import { validateTwilioSignature, parseTwilioForm } from "@/lib/twilio/signature";
 import { ensureSourceId, isHardSpamNumber, resolveInboundAttribution } from "@/lib/twilio/inbound";
 import { recordThreadActivity, upsertThread } from "@/lib/messaging/thread";
@@ -174,7 +174,8 @@ async function recordCall(args: {
   // because it is a configured fact about the number rather than an inference from
   // whatever a visitor's URL happened to carry — and the two cannot both apply, as
   // only a pooled number ever has a lease.
-  const campaignId = staticCampaignId ?? (await resolveCampaignIdByName(lease?.campaign));
+  const campaignId =
+    staticCampaignId ?? (await resolveCampaignId({ name: lease?.campaign, url: lease?.landingPage }));
 
   // Repeat-caller detection (one quick indexed lookup — keep the webhook fast).
   // Runs BEFORE the call insert so it doesn't count this very call.

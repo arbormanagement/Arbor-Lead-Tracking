@@ -25,7 +25,7 @@ import { eq, inArray } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { attributions, campaigns, leads, roiDaily, sources, trackingNumbers } from "@/lib/db/schema";
 import { seedDefaults } from "@/lib/db/seed-data";
-import { resolveCampaignIdByName } from "@/lib/campaigns";
+import { campaignIdFromUrl, resolveCampaignId } from "@/lib/campaigns";
 import { resolveInboundAttribution } from "@/lib/twilio/inbound";
 import { runAttribution } from "@/lib/sync/attribution";
 
@@ -40,6 +40,12 @@ const ok = (c: boolean, m: string) => {
  *  each run — both `phone_number` and `twilio_sid` are unique, so a second run would
  *  otherwise just collide. */
 const FIXTURES = ["+16185550001", "+16185550002", "+16185550003"];
+
+/** A duplicate NAME across two campaigns — the shape that misrouted every Google Ads
+ *  lead for two weeks. Ids are outside any real account's range. */
+const DUP_NAME = "Verify | Duplicate Name";
+const DUP_LIVE = "99900001";
+const DUP_DEAD = "99900002";
 
 async function main() {
   for (const phone of FIXTURES) {
@@ -56,6 +62,8 @@ async function main() {
     await db.delete(leads).where(eq(leads.phoneE164, phone));
     await db.delete(trackingNumbers).where(eq(trackingNumbers.phoneNumber, phone));
   }
+
+  await db.delete(campaigns).where(inArray(campaigns.externalCampaignId, [DUP_LIVE, DUP_DEAD]));
 
   const [gbp] = await db.select().from(sources).where(eq(sources.key, "gbp")).limit(1);
 
@@ -99,10 +107,10 @@ async function main() {
   ok(edw?.name === "Edwardsville" && ofa?.name === "O'Fallon", `display names (${edw?.name} / ${ofa?.name})`);
 
   // Web path: utm_campaign token resolves despite the prettier display name.
-  ok((await resolveCampaignIdByName("edwardsville")) === edw.id, "utm_campaign=edwardsville → Edwardsville");
-  ok((await resolveCampaignIdByName("ofallon")) === ofa.id, "utm_campaign=ofallon → O'Fallon");
-  ok((await resolveCampaignIdByName("Edwardsville")) === edw.id, "display name still resolves");
-  ok((await resolveCampaignIdByName("nope")) === null, "unknown utm_campaign still mints nothing");
+  ok((await resolveCampaignId({ name: "edwardsville" })) === edw.id, "utm_campaign=edwardsville → Edwardsville");
+  ok((await resolveCampaignId({ name: "ofallon" })) === ofa.id, "utm_campaign=ofallon → O'Fallon");
+  ok((await resolveCampaignId({ name: "Edwardsville" })) === edw.id, "display name still resolves");
+  ok((await resolveCampaignId({ name: "nope" })) === null, "unknown utm_campaign still mints nothing");
 
   // Call path.
   const [edwNumAfter] = await db.select().from(trackingNumbers).where(eq(trackingNumbers.id, edwNum.id));
@@ -155,6 +163,57 @@ async function main() {
     rolled.some((r) => r.contactsCount > 0),
     "…and the historical contact is counted under it, so /sources shows it",
   );
+
+  // ── Two campaigns, one name ────────────────────────────────────────────────
+  // Inserted dead-first so the naive `limit(1)` with no ordering would tend to
+  // return the wrong one, which is what actually happened in production.
+  const [dead] = await db.insert(campaigns).values({
+    platform: "google", externalCampaignId: DUP_DEAD, name: DUP_NAME,
+  }).returning();
+  const [live] = await db.insert(campaigns).values({
+    platform: "google", externalCampaignId: DUP_LIVE, name: DUP_NAME,
+  }).returning();
+
+  const adUrl = `https://arbor-mgmt.com/?utm_campaign=${encodeURIComponent(DUP_NAME)}&gad_campaignid=${DUP_LIVE}&gclid=x`;
+  ok(campaignIdFromUrl(adUrl) === DUP_LIVE, "gad_campaignid is read off the URL");
+  ok(campaignIdFromUrl("https://arbor-mgmt.com/?campaign_id=99900001") === DUP_LIVE, "campaign_id is read too");
+  ok(campaignIdFromUrl("https://arbor-mgmt.com/?gad_campaignid=notanid") === null, "a non-numeric id is ignored");
+  ok(campaignIdFromUrl("https://arbor-mgmt.com/") === null, "an untagged URL yields nothing");
+
+  ok(
+    (await resolveCampaignId({ name: DUP_NAME, url: adUrl })) === live.id,
+    "the URL's campaign id beats the shared name",
+  );
+  ok(
+    (await resolveCampaignId({ name: DUP_NAME, url: `https://arbor-mgmt.com/?gad_campaignid=${DUP_DEAD}` })) === dead.id,
+    "…and picks the other one when the URL says so, so it is reading the id and not just preferring newer",
+  );
+  const noUrl = await resolveCampaignId({ name: DUP_NAME });
+  ok(noUrl === live.id || noUrl === dead.id, "a name with no URL still resolves (ambiguously — hence the diagnostic)");
+  ok(
+    (await resolveCampaignId({ name: DUP_NAME, url: "https://arbor-mgmt.com/?gad_campaignid=99999999" })) !== null,
+    "an unknown URL id falls back to the name rather than dropping the campaign",
+  );
+
+  // The repair: a lead filed under the dead campaign whose own URL names the live one.
+  const [misrouted] = await db.insert(leads).values({
+    type: "web_form", sourceId: gbp.id, occurredAt: new Date(), phoneE164: FIXTURES[0],
+    campaignId: dead.id, landingPage: adUrl,
+  }).returning();
+  const [untagged] = await db.insert(leads).values({
+    type: "web_form", sourceId: gbp.id, occurredAt: new Date(), phoneE164: FIXTURES[1],
+    campaignId: dead.id, landingPage: "https://arbor-mgmt.com/?utm_campaign=whatever",
+  }).returning();
+
+  await seedDefaults(db);
+  const [fixed] = await db.select().from(leads).where(eq(leads.id, misrouted.id));
+  ok(fixed.campaignId === live.id, "a misrouted lead is repaired from its own landing page");
+  const [left] = await db.select().from(leads).where(eq(leads.id, untagged.id));
+  ok(left.campaignId === dead.id, "a lead whose URL names no campaign is left alone");
+
+  await seedDefaults(db);
+  const [stillFixed] = await db.select().from(leads).where(eq(leads.id, misrouted.id));
+  ok(stillFixed.campaignId === live.id, "the repair is a no-op on re-run, not a flip-flop");
 
   // Idempotency + non-destructiveness.
   await db.update(leads).set({ campaignId: edw.id }).where(eq(leads.id, oldLead.id));

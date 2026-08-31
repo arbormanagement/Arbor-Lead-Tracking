@@ -5,7 +5,7 @@ import { z } from "zod";
 import { db } from "@/lib/db/client";
 import { formSubmissions, leads, sources, visitors, webSessions } from "@/lib/db/schema";
 import { classifySource } from "@/lib/attribution/classify";
-import { resolveCampaignIdByName } from "@/lib/campaigns";
+import { resolveCampaignId } from "@/lib/campaigns";
 import { isAllowedOrigin } from "@/lib/origin";
 import { preview, recordThreadActivity, upsertThread } from "@/lib/messaging/thread";
 import { normalizeEmail, normalizePhone } from "@/lib/phone";
@@ -231,7 +231,7 @@ export async function POST(req: Request) {
     // right source and no campaign at all, and every campaign-level figure
     // under-counted by however much of its volume converts on a form rather than a
     // call. Same lookup the voice path uses, so the two agree.
-    const leadCampaignId = await resolveCampaignIdByName(sess?.campaign);
+    const leadCampaignId = await resolveCampaignId({ name: sess?.campaign, url: sess?.landingPage });
 
     // Idempotency key for the submission. The browser posts once and does not
     // retry, but a double-clicked submit button fires two `submit` events, and a

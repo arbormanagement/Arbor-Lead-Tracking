@@ -46,33 +46,77 @@ export function campaignNotExcluded(col: AnyPgColumn, excludedIds: string[]): SQ
  * One implementation now, because three copies of a lookup are three chances for
  * the paths to disagree about what a campaign match means.
  */
-export async function resolveCampaignIdByName(name: string | null | undefined): Promise<string | null> {
-  if (!name) return null;
-  // Matched against the campaign's NAME or its EXTERNAL ID, because a `utm_campaign`
-  // is written by whoever built the link and only sometimes equals what the campaign
-  // is called here. Two cases, both real:
-  //
-  //   - The Google Business Profiles tag their links `utm_campaign=edwardsville` /
-  //     `ofallon`. Those tokens live on the campaigns as `external_campaign_id`, so
-  //     the rows are free to be called "Edwardsville" and "O'Fallon" on screen
-  //     instead of carrying a lowercase slug as their display name.
-  //   - A Google Ads tracking template set to `{campaignid}` rather than
-  //     `{campaignname}` sends the numeric id — which is exactly what
-  //     `external_campaign_id` holds for a synced campaign. That combination used to
-  //     resolve to null and silently drop the campaign off the lead; the account
-  //     default still carries an old template, so it can still happen.
-  //
-  // Still an exact match against EXISTING rows, never a create: minting campaigns
-  // from query-string text is what this function exists to prevent.
+/**
+ * The campaign id a platform stamped into its own landing-page URL.
+ *
+ * `gad_campaignid` is added by Google's auto-tagging at click time; `campaign_id`
+ * comes from the account's tracking template. Either one names the campaign that
+ * actually served the ad, and neither can be ambiguous the way a name can.
+ * Auto-tagging is preferred because it is not ours to mis-configure.
+ *
+ * Digits only: these are platform ids, and anything else is a tag someone hand-wrote.
+ */
+export function campaignIdFromUrl(url: string | null | undefined): string | null {
+  if (!url) return null;
+  const m =
+    /[?&]gad_campaignid=(\d+)(?:&|$)/.exec(url) ?? /[?&]campaign_id=(\d+)(?:&|$)/.exec(url);
+  return m?.[1] ?? null;
+}
+
+/**
+ * Resolve a lead's campaign from what the visit carried.
+ *
+ * **The URL's campaign id wins over `utm_campaign` text, and that ordering is the
+ * whole point of this function.** A name does not identify a campaign: Arbor has two
+ * called `Search | Tree Services` (23633267649, live, and 22596055602, which has not
+ * spent since before tracking began), the `{campaignname}` template emits a string
+ * both of them match, and the tie went to whichever row Postgres returned first —
+ * which for two weeks was consistently the dead one. Measured 2026-08-30: every
+ * `google/cpc` lead with a landing page carried `gad_campaignid=23633267649` and not
+ * one carried the other id, while 51 of 67 were filed under the other id. Campaign
+ * CPE read 5.3x too high and ROAS 7.6x too low on the campaign that spends.
+ *
+ * The id is on the URL because GOOGLE put it there, so this keeps working if the
+ * tracking template changes, and it needs no rename in the Ads UI — which matters,
+ * because a rename there would not reach us anyway: `ensureCampaigns` only touches
+ * campaigns present in the spend pull, and a campaign that has stopped spending
+ * produces no rows to be renamed by.
+ *
+ * Still an exact match against EXISTING rows, never a create: minting campaigns from
+ * query-string text is what this function exists to prevent.
+ */
+export async function resolveCampaignId(touch: {
+  /** `utm_campaign` as the visit carried it. */
+  name?: string | null;
+  /** The landing page, whose query string may name the campaign outright. */
+  url?: string | null;
+}): Promise<string | null> {
+  const urlId = campaignIdFromUrl(touch.url);
+  const name = touch.name ?? null;
+  if (!urlId && !name) return null;
+
+  // One round trip: this runs on the /voice hot path, which has a sub-3s budget and
+  // where a MISS is the common case, so a second query would cost every call.
+  const candidates: SQL[] = [];
+  if (urlId) candidates.push(eq(campaigns.externalCampaignId, urlId));
+  if (name) candidates.push(eq(campaigns.name, name), eq(campaigns.externalCampaignId, name));
+
   const [c] = await db
     .select({ id: campaigns.id })
     .from(campaigns)
-    .where(or(eq(campaigns.name, name), eq(campaigns.externalCampaignId, name)))
-    // A name match wins if some other campaign's external id happens to equal this
-    // one's name, so the answer cannot depend on which row Postgres reaches first.
-    // Ordered rather than queried twice: this runs on the /voice hot path, where a
-    // MISS is the common case and a second round trip would cost every call.
-    .orderBy(sql`case when ${campaigns.name} = ${name} then 0 else 1 end`)
+    .where(or(...candidates))
+    // Ranked rather than left to the planner, so the answer cannot depend on physical
+    // row order — which is exactly how the dead campaign came to win. A campaign that
+    // stops spending stops being UPDATEd by the spend sync, so its row stops moving
+    // later in the heap, and it drifts to the front of a sequential scan: dying made
+    // it MORE attractive to the matcher.
+    .orderBy(
+      sql`case
+            when ${urlId ?? null}::text is not null and ${campaigns.externalCampaignId} = ${urlId ?? null} then 0
+            when ${name ?? null}::text is not null and ${campaigns.name} = ${name ?? null} then 1
+            else 2
+          end`,
+    )
     .limit(1);
   return c?.id ?? null;
 }

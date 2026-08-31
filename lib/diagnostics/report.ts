@@ -1,10 +1,11 @@
-import { and, desc, eq, gte, isNull, lt, ne, sql } from "drizzle-orm";
+import { and, desc, eq, gte, isNotNull, isNull, lt, ne, sql } from "drizzle-orm";
 import { isLikelyBot } from "@/lib/bot";
 import { credentialStatus } from "@/lib/credentials";
 import { CREDENTIAL_SPECS } from "@/lib/credentials/spec";
 import { db } from "@/lib/db/client";
 import {
   calls,
+  campaigns,
   conversionExports,
   hcpCustomers,
   hcpEstimates,
@@ -494,7 +495,41 @@ export async function diagnosticsReport(): Promise<{ httpStatus: number; report:
   };
 
   // Anything here is worth a human looking at it now.
+  /**
+   * Campaigns that share a NAME, which is the one thing that can make campaign-grain
+   * ROI silently wrong in both directions at once.
+   *
+   * `resolveCampaignId` prefers the campaign id Google stamps into the landing page,
+   * so a collision no longer decides attribution where that id is present. It is not
+   * always present — a lead from a cached URL carrying only `utm_campaign=<name>`,
+   * or a hand-built link, still resolves by name — so a duplicate name is still worth
+   * knowing about, and nothing in this app could previously see one.
+   *
+   * Found 2026-08-30 with two campaigns both called `Search | Tree Services`: the
+   * live one showed $7,446 of spend against 0 contacts while the one that had not
+   * spent in a month held 51 contacts and $6,730 of revenue. Neither row was true,
+   * and both looked plausible on their own — which is why this needs a check rather
+   * than a reader noticing.
+   */
+  const duplicateCampaignNames = await db
+    .select({
+      name: campaigns.name,
+      count: sql<number>`count(*)::int`,
+      ids: sql<string[]>`array_agg(${campaigns.externalCampaignId} order by ${campaigns.externalCampaignId})`,
+    })
+    .from(campaigns)
+    .where(isNotNull(campaigns.name))
+    .groupBy(campaigns.name)
+    .having(sql`count(*) > 1`);
+
   const warnings: string[] = [];
+  for (const d of duplicateCampaignNames) {
+    warnings.push(
+      `${d.count} campaigns share the name "${d.name}" (ids ${d.ids.join(", ")}) — a lead whose ` +
+        `utm_campaign carries only the name cannot be assigned to one of them. Rename or remove ` +
+        `the stale one, or switch that account's tracking template to {campaignid}.`,
+    );
+  }
   if (config.appBaseUrlHasTrailingSlash) {
     warnings.push("APP_BASE_URL has a trailing slash — Twilio signature validation will reject every callback");
   }
@@ -621,6 +656,7 @@ export async function diagnosticsReport(): Promise<{ httpStatus: number; report:
       estimateSync,
       hcpSync,
       expandCoverage,
+      duplicateCampaignNames,
       credentials: creds,
     },
   };

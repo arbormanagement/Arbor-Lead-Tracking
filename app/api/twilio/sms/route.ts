@@ -1,7 +1,7 @@
 import { and, desc, eq, inArray } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { leads, messages, numberAssignments, trackingNumbers } from "@/lib/db/schema";
-import { resolveCampaignIdByName } from "@/lib/campaigns";
+import { resolveCampaignId } from "@/lib/campaigns";
 import { clearSmsOptOut, markSmsOptedOut } from "@/lib/contacts/resolve";
 import { env } from "@/lib/env";
 import { preview, recordThreadActivity, upsertThread } from "@/lib/messaging/thread";
@@ -191,7 +191,8 @@ async function attachToOpenLeadOrCreate(args: {
   // rewrite the source that earned it, which is the same rule threading follows.
   // Static number → its configured campaign; pooled → the lease's utm_campaign.
   // Same precedence as /voice, which is the point of sharing the resolver.
-  const campaignId = staticCampaignId ?? (await resolveCampaignIdByName(lease?.campaign));
+  const campaignId =
+    staticCampaignId ?? (await resolveCampaignId({ name: lease?.campaign, url: lease?.landingPage }));
 
   const [lead] = await db
     .insert(leads)

@@ -211,6 +211,38 @@ export async function seedDefaults(db: Db, onRow?: (label: string) => void) {
       );
   }
 
+  // Repair leads whose campaign was decided by a NAME that two campaigns share.
+  //
+  // Arbor has two campaigns called `Search | Tree Services` — 23633267649, which
+  // spends, and 22596055602, which has not spent since before tracking began — and
+  // the `{campaignname}` template emits a string both of them match. The tie went to
+  // whichever row Postgres returned first, which for two weeks running was the dead
+  // one. Measured 2026-08-30: every google/cpc lead with a landing page carried
+  // `gad_campaignid=23633267649` and none carried the other id, while 51 of 67 were
+  // filed under the other id. Campaign CPE read 5.3x too high and ROAS 7.6x too low
+  // on the campaign that actually spends.
+  //
+  // The landing page is the authority and it was there all along: Google stamps the
+  // serving campaign into the URL itself. `resolveCampaignId` reads it for new leads;
+  // this fixes the ones written before it did.
+  //
+  // Self-limiting rather than fill-only-a-NULL, which is the difference from the
+  // passes above: it rewrites a campaign that is DEMONSTRABLY wrong — the lead's own
+  // URL names a different one — and once corrected it matches nothing, so re-running
+  // is a no-op. That is also why it is safe on every deploy: the only thing it can
+  // ever do is make a lead agree with the URL it arrived on.
+  const repaired = await db.execute(sql`
+    update ${schema.leads} as l
+       set campaign_id = c.id, updated_at = now()
+      from ${schema.campaigns} as c
+     where c.external_campaign_id = coalesce(
+             substring(l.landing_page from '[?&]gad_campaignid=([0-9]+)'),
+             substring(l.landing_page from '[?&]campaign_id=([0-9]+)')
+           )
+       and l.campaign_id is distinct from c.id
+  `);
+  if (repaired.rowCount) onRow?.(`repaired ${repaired.rowCount} lead campaign(s) from the landing page`);
+
   for (const p of SEED_POOLS) {
     await db
       .insert(schema.pools)
