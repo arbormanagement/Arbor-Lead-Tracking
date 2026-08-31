@@ -281,6 +281,18 @@ export async function seedDefaults(db: Db, onRow?: (label: string) => void) {
   // serving campaign into the URL itself. `resolveCampaignId` reads it for new leads;
   // this fixes the ones written before it did.
   //
+  // The SESSION's landing page is checked as well as the lead's, and for a WEB FORM
+  // it is the only place the answer lives. `leads.landing_page` deliberately holds
+  // the page the FORM was on for a form lead (app/api/track/route.ts) — where the
+  // visitor converted, which is the more useful fact about the lead — while the page
+  // the visit ENTERED on, the one carrying the ad's query string, stays on
+  // `web_sessions`. So a visitor who arrives on a tagged ad URL and submits from a
+  // clean inner page has a lead whose own landing page names no campaign and a
+  // session whose landing page names it exactly. Measured 2026-08-31: 8 of the 41
+  // paid web-form leads are that shape, and the five still sitting on the removed
+  // campaign after the first repair were all of them. Ingest never had this problem —
+  // `resolveCampaignId` is already handed `sess.landingPage` there.
+  //
   // Self-limiting rather than fill-only-a-NULL, which is the difference from the
   // passes above: it rewrites a campaign that is DEMONSTRABLY wrong — the lead's own
   // URL names a different one — and once corrected it matches nothing, so re-running
@@ -292,7 +304,15 @@ export async function seedDefaults(db: Db, onRow?: (label: string) => void) {
       from ${schema.campaigns} as c
      where c.external_campaign_id = coalesce(
              substring(l.landing_page from '[?&]gad_campaignid=([0-9]+)'),
-             substring(l.landing_page from '[?&]campaign_id=([0-9]+)')
+             substring(l.landing_page from '[?&]campaign_id=([0-9]+)'),
+             (
+               select coalesce(
+                        substring(ws.landing_page from '[?&]gad_campaignid=([0-9]+)'),
+                        substring(ws.landing_page from '[?&]campaign_id=([0-9]+)')
+                      )
+                 from ${schema.webSessions} ws
+                where ws.id = l.web_session_id
+             )
            )
        and l.campaign_id is distinct from c.id
   `);

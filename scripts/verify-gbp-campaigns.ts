@@ -23,7 +23,7 @@
  */
 import { eq, inArray } from "drizzle-orm";
 import { db } from "@/lib/db/client";
-import { adSpend, attributions, campaigns, leads, roiDaily, sources, trackingNumbers } from "@/lib/db/schema";
+import { adSpend, attributions, campaigns, leads, roiDaily, sources, trackingNumbers, visitors, webSessions } from "@/lib/db/schema";
 import { seedDefaults } from "@/lib/db/seed-data";
 import { campaignIdFromUrl, resolveCampaignId, SPEND_REPULL_DAYS } from "@/lib/campaigns";
 import { resolveInboundAttribution } from "@/lib/twilio/inbound";
@@ -62,7 +62,9 @@ async function main() {
     // on a virgin database is a verifier nobody runs twice.
     const stale = db.select({ id: leads.id }).from(leads).where(eq(leads.phoneE164, phone));
     await db.delete(attributions).where(inArray(attributions.leadId, stale));
+    const sessionIds = db.select({ id: leads.webSessionId }).from(leads).where(eq(leads.phoneE164, phone));
     await db.delete(leads).where(eq(leads.phoneE164, phone));
+    await db.delete(webSessions).where(inArray(webSessions.id, sessionIds));
     await db.delete(trackingNumbers).where(eq(trackingNumbers.phoneNumber, phone));
   }
 
@@ -232,7 +234,26 @@ async function main() {
     campaignId: dead.id, landingPage: "https://arbor-mgmt.com/?utm_campaign=whatever",
   }).returning();
 
+  // The web-form shape: the lead's own landing page is the page the FORM was on and
+  // names no campaign, while the SESSION it belongs to entered on the tagged ad URL.
+  // This is what the five leads still stranded on the removed campaign turned out to
+  // be, and the first version of the repair could not see them.
+  const [visitor] = await db.insert(visitors).values({}).returning();
+  const [session] = await db.insert(webSessions).values({
+    visitorId: visitor.id,
+    landingPage: adUrl,
+    lastPage: "https://arbor-mgmt.com/services",
+  }).returning();
+  const [formLead] = await db.insert(leads).values({
+    type: "web_form", sourceId: gbp.id, occurredAt: new Date(), phoneE164: FIXTURES[2],
+    campaignId: dead.id,
+    landingPage: "https://arbor-mgmt.com/services/tree-and-plant-healthcare",
+    webSessionId: session.id,
+  }).returning();
+
   await seedDefaults(db);
+  const [formFixed] = await db.select().from(leads).where(eq(leads.id, formLead.id));
+  ok(formFixed.campaignId === live.id, "a form lead is repaired from its SESSION's entry URL");
   const [fixed] = await db.select().from(leads).where(eq(leads.id, misrouted.id));
   ok(fixed.campaignId === live.id, "a misrouted lead is repaired from its own landing page");
   const [left] = await db.select().from(leads).where(eq(leads.id, untagged.id));
