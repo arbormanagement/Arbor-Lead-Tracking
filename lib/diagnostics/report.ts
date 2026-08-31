@@ -1,5 +1,6 @@
 import { and, desc, eq, gte, isNotNull, isNull, lt, ne, sql } from "drizzle-orm";
 import { isLikelyBot } from "@/lib/bot";
+import { SPEND_REPULL_DAYS } from "@/lib/campaigns";
 import { credentialStatus } from "@/lib/credentials";
 import { CREDENTIAL_SPECS } from "@/lib/credentials/spec";
 import { db } from "@/lib/db/client";
@@ -525,9 +526,12 @@ export async function diagnosticsReport(): Promise<{ httpStatus: number; report:
   const warnings: string[] = [];
   for (const d of duplicateCampaignNames) {
     warnings.push(
-      `${d.count} campaigns share the name "${d.name}" (ids ${d.ids.join(", ")}) — a lead whose ` +
-        `utm_campaign carries only the name cannot be assigned to one of them. Rename or remove ` +
-        `the stale one, or switch that account's tracking template to {campaignid}.`,
+      `${d.count} campaigns share the name "${d.name}" (ids ${d.ids.join(", ")}) and ALL of them ` +
+        `have spent inside the last ${SPEND_REPULL_DAYS} days — a lead whose utm_campaign carries ` +
+        `only the name cannot be assigned to one of them. The seed disambiguates a shared name ` +
+        `automatically once a campaign stops spending; it cannot here, because renaming a campaign ` +
+        `the spend sync still pulls would be undone on the next run. Rename one in the ad account, ` +
+        `or switch that account's tracking template to {campaignid}.`,
     );
   }
   if (config.appBaseUrlHasTrailingSlash) {

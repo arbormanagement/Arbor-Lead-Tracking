@@ -1,5 +1,5 @@
 import { and, eq, inArray, lt, sql } from "drizzle-orm";
-import { excludedCampaignIds } from "@/lib/campaigns";
+import { excludedCampaignIds, SPEND_REPULL_DAYS } from "@/lib/campaigns";
 import { db } from "@/lib/db/client";
 import { adSpend, campaigns, leads, sources } from "@/lib/db/schema";
 import { activeSpendProviders, type SpendProvider, type SpendRow } from "@/lib/integrations";
@@ -8,8 +8,10 @@ import { withSyncRun } from "./run";
 
 /** Rolling re-pull window: wide enough that platform restatements (≤28d on Meta)
  *  and multi-day outages (expired token noticed late) self-heal without manual
- *  intervention. Re-pulling is idempotent (unique on platform+campaign+date). */
-const ROLLING_DAYS = 35;
+ *  intervention. Re-pulling is idempotent (unique on platform+campaign+date).
+ *  Defined in lib/campaigns.ts — the duplicate-name disambiguation depends on the
+ *  same boundary, and the two drifting apart would cause a rename flip-flop. */
+const ROLLING_DAYS = SPEND_REPULL_DAYS;
 /** Hard ceiling for the automatic cold-start backfill. */
 const MAX_HISTORY_DAYS = 365;
 

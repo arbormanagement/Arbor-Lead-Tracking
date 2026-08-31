@@ -47,6 +47,18 @@ export function campaignNotExcluded(col: AnyPgColumn, excludedIds: string[]): SQ
  * the paths to disagree about what a campaign match means.
  */
 /**
+ * How far back the spend sync re-pulls on every run.
+ *
+ * Lives here rather than in `lib/sync/spend.ts` because a second thing depends on
+ * it: a campaign with NO spend inside this window produces no rows in the pull, so
+ * `ensureCampaigns` never sees it and can never rewrite its name. That is exactly
+ * what makes such a campaign safe to rename locally — and renaming one INSIDE the
+ * window would be undone on the next sync, i.e. a rename/restore flip-flop every
+ * few hours. The two numbers must therefore be the same number.
+ */
+export const SPEND_REPULL_DAYS = 35;
+
+/**
  * The campaign id a platform stamped into its own landing-page URL.
  *
  * `gad_campaignid` is added by Google's auto-tagging at click time; `campaign_id`

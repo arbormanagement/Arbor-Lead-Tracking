@@ -23,9 +23,9 @@
  */
 import { eq, inArray } from "drizzle-orm";
 import { db } from "@/lib/db/client";
-import { attributions, campaigns, leads, roiDaily, sources, trackingNumbers } from "@/lib/db/schema";
+import { adSpend, attributions, campaigns, leads, roiDaily, sources, trackingNumbers } from "@/lib/db/schema";
 import { seedDefaults } from "@/lib/db/seed-data";
-import { campaignIdFromUrl, resolveCampaignId } from "@/lib/campaigns";
+import { campaignIdFromUrl, resolveCampaignId, SPEND_REPULL_DAYS } from "@/lib/campaigns";
 import { resolveInboundAttribution } from "@/lib/twilio/inbound";
 import { runAttribution } from "@/lib/sync/attribution";
 
@@ -46,6 +46,9 @@ const FIXTURES = ["+16185550001", "+16185550002", "+16185550003"];
 const DUP_NAME = "Verify | Duplicate Name";
 const DUP_LIVE = "99900001";
 const DUP_DEAD = "99900002";
+/** Every fixture campaign id, so the cleanup below is exhaustive rather than a list
+ *  that quietly falls behind the fixtures each time one is added. */
+const FIXTURE_CAMPAIGNS = ["99900001", "99900002", "99900003", "99900004", "99900005", "99900006"];
 
 async function main() {
   for (const phone of FIXTURES) {
@@ -63,7 +66,11 @@ async function main() {
     await db.delete(trackingNumbers).where(eq(trackingNumbers.phoneNumber, phone));
   }
 
-  await db.delete(campaigns).where(inArray(campaigns.externalCampaignId, [DUP_LIVE, DUP_DEAD]));
+  // ad_spend before campaigns — it holds the FK, and the spend rows are what decide
+  // whether a duplicate name is safe to rename, so a leftover row from the last run
+  // would silently change the answer.
+  await db.delete(adSpend).where(inArray(adSpend.externalCampaignId, FIXTURE_CAMPAIGNS));
+  await db.delete(campaigns).where(inArray(campaigns.externalCampaignId, FIXTURE_CAMPAIGNS));
 
   // Seed first, so this runs against a database straight out of `drizzle-kit push`
   // rather than one someone remembered to seed by hand. The fixtures below hang off
@@ -180,6 +187,20 @@ async function main() {
     platform: "google", externalCampaignId: DUP_LIVE, name: DUP_NAME,
   }).returning();
 
+  const today = new Date();
+  const daysAgo = (n: number) => new Date(today.getTime() - n * 86_400_000).toISOString().slice(0, 10);
+  const spendOn = (campaignId: string, date: string, extId: string) =>
+    db
+      .insert(adSpend)
+      .values({ platform: "google", externalCampaignId: extId, campaignId, date, spendCents: 100 })
+      .onConflictDoNothing();
+
+  // Recent spend on the live one BEFORE any seed runs. Without it both fixtures are
+  // stale, the very first seedDefaults below correctly suffixes both, and the
+  // one-live-one-stale case can never be reached — which is what happened when this
+  // was written in the order the assertions appear.
+  await spendOn(live.id, daysAgo(1), DUP_LIVE);
+
   const adUrl = `https://arbor-mgmt.com/?utm_campaign=${encodeURIComponent(DUP_NAME)}&gad_campaignid=${DUP_LIVE}&gclid=x`;
   ok(campaignIdFromUrl(adUrl) === DUP_LIVE, "gad_campaignid is read off the URL");
   ok(campaignIdFromUrl("https://arbor-mgmt.com/?campaign_id=99900001") === DUP_LIVE, "campaign_id is read too");
@@ -220,6 +241,46 @@ async function main() {
   await seedDefaults(db);
   const [stillFixed] = await db.select().from(leads).where(eq(leads.id, misrouted.id));
   ok(stillFixed.campaignId === live.id, "the repair is a no-op on re-run, not a flip-flop");
+
+  // ── Disambiguating a shared name ───────────────────────────────────────────
+  // The rule is "suffix a duplicate-named campaign that has no spend inside the
+  // spend sync's re-pull window", and the window is the whole safety argument, so
+  // all three cases are exercised rather than just Arbor's.
+  // Case 1: one live, one stale — Arbor's. Only the stale one is renamed. The
+  // seeds above have already run the pass; this reads the result.
+  const [liveAfter] = await db.select().from(campaigns).where(eq(campaigns.id, live.id));
+  const [deadAfter] = await db.select().from(campaigns).where(eq(campaigns.id, dead.id));
+  ok(liveAfter.name === DUP_NAME, "the campaign still spending keeps the bare name");
+  ok(deadAfter.name === `${DUP_NAME} (${DUP_DEAD})`, "the stale one is suffixed with its platform id");
+
+  // …and the bare name now resolves to exactly one campaign, which is the point.
+  ok((await resolveCampaignId({ name: DUP_NAME })) === live.id, "a name-only lead now resolves to the live campaign");
+
+  // Idempotent: the group no longer exists, so nothing is suffixed twice.
+  await seedDefaults(db);
+  const [deadAgain] = await db.select().from(campaigns).where(eq(campaigns.id, dead.id));
+  ok(deadAgain.name === `${DUP_NAME} (${DUP_DEAD})`, "re-running does not suffix it twice");
+
+  // Case 2: BOTH inside the re-pull window — neither may be touched, or this pass
+  // and ensureCampaigns would rename each other's rows every few hours.
+  const BOTH = "Verify | Both Live";
+  const [bl1] = await db.insert(campaigns).values({ platform: "google", externalCampaignId: "99900003", name: BOTH }).returning();
+  const [bl2] = await db.insert(campaigns).values({ platform: "google", externalCampaignId: "99900004", name: BOTH }).returning();
+  await spendOn(bl1.id, daysAgo(2), "99900003");
+  await spendOn(bl2.id, daysAgo(3), "99900004");
+  await seedDefaults(db);
+  const bothAfter = await db.select().from(campaigns).where(inArray(campaigns.id, [bl1.id, bl2.id]));
+  ok(bothAfter.every((c) => c.name === BOTH), "two actively-spending campaigns are left alone, so no rename flip-flop");
+
+  // Case 3: both stale — both suffixed, so the bare name resolves to nothing at all.
+  const NEITHER = "Verify | Both Stale";
+  const [ns1] = await db.insert(campaigns).values({ platform: "google", externalCampaignId: "99900005", name: NEITHER }).returning();
+  const [ns2] = await db.insert(campaigns).values({ platform: "google", externalCampaignId: "99900006", name: NEITHER }).returning();
+  await spendOn(ns1.id, daysAgo(SPEND_REPULL_DAYS + 5), "99900005");
+  await seedDefaults(db);
+  const staleAfter = await db.select().from(campaigns).where(inArray(campaigns.id, [ns1.id, ns2.id]));
+  ok(staleAfter.every((c) => c.name !== NEITHER), "two stale campaigns are both suffixed");
+  ok((await resolveCampaignId({ name: NEITHER })) === null, "…so the shared name resolves to nothing rather than a coin flip");
 
   // Idempotency + non-destructiveness.
   await db.update(leads).set({ campaignId: edw.id }).where(eq(leads.id, oldLead.id));

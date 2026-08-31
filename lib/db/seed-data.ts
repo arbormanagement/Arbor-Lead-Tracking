@@ -1,6 +1,8 @@
 import { and, eq, isNull, sql } from "drizzle-orm";
 import * as schema from "./schema";
+import { SPEND_REPULL_DAYS } from "@/lib/campaigns";
 import { displayNameFor } from "@/lib/sources/naming";
+import { businessDate } from "@/lib/tz";
 import type { Db } from "./client";
 
 /**
@@ -209,6 +211,59 @@ export async function seedDefaults(db: Db, onRow?: (label: string) => void) {
           sql`${schema.leads.landingPage} ~ ${`[?&]utm_campaign=${c.externalCampaignId}(&|$)`}`,
         ),
       );
+  }
+
+  // Give a shared campaign NAME back to whichever campaign still owns it.
+  //
+  // A name is supposed to identify a campaign and sometimes does not: Arbor has two
+  // called `Search | Tree Services`, and one of them is `status: REMOVED` in Google
+  // Ads with no impression since 2026-03-09. REMOVED is terminal — it cannot be
+  // re-enabled and cannot be renamed — so the collision can never be resolved
+  // upstream, and the diagnostic that warns about it would have stayed red forever.
+  // A check that can never go green is a check that gets ignored.
+  //
+  // So a campaign that shares its name and has NOT been paid for inside the spend
+  // sync's re-pull window gets its platform id appended. `SPEND_REPULL_DAYS` is the
+  // whole safety argument and not a tuning knob: a campaign inside that window is in
+  // every pull, so `ensureCampaigns` would rename it straight back and the two passes
+  // would flip-flop every few hours. Outside it, the sync produces no rows for the
+  // campaign and never touches its name again.
+  //
+  // Three cases, one rule:
+  //  · one live, one stale (Arbor's) — the stale one is suffixed, the live one keeps
+  //    the name, and a lead carrying only `utm_campaign=<name>` now resolves to the
+  //    campaign that actually served it.
+  //  · both live — neither is suffixed and the warning stands, which is right: that
+  //    is a real configuration problem needing a human, not one to paper over.
+  //  · both stale — both are suffixed, so nothing resolves by that name at all. That
+  //    is the trade this codebase makes everywhere: a coarse null beats a confident
+  //    wrong answer.
+  //
+  // Idempotent by construction — once suffixed the name is unique, so the group it
+  // belonged to no longer exists. Self-healing too: if a suffixed campaign ever spends
+  // again, `ensureCampaigns` restores its platform name and this pass re-evaluates the
+  // group with the roles the other way round.
+  // Cutoff computed here rather than as `current_date - N` in SQL: the bound
+  // parameter has no inferable type there, so Postgres rejects `date >= integer`.
+  // A business date also keeps the boundary in the same timezone as `ad_spend.date`,
+  // which the platforms report per account-day.
+  const spendCutoff = businessDate(new Date(Date.now() - SPEND_REPULL_DAYS * 86_400_000));
+  const disambiguated = await db.execute(sql`
+    update ${schema.campaigns} as c
+       set name = c.name || ' (' || c.external_campaign_id || ')', updated_at = now()
+     where c.name is not null
+       and exists (
+             select 1 from ${schema.campaigns} d
+              where d.name = c.name and d.id <> c.id
+           )
+       and not exists (
+             select 1 from ${schema.adSpend} s
+              where s.campaign_id = c.id
+                and s.date >= ${spendCutoff}
+           )
+  `);
+  if (disambiguated.rowCount) {
+    onRow?.(`disambiguated ${disambiguated.rowCount} campaign name(s) that were shared`);
   }
 
   // Repair leads whose campaign was decided by a NAME that two campaigns share.
