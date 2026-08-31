@@ -691,7 +691,7 @@ re-argued rather than assumed.
   holds the old `{adname}` string and can only be edited in the Google Ads UI (no API tool);
   it is shadowed for every live campaign, so it bites only a campaign created without its own.
 - **⚠️ TWO Google Ads campaigns are both named `Search | Tree Services`, and the DEAD one is
-  capturing every lead** (found 2026-08-30, NOT fixed). `23633267649` is the live campaign —
+  capturing every lead** (found and fixed 2026-08-30). `23633267649` is the live campaign —
   $3,434 spend and **0 contacts** over the 14 days to 2026-08-30 — while `22596055602` has
   spent **nothing** in that window and holds **42 contacts and $1,190 of revenue**. Lifetime it
   is 12 leads on $38,821 against 51 leads on $4,663. Neither row is true, so Google Ads CPE and
@@ -703,13 +703,24 @@ re-argued rather than assumed.
     is heap order: the spend sync UPDATEs the live campaign daily, which rewrites its row and
     moves it later in the heap, while the campaign that stopped spending stops being rewritten
     and stays early — so a campaign becomes MORE attractive to the matcher by dying.
-  - **The 2026-08-30 ordering change does not fix this** — it only prefers a name match over an
-    external-id match, and here both candidates are name matches.
-  - Fix it in Google Ads rather than in code: rename or remove `22596055602` so the names
-    differ, and/or switch the tracking template to `{campaignid}`, which is unique and which
-    `resolveCampaignIdByName` now understands. A code-side tie-break on "most recent spend"
-    would work but puts a heuristic on the `/voice` hot path; detecting duplicate names in
-    `/api/diagnostics` is the more in-keeping option.
+  - **⚠️ It could NOT have been fixed in the Ads UI, which is why the fix is in code.**
+    `22596055602` is already **`status: REMOVED`** in Google Ads, and its last impression was
+    **2026-03-09** — nearly six months before it captured 51 of 67 tracked leads. REMOVED is
+    terminal: the campaign cannot be re-enabled and cannot be renamed, so "rename the stale one
+    so the names differ" was never available. A rename would not have reached us anyway —
+    `ensureCampaigns` only touches campaigns present in the spend pull, and one that has stopped
+    spending produces no rows to be renamed by.
+  - **FIXED 2026-08-30 by resolving on the campaign id Google puts in the URL**
+    (`resolveCampaignId`, replacing `resolveCampaignIdByName`): `gad_campaignid` from
+    auto-tagging first, then `campaign_id` from the tracking template, then the name. The id is
+    on the URL because Google put it there, so it survives a template change and needs nothing
+    from the Ads UI. Ranked in SQL rather than left to the planner. A seed pass re-points any
+    lead whose own landing page names a different campaign — self-limiting, so it is a no-op
+    once corrected — and `/api/diagnostics` now warns on any two campaigns sharing a name,
+    because a cached URL carrying only `utm_campaign=<name>` still resolves by name.
+  - **Do NOT delete the `campaigns` row.** `ad_spend` (its $4,663.50 of real historical spend),
+    `roi_daily` and `attributions` all reference it, and `runAttribution` rebuilds 365 days of
+    those. Same rule as everywhere else here: tombstone, never hard delete.
 - **A promoted channel does NOT reclassify the leads already in `other`.** `classifySource`
   runs once, at ingest, and the key is frozen onto the lead — so adding a mapping fixes every
   future lead and none of the rows that prompted the mapping. `lib/sources/reclassify.ts`
