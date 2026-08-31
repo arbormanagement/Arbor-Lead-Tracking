@@ -244,4 +244,51 @@ export interface RevenueProvider {
   crawlCustomers(opts: { startPage: number; pages: number; budgetMs?: number }): Promise<HcpCrawlPage<HcpCustomerDTO>>;
   crawlJobs(opts: { startPage: number; pages: number; budgetMs?: number }): Promise<HcpCrawlPage<HcpJobDTO>>;
   crawlInvoices(opts: { startPage: number; pages: number; budgetMs?: number }): Promise<HcpCrawlPage<HcpInvoiceDTO>>;
+  /**
+   * Line items for ONE job, and for ONE estimate (across all its options).
+   *
+   * Deliberately per-record rather than a list pass: HCP exposes line items only
+   * under their parent, with no collection endpoint and no way to filter or window
+   * them. That is the whole reason hydration is a separate job — 30k requests
+   * cannot ride inside the hourly sync's budget.
+   *
+   * Both return the items VERBATIM. Mapping is the caller's job so a new derived
+   * figure never requires re-reading 30k records.
+   */
+  jobLineItems(jobId: string): Promise<HcpLineItem[]>;
+  estimateLineItems(estimateId: string, optionIds: string[]): Promise<HcpLineItem[]>;
+}
+
+/**
+ * One line item as HCP sends it, plus `optionId` on the estimate side.
+ *
+ * Loosely typed on purpose: it is stored as jsonb and read back in SQL, so the only
+ * fields this app needs to NAME are the ones the derivations key off. Everything
+ * else rides along in the jsonb and is available without a schema change.
+ *
+ * `kind` is the field that matters most and the one most easily missed:
+ * `materials | labor | fixed gratuity | fixed discount | percent discount`. A
+ * discount is a LINE, not a field on the parent — which is why nothing in this app
+ * could see a discount before this landed.
+ *
+ * `amount` is the extended figure (unit_price x quantity) and is POSITIVE on a
+ * discount line, where it is subtracted from the total rather than added. Verified
+ * on job_edef2c85… 2026-08-31: 444500 + 374500 - 50000 ('Combo', fixed discount)
+ * = 769000, the job's own total.
+ *
+ * `unit_of_measure` is 'Hour(s)' on the tree-work price-book items, with `quantity`
+ * carrying the QUOTED hours — the estimator's own read of how long the work takes,
+ * which is what makes quoted-vs-actual answerable at all.
+ */
+export interface HcpLineItem extends Record<string, unknown> {
+  id?: string;
+  name?: string | null;
+  kind?: string | null;
+  amount?: number | null;
+  unit_price?: number | null;
+  unit_cost?: number | null;
+  quantity?: number | null;
+  unit_of_measure?: string | null;
+  /** Present only on estimate items — which option of the estimate this belongs to. */
+  optionId?: string;
 }

@@ -4,6 +4,7 @@ import { syncMessageClassification } from "@/lib/sync/classify-messages";
 import { syncConversions } from "@/lib/sync/conversions";
 import { syncFacebookLeads } from "@/lib/sync/facebook-leads";
 import { syncHcp } from "@/lib/sync/hcp";
+import { syncHcpLineItems } from "@/lib/sync/hcp-line-items";
 import { syncSpend } from "@/lib/sync/spend";
 import { backfillCallThreads } from "@/lib/sync/thread-backfill";
 import { syncTranscriptions } from "@/lib/sync/transcribe";
@@ -36,6 +37,14 @@ export async function runSyncJob(job: SyncJob, days?: number): Promise<unknown> 
       return syncSpend(days ? { sinceDays: days } : {});
     case "hcp":
       return syncHcp(days ? { sinceDays: days } : {});
+    case "hcp-lineitems":
+      // Deliberately NOT part of `all` and not folded into `hcp`. Line items are
+      // one HCP request per job and per estimate OPTION — ~30.6k for the account's
+      // history — so a hydration pass that ran long inside the hourly sync would
+      // delay the hot zone the ROI numbers depend on. It owns its own schedule and
+      // its own wall-clock budget instead. `days` means nothing here: the queue is
+      // "what has never been read, or has changed since it was", not a window.
+      return syncHcpLineItems();
     case "attribution":
       return runAttribution({ windowDays: 90 });
     case "reaper":

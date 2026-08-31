@@ -52,6 +52,12 @@ const JOBS: Array<{ job: string; schedule: string; timeoutMs?: number }> = [
   // offset from `transcribe` to keep the two Anthropic-calling jobs apart.
   { job: "classify-messages", schedule: "3-59/5 * * * *", timeoutMs: 180_000 },
   { job: "hcp", schedule: "7 * * * *", timeoutMs: 600_000 },
+  // Line-item hydration, offset well clear of the hourly `hcp` sync at :07 — both
+  // hit HousecallPro on the same API key, and the sync is the one that must never
+  // be throttled. Every ten minutes with a 240s internal budget clears the ~30.6k
+  // cold start in about four hours, then idles at near zero: steady state is only
+  // the records whose `updated_at_hcp` has moved past their stamp.
+  { job: "hcp-lineitems", schedule: "1-51/10 * * * *", timeoutMs: 300_000 },
   { job: "attribution", schedule: "22 * * * *", timeoutMs: 600_000 },
   { job: "fbleads", schedule: "9,24,39,54 * * * *", timeoutMs: 300_000 },
   { job: "conversions", schedule: "37 * * * *", timeoutMs: 600_000 },

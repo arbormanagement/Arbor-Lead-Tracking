@@ -7,6 +7,7 @@ import type {
   HcpEstimateCrawlPage,
   HcpEstimateDTO,
   HcpInvoiceDTO,
+  HcpLineItem,
   HcpJobDTO,
   RevenueProvider,
 } from "./types";
@@ -475,6 +476,59 @@ class HousecallProProvider implements RevenueProvider {
 
   crawlInvoices(opts: { startPage: number; pages: number; budgetMs?: number }): Promise<HcpCrawlPage<HcpInvoiceDTO>> {
     return this.crawlCollection("/invoices", "invoices", mapInvoice, opts);
+  }
+
+  /**
+   * ⚠️ The two line-item endpoints return DIFFERENT ENVELOPES, and neither matches
+   * the rest of this API. Verified against the live account 2026-08-31:
+   *
+   *   GET /jobs/{id}/line_items
+   *     → { object: "list", data: [ … ], url: "…" }        — no paging fields at all
+   *   GET /estimates/{id}/options/{oid}/line_items
+   *     → { line_items: [ … ], page, page_size, total_pages, total_items, has_more }
+   *
+   * So the list key is `data` on one and `line_items` on the other. Reading the
+   * wrong one returns undefined, which coerces to an empty array and stores `[]` —
+   * a job with items recorded as having none, with no error anywhere. Both keys are
+   * named explicitly below rather than probed, so a future envelope change fails
+   * loudly instead of blanking the column.
+   */
+  async jobLineItems(jobId: string): Promise<HcpLineItem[]> {
+    const cfg = await this.config();
+    const body = await this.get<{ data?: HcpLineItem[] }>(cfg, `/jobs/${encodeURIComponent(jobId)}/line_items`);
+    if (!Array.isArray(body.data)) throw new Error(`HCP /jobs/${jobId}/line_items: no "data" array in response`);
+    return body.data;
+  }
+
+  /**
+   * Every option's items, flattened, each tagged with the option it came from.
+   *
+   * An estimate's options are usually ALTERNATIVE bids for the same work, so the
+   * flattened list is not a bill of materials and its amounts must not be summed
+   * blind — the same reason `total_amount_cents` is the highest option and not the
+   * sum. `optionId` is what keeps the per-option view recoverable from the flat
+   * array, and it is why this is stored flat rather than nested: SQL over a flat
+   * array with a discriminator is far simpler than over an array of arrays.
+   */
+  async estimateLineItems(estimateId: string, optionIds: string[]): Promise<HcpLineItem[]> {
+    const cfg = await this.config();
+    const out: HcpLineItem[] = [];
+    for (const optionId of optionIds) {
+      const path = `/estimates/${encodeURIComponent(estimateId)}/options/${encodeURIComponent(optionId)}/line_items`;
+      // Paged, unlike the job endpoint. `has_more` is authoritative; the page walk is
+      // bounded anyway because an option with hundreds of items is a data problem
+      // rather than something to keep reading.
+      for (let page = 1; page <= 20; page++) {
+        const body = await this.get<{ line_items?: HcpLineItem[]; has_more?: boolean }>(cfg, path, {
+          page,
+          page_size: HCP_MAX_PAGE_SIZE,
+        });
+        if (!Array.isArray(body.line_items)) throw new Error(`HCP ${path}: no "line_items" array in response`);
+        for (const item of body.line_items) out.push({ ...item, optionId });
+        if (!body.has_more) break;
+      }
+    }
+    return out;
   }
 
   /**
