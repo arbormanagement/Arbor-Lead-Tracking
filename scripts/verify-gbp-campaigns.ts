@@ -21,9 +21,9 @@
  *   DATABASE_URL=... APP_BASE_URL=http://localhost:3000 ADMIN_EMAIL=a@b.com \
  *     COOKIE_SIGNING_SECRET=0123456789abcdef0123 npm run verify:campaigns
  */
-import { eq } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import { db } from "@/lib/db/client";
-import { campaigns, leads, roiDaily, sources, trackingNumbers } from "@/lib/db/schema";
+import { attributions, campaigns, leads, roiDaily, sources, trackingNumbers } from "@/lib/db/schema";
 import { seedDefaults } from "@/lib/db/seed-data";
 import { resolveCampaignIdByName } from "@/lib/campaigns";
 import { resolveInboundAttribution } from "@/lib/twilio/inbound";
@@ -46,6 +46,13 @@ async function main() {
     // Leads are matched on the caller number rather than the tracking number:
     // `leads` has no tracking_number_id, and a delete on a column that does not
     // exist compiles to a broken WHERE rather than an error.
+    //
+    // `attributions` first, and it has to be: this script runs a real
+    // runAttribution, which writes a touch row per lead, and that FK makes the lead
+    // delete fail on the NEXT run rather than this one. A verifier that only passes
+    // on a virgin database is a verifier nobody runs twice.
+    const stale = db.select({ id: leads.id }).from(leads).where(eq(leads.phoneE164, phone));
+    await db.delete(attributions).where(inArray(attributions.leadId, stale));
     await db.delete(leads).where(eq(leads.phoneE164, phone));
     await db.delete(trackingNumbers).where(eq(trackingNumbers.phoneNumber, phone));
   }
