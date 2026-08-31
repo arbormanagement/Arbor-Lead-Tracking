@@ -39,17 +39,3 @@ export function locationLabel(v: string | null | undefined): string {
   if (!v) return LABEL.unknown;
   return LABEL[v] ?? v;
 }
-
-/**
- * Same, but naming the dimension itself.
- *
- * Only for the `/sources` channel sub-rows, where the location sits in the SOURCE
- * column underneath its parent channel — there a bare "Unknown" reads as an unknown
- * source, which is a different and much more alarming statement. Everywhere else the
- * context already supplies the noun and this would just stutter ("Location: Unknown
- * location").
- */
-export function qualifiedLocationLabel(v: string | null | undefined): string {
-  const label = locationLabel(v);
-  return label === LABEL.unknown ? "Unknown location" : label;
-}

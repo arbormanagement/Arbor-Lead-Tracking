@@ -1,7 +1,6 @@
 import Link from "next/link";
 import { Fragment } from "react";
 import { dollars } from "@/lib/format";
-import { qualifiedLocationLabel } from "@/lib/locations";
 import { sourceBreakdowns, sourcePerformance } from "@/lib/queries/sources";
 import { timeframeLabel } from "@/lib/timeframes";
 import { estimateDrilldown } from "./drilldown";
@@ -17,41 +16,48 @@ const SRC_HUES = ["#2ea043", "#4c8dff", "#facc15", "#a371f7", "#e08a4c", "#8b98a
  * rollup — the same number the ROI pipeline computed, not a second count.
  */
 export async function ChannelView({ days, touch }: { days: number; touch: TouchModel }) {
-  const [{ rows, locationRows }, breakdowns] = await Promise.all([
+  const [{ rows, campaignRows }, breakdowns] = await Promise.all([
     sourcePerformance(days, touch),
     sourceBreakdowns(days),
   ]);
 
   // Sub-rows only where the split actually describes the SOURCE.
   //
-  // Location is known two very different ways. Google Business Profile determines
-  // it — two profiles, each with its own tracking number and its own
-  // `utm_campaign` on its link — so essentially every GBP contact carries one.
-  // Everywhere else it is INFERRED from the landing page, so it is really a fact
-  // about the page a visitor happened to enter on, and most contacts have none.
+  // This expands a source into its CAMPAIGNS. It used to expand into locations,
+  // which was the wrong axis for the one channel it was really built for: Google
+  // Business Profile is two LISTINGS, and a listing is not a place. Measured over
+  // the 12 GBP wins to 2026-08-30, the listing and the service-address city
+  // disagreed half the time — the Edwardsville listing produced work in Granite
+  // City, Alton and Fairview Heights — so a row labelled "Edwardsville" under GBP
+  // was making a claim about the customer that was false as often as not. The two
+  // listings are campaigns now, and this reads them.
   //
-  // Expanding on the second kind is noise: Organic Search split 4 unknown / 1
-  // O'Fallon / 1 Edwardsville — three rows to say almost nothing about organic.
-  // So a source expands only when at least two NAMED locations have contacts and
-  // those named locations are most of the source. That is a property of the data
-  // rather than a list of blessed sources, so a channel that starts distinguishing
-  // locations later starts expanding on its own.
-  type LocationRows = typeof locationRows;
-  const byKeyLocation = new Map<string | null, LocationRows>();
-  for (const r of locationRows) {
+  // Spend is shown here and was a dash on the location rows, because that is a real
+  // difference and not a presentational one: platforms report spend per campaign and
+  // never per location.
+  //
+  // A source expands only when at least TWO named campaigns show activity, so a
+  // single-campaign channel does not grow a sub-row restating its own total. That is
+  // a property of the data rather than a list of blessed sources, so a channel that
+  // starts running a second campaign starts expanding on its own.
+  type CampaignRows = typeof campaignRows;
+  const byKeyCampaign = new Map<string | null, CampaignRows>();
+  for (const r of campaignRows) {
     if (!r.contacts && !r.estimates && !r.spend && !r.revenue) continue;
-    const list = byKeyLocation.get(r.key ?? null);
+    const list = byKeyCampaign.get(r.key ?? null);
     if (list) list.push(r);
-    else byKeyLocation.set(r.key ?? null, [r]);
+    else byKeyCampaign.set(r.key ?? null, [r]);
   }
-  for (const [k, list] of byKeyLocation) {
-    const named = list.filter((r) => r.location && r.location !== "unknown");
-    const namedContacts = named.reduce((n, r) => n + r.contacts, 0);
-    const allContacts = list.reduce((n, r) => n + r.contacts, 0);
-    // `unknown` stays VISIBLE once a source qualifies — dropping it would leave
-    // sub-rows that do not add up to the row above them, which is its own confusion.
-    if (named.length < 2 || namedContacts * 2 <= allContacts) byKeyLocation.delete(k);
+  for (const [k, list] of byKeyCampaign) {
+    if (list.filter((r) => r.campaignId).length < 2) byKeyCampaign.delete(k);
+    // Revenue first, then spend, so a campaign that has produced nothing but has
+    // consumed budget still surfaces rather than being ordered off the end.
+    else list.sort((a, b) => b.revenue - a.revenue || b.spend - a.spend);
   }
+  // Google Ads alone carries nine campaigns. Past a handful the sub-rows stop being
+  // an aside on the channel table and become a worse copy of the campaign view, so
+  // the tail is a link to the real one.
+  const MAX_SUBS = 5;
 
   const totals = rows.reduce(
     (a, r) => ({
@@ -113,7 +119,7 @@ export async function ChannelView({ days, touch }: { days: number; touch: TouchM
                       ? "no rev yet"
                       : "—";
               const winning = r.spend > 0 && r.revenue > 0;
-              const subs = byKeyLocation.get(r.key ?? null) ?? [];
+              const subs = byKeyCampaign.get(r.key ?? null) ?? [];
               return (
                 <Fragment key={r.key ?? `u${i}`}>
                 <tr>
@@ -138,31 +144,45 @@ export async function ChannelView({ days, touch }: { days: number; touch: TouchM
                     </div>
                   </td>
                 </tr>
-                {/* Location sub-rows, server-rendered rather than a click-to-expand:
-                    there are at most three and the whole point is to see them beside
-                    each other. No Cancelled or ROAS here — cancelled is counted per
-                    source only, and a location's ROAS divides a location's revenue by
-                    the WHOLE source's spend, since ad platforms do not report spend
-                    per location. Showing a number that wrong would be worse than
-                    showing none. */}
-                {subs.map((sub) => (
-                  <tr key={`${r.key}/${sub.location}`} style={{ fontSize: 12.5 }}>
+                {/* Campaign sub-rows, server-rendered rather than click-to-expand:
+                    there are at most a handful and the whole point is to see them
+                    beside each other. No Cancelled or ROAS — cancelled is counted per
+                    source only, and ROAS is already the parent row's job. */}
+                {subs.slice(0, MAX_SUBS).map((sub) => (
+                  <tr key={`${r.key}/${sub.campaignId ?? "none"}`} style={{ fontSize: 12.5 }}>
                     <td style={{ paddingLeft: 34 }}>
                       <span style={{ color: "var(--faint)", marginRight: 7 }}>↳</span>
-                      <Link href={estimateDrilldown({ source: r.key ?? "none", location: sub.location ?? "unknown" }, days)} className="link muted">
-                        {qualifiedLocationLabel(sub.location)}
+                      <Link
+                        href={estimateDrilldown(
+                          { source: r.key ?? "none", campaign: sub.campaignName ?? "none" },
+                          days,
+                        )}
+                        className="link muted"
+                      >
+                        {sub.campaignName ?? "No campaign"}
                       </Link>
                     </td>
                     <td className="mono muted">{sub.contacts}</td>
                     <td className="mono muted">{sub.estimates}</td>
                     <td className="mono muted">{sub.won}</td>
                     <td className="mono muted">—</td>
-                    <td className="mono muted">—</td>
+                    <td className="mono muted">{sub.spend > 0 ? dollars(sub.spend) : "—"}</td>
                     <td className="mono muted">{sub.revenue > 0 ? dollars(sub.revenue) : "—"}</td>
                     <td className="mono muted">—</td>
                     <td className="mono muted">—</td>
                   </tr>
                 ))}
+                {subs.length > MAX_SUBS && (
+                  <tr key={`${r.key}/more`} style={{ fontSize: 12.5 }}>
+                    <td style={{ paddingLeft: 34 }}>
+                      <span style={{ color: "var(--faint)", marginRight: 7 }}>↳</span>
+                      <Link href={`/sources?view=campaign&days=${days}`} className="link muted">
+                        +{subs.length - MAX_SUBS} more campaigns
+                      </Link>
+                    </td>
+                    <td className="mono muted" colSpan={8} />
+                  </tr>
+                )}
                 </Fragment>
               );
             })}
