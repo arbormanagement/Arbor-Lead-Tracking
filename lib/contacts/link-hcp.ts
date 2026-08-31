@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, arrayOverlaps, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { contactIdentifiers, contacts, hcpCustomers } from "@/lib/db/schema";
 
@@ -32,8 +32,12 @@ export async function linkContactToHcpCustomer(contactId: string): Promise<strin
     // is mobile-first, so a household that always rings from the landline matched
     // nothing here and stayed unlinked — which then made their estimates
     // unattributable, because the estimate reaches the contact through this link.
-    phones.length ? sql`${hcpCustomers.phonesE164} && ${phones}` : null,
-    emails.length ? sql`${hcpCustomers.emailLc} in ${emails}` : null,
+    // arrayOverlaps, not a raw `&& ${phones}` — drizzle's sql template expands a
+    // JS array into a parameter list, so `&& $1` got a bare string and threw
+    // 22P02 "malformed array literal" on EVERY inline link from 8/14 to 8/31;
+    // only the sweep's `@> array[…]` form ever worked.
+    phones.length ? arrayOverlaps(hcpCustomers.phonesE164, phones) : null,
+    emails.length ? inArray(hcpCustomers.emailLc, emails) : null,
   ].filter(Boolean) as ReturnType<typeof sql>[];
   if (predicates.length === 0) return null;
 
