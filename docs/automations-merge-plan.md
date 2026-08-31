@@ -12,8 +12,24 @@ with 8/8 call summaries sent through LT, Chloe's first real estimate created thr
 and a Facebook lead → HCP estimate #15539 in 8 seconds with no double-create. Reading
 those logs also surfaced and fixed a PRE-EXISTING bug (PR #127): the inline contact→HCP
 link had thrown 22P02 on every attempt since 8/14 (JS array interpolated into a raw sql
-template); the post-sync sweep had been masking it. Only slice 6 remains (domain move +
-Retell inbound webhook dashboard change + old-app retirement, after a quiet week).
+template); the post-sync sweep had been masking it. **Slice 6 executed the same afternoon (2026-08-31, ~15:15–15:35 UTC), except retirement:**
+- **The Retell inbound webhook moved via API after all.** `retell_update_phone_number`
+  with `inbound_webhook_url` persists (verified PATCH + fresh GET) — the 8/27
+  "dashboard-only" finding is stale; Retell added the field to the phone-number API.
+  +16185911316 now points at `app.arbor-mgmt.com/api/webhook/retell_inbound?secret=…`,
+  verified answering `served_by: lead-tracking` with a live caller lookup.
+- **`automations.arbor-mgmt.com` moved to the LT web service**: custom domain deleted
+  from the old service, created on LT, Cloudflare CNAME repointed to the new target.
+  ⚠️ Gotcha worth keeping: a re-attached Railway custom domain mints a NEW
+  `_railway-verify` token — the cert sat at VALIDATING_OWNERSHIP until the existing
+  TXT record was updated to the new token. Verified after issuance: a real imported
+  `/track/review` link 302s to the actual Google review page, and the legacy inbound
+  path serves LT (403 without the secret).
+- **The old Express app now receives zero traffic.** Remaining, deliberately delayed:
+  scale it to zero after a quiet week, final pg_dump to Drive, delete the old Railway
+  project (app + Postgres 16) after a quiet month, archive the repo. Its Postgres keeps
+  daily backups meanwhile, and the pre-existing TCP proxy
+  (`roundhouse.proxy.rlwy.net:38186`) dies with the project.
 The earlier per-leg detail below stands as written on 2026-08-30 evening:
 - **Retell: DONE.** v116 published (base v115): `create_estimate` tool URL and the agent's
   `call_summary` webhook both point at `app.arbor-mgmt.com` with `?secret=`, draft verified
