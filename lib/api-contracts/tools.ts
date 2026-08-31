@@ -550,6 +550,58 @@ export const TestCredentialsOutput = z.object({
   ok: z.boolean().describe("The credential actually worked — not merely that it is present"),
 });
 
+export const ListFacebookFormsInput = z.object({});
+export const ListFacebookFormsOutput = z.object({
+  forms: z.array(
+    z.object({
+      id: z.string(),
+      name: z.string().nullable(),
+      status: z.string().nullable(),
+      leadsCount: z.number().int().nullable(),
+    }),
+  ),
+  selected: z.array(z.string()).describe("Form ids currently polled. EMPTY means every ACTIVE form is polled, not none."),
+});
+
+export const SetFacebookFormsInput = z.object({
+  formIds: z
+    .array(z.string().max(64))
+    .max(200)
+    .describe(
+      "REPLACES the selection — read list_facebook_forms first and send the full set. An empty list restores 'poll every active form'; it does not mean 'poll nothing'.",
+    ),
+});
+
+export const CleanupLeadsInput = z.object({
+  scope: z
+    .enum(["excluded_campaigns", "unselected_facebook_forms"])
+    .describe(
+      "excluded_campaigns: leads captured against a campaign since flagged recruiting/brand. unselected_facebook_forms: leads from a Facebook form since unchecked.",
+    ),
+  apply: z
+    .boolean()
+    .default(false)
+    .describe("false (default) reports what WOULD be deleted and changes nothing. true performs the delete."),
+});
+export const CleanupLeadsOutput = z.object({
+  scope: z.string(),
+  applied: z.boolean(),
+  wouldRemove: z.number().int(),
+  removed: z.number().int(),
+  note: z.string().optional(),
+});
+
+export const ImportNumberInput = z.object({
+  phoneNumber: z.string().max(20).describe("E.164 of a number ALREADY owned in the Twilio account. Cannot buy one."),
+  pool: z.string().max(40).default("reserved").describe("Pool key, from list_pools"),
+  friendlyName: z.string().max(120).optional(),
+  isStatic: z.boolean().default(true).describe("true = a source number; false puts it in the website DNI rotation"),
+  staticSourceKey: z.string().max(100).optional().describe('sources.key it represents, e.g. "gbp"'),
+  location: z.enum(LOCATIONS).optional(),
+  forwardDestination: z.string().max(20).optional().describe("E.164; omit for the account default"),
+});
+export const ImportNumberOutput = z.object({ number: NumberRow.nullable() });
+
 export const SetAttributionModelInput = z.object({
   model: z
     .enum(["last_touch", "first_touch"])

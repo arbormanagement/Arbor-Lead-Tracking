@@ -28,9 +28,15 @@ import {
   ListJobsInput,
   ListJobsOutput,
   ListLeadsInput,
+  CleanupLeadsInput,
+  CleanupLeadsOutput,
   DeletePoolInput,
   GetSettingsInput,
   GetSettingsOutput,
+  ImportNumberInput,
+  ImportNumberOutput,
+  ListFacebookFormsInput,
+  ListFacebookFormsOutput,
   ListManualSpendInput,
   ListManualSpendOutput,
   ListNumbersInput,
@@ -48,6 +54,7 @@ import {
   TriggerSyncInput,
   ResetConversionExportsInput,
   ResetConversionExportsOutput,
+  SetFacebookFormsInput,
   SetManualSpendInput,
   SetRoutingInput,
   SetTrackingOriginsInput,
@@ -66,11 +73,15 @@ import { listCampaignsWithVolume } from "@/lib/queries/campaigns";
 import { listTrackingNumbers } from "@/lib/queries/numbers";
 import { createPool, deletePool, listPools, updatePool } from "@/lib/pools";
 import { probeCredential } from "@/lib/credentials/probe";
+import { runLeadCleanup } from "@/lib/leads/cleanup";
+import { facebook } from "@/lib/integrations/facebook";
+import { getIncludedFormIds, setIncludedFormIds } from "@/lib/sync/facebook-leads";
+import { provisionNumber } from "@/lib/twilio/numbers";
 import { deleteManualSpend, listManualSpend, setManualSpend } from "@/lib/spend/manual";
 import { getDefaultForwardNumber, getSmsForwardNumber, setRoutingConfig } from "@/lib/routing";
 import { setTrackingOrigins, trackingOrigins } from "@/lib/origin";
 import { resetFailedExports } from "@/lib/sync/conversions";
-import { applyNumberPatch } from "@/lib/twilio/numbers";
+import { applyNumberPatch, resolveSourceIdByKey } from "@/lib/twilio/numbers";
 import { reclassifyUnmappedSources } from "@/lib/sources/reclassify";
 import { SendError, sendThreadSms } from "@/lib/messaging/send";
 import { setThreadState } from "@/lib/messaging/thread";
@@ -582,6 +593,98 @@ const handler = createMcpHandler(
         annotations: { readOnlyHint: true },
       },
       async () => json({ campaigns: await listCampaignsWithVolume() }),
+    );
+
+    server.registerTool(
+      "arbor_list_facebook_forms",
+      {
+        title: "Facebook lead forms",
+        description:
+          "Every lead form on the page, with which are currently polled. ⚠️ An EMPTY `selected` means every ACTIVE form is polled, not none — the same inversion that decides whether arbor_cleanup_leads has anything to do.",
+        inputSchema: ListFacebookFormsInput.shape,
+        outputSchema: ListFacebookFormsOutput.shape,
+        annotations: { readOnlyHint: true },
+      },
+      async () => {
+        const [forms, selected] = await Promise.all([facebook.listLeadForms(), getIncludedFormIds()]);
+        return json({
+          forms: forms.map((f) => ({
+            id: f.id,
+            name: f.name ?? null,
+            status: f.status ?? null,
+            leadsCount: f.leadsCount ?? null,
+          })),
+          selected,
+        });
+      },
+    );
+
+    server.registerTool(
+      "arbor_set_facebook_forms",
+      {
+        title: "Choose which Facebook forms are polled",
+        description:
+          "REPLACES the selection — read arbor_list_facebook_forms first and send the full set. An empty list restores 'poll every active form'. " +
+          "Unchecking a form stops FUTURE leads from it; leads already ingested stay until arbor_cleanup_leads removes them.",
+        inputSchema: SetFacebookFormsInput.shape,
+        annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
+      },
+      async ({ formIds }) => {
+        await setIncludedFormIds(formIds);
+        return json({ ok: true, selected: await getIncludedFormIds() });
+      },
+    );
+
+    server.registerTool(
+      "arbor_cleanup_leads",
+      {
+        title: "Remove leads from an excluded campaign or form",
+        description:
+          "⚠️ The only operation here that HARD DELETES leads (and their attributions and conversion exports). Everything else in this app tombstones. " +
+          "Defaults to a DRY RUN: call it once to see `wouldRemove`, then again with apply:true. Same shape as arbor_reclassify_sources. " +
+          "Ad spend is never touched — flagging a campaign already keeps its dollars out of ROI, and deleting the spend row would destroy history rather than uncount it.",
+        inputSchema: CleanupLeadsInput.shape,
+        outputSchema: CleanupLeadsOutput.shape,
+        annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false },
+      },
+      async ({ scope, apply }) => json(await runLeadCleanup(scope, apply)),
+    );
+
+    server.registerTool(
+      "arbor_import_number",
+      {
+        title: "Import an already-owned Twilio number",
+        description:
+          "Brings a number ALREADY owned in the Twilio account under tracking and points its webhooks at this app. " +
+          "Cannot buy a number: purchasing costs money every month until somebody notices, so it stays behind an interactive login — the same line /api/numbers draws for token callers.",
+        inputSchema: ImportNumberInput.shape,
+        outputSchema: ImportNumberOutput.shape,
+        annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
+      },
+      async ({ phoneNumber, pool, friendlyName, isStatic, staticSourceKey, location, forwardDestination }) => {
+        if (!(await listPools()).some((p) => p.key === pool)) {
+          return fail(`No pool with key '${pool}'.`, "Keys come from arbor_list_pools.");
+        }
+        const staticSourceId = isStatic && staticSourceKey ? await resolveSourceIdByKey(staticSourceKey) : null;
+        try {
+          const row = await provisionNumber({
+            pool,
+            importPhoneNumber: phoneNumber,
+            isStatic,
+            staticSourceId,
+            location,
+            friendlyName,
+            forwardDestination: forwardDestination || null,
+          });
+          const fresh = (await listTrackingNumbers()).find((n) => n.id === row.id) ?? null;
+          return json({ number: fresh });
+        } catch (err) {
+          return fail(
+            err instanceof Error ? err.message : String(err),
+            "The number must already exist in the Twilio account — this tool cannot purchase one.",
+          );
+        }
+      },
     );
 
     server.registerTool(

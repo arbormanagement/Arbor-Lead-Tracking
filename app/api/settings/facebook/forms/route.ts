@@ -1,8 +1,7 @@
 import { z } from "zod";
 import { getSession } from "@/lib/auth";
 import { facebook } from "@/lib/integrations/facebook";
-import { getSetting, setSetting } from "@/lib/settings";
-import { FB_INCLUDED_FORMS_KEY } from "@/lib/sync/facebook-leads";
+import { getIncludedFormIds, setIncludedFormIds } from "@/lib/sync/facebook-leads";
 
 export const runtime = "nodejs";
 
@@ -17,7 +16,7 @@ export async function GET() {
   try {
     const [forms, selected] = await Promise.all([
       facebook.listLeadForms(),
-      getSetting<string[]>(FB_INCLUDED_FORMS_KEY, []),
+      getIncludedFormIds(),
     ]);
     return Response.json({ ok: true, forms, selected });
   } catch (err) {
@@ -32,6 +31,6 @@ export async function POST(req: Request) {
   if (!session) return Response.json({ error: "unauthorized" }, { status: 401 });
   const parsed = Body.safeParse(await req.json().catch(() => null));
   if (!parsed.success) return Response.json({ error: "invalid input" }, { status: 400 });
-  await setSetting(FB_INCLUDED_FORMS_KEY, parsed.data.formIds);
+  await setIncludedFormIds(parsed.data.formIds);
   return Response.json({ ok: true, selected: parsed.data.formIds });
 }
