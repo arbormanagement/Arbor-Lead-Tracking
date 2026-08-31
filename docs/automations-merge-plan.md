@@ -25,8 +25,15 @@ template); the post-sync sweep had been masking it. **Slice 6 executed the same 
   TXT record was updated to the new token. Verified after issuance: a real imported
   `/track/review` link 302s to the actual Google review page, and the legacy inbound
   path serves LT (403 without the secret).
-- **The old Express app now receives zero traffic.** Remaining, deliberately delayed:
-  scale it to zero after a quiet week, final pg_dump to Drive, delete the old Railway
+- **The old Express app is ASLEEP (2026-08-31).** Its logs showed literally zero lines
+  after the domain move — no requests, no background work — so the quiet week was waived
+  on evidence rather than waited out. ⚠️ **Railway's scale-to-zero is `sleepApplication`,
+  NOT `numReplicas: 0`**: the latter is rejected outright (`Invalid input @
+  serviceInstanceUpdate`), even though the Railway MCP tool's own description had been
+  recommending it. `sleep_application` was added to that tool for this
+  (`Arbor-MCP-Server` #223) and the stale advice corrected. Verified in the deployed
+  manifest: `sleepApplication: true`. Reversible in one call if anything is ever missed.
+  Remaining, still deliberately delayed: final pg_dump to Drive, delete the old Railway
   project (app + Postgres 16) after a quiet month, archive the repo. Its Postgres keeps
   daily backups meanwhile, and the pre-existing TCP proxy
   (`roundhouse.proxy.rlwy.net:38186`) dies with the project.
