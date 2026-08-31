@@ -23,10 +23,11 @@
  */
 import { eq } from "drizzle-orm";
 import { db } from "@/lib/db/client";
-import { campaigns, leads, sources, trackingNumbers } from "@/lib/db/schema";
+import { campaigns, leads, roiDaily, sources, trackingNumbers } from "@/lib/db/schema";
 import { seedDefaults } from "@/lib/db/seed-data";
 import { resolveCampaignIdByName } from "@/lib/campaigns";
 import { resolveInboundAttribution } from "@/lib/twilio/inbound";
+import { runAttribution } from "@/lib/sync/attribution";
 
 let failures = 0;
 const ok = (c: boolean, m: string) => {
@@ -124,6 +125,29 @@ async function main() {
   await seedDefaults(db);
   const [decoyAfter] = await db.select().from(leads).where(eq(leads.id, decoy.id));
   ok(decoyAfter.campaignId === null, "utm_campaign=ofallon-print-2026 does NOT match ofallon");
+
+  // Does the backfill actually REACH the dashboards? /sources reads roi_daily, not
+  // leads, so a backfilled lead is invisible until the rollup is rebuilt over its
+  // date. runAttribution rebuilds a 365-day window, and tracking only began
+  // 2026-08-08, so every tracked lead there has ever been is inside it — but that is
+  // an argument, and this is the check. A lead dated 60 days back, backfilled from
+  // its location, must appear in roi_daily under the campaign.
+  const sixtyDaysAgo = new Date(Date.now() - 60 * 86_400_000);
+  const [oldPoolCall] = await db.insert(leads).values({
+    type: "call", sourceId: gbp.id, location: "edwardsville", occurredAt: sixtyDaysAgo,
+    phoneE164: FIXTURES[2],
+  }).returning();
+  await seedDefaults(db);
+  const [oldAfter] = await db.select().from(leads).where(eq(leads.id, oldPoolCall.id));
+  ok(oldAfter.campaignId === edw.id, "a 60-day-old lead is backfilled too");
+
+  await runAttribution({ windowDays: 90, roiWindowDays: 365 });
+  const rolled = await db.select().from(roiDaily).where(eq(roiDaily.campaignId, edw.id));
+  ok(rolled.length > 0, `roi_daily carries the campaign after a rebuild (${rolled.length} row(s))`);
+  ok(
+    rolled.some((r) => r.contactsCount > 0),
+    "…and the historical contact is counted under it, so /sources shows it",
+  );
 
   // Idempotency + non-destructiveness.
   await db.update(leads).set({ campaignId: edw.id }).where(eq(leads.id, oldLead.id));
