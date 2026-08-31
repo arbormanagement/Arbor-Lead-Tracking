@@ -18,6 +18,7 @@
     "db:seed": "tsx scripts/seed.ts",
     "verify:hcp": "tsx scripts/verify-hcp-queries.ts",
     "verify:campaigns": "tsx scripts/verify-gbp-campaigns.ts",
+    "verify:line-items": "tsx scripts/verify-line-items.ts",
     "verify:admin-ops": "tsx scripts/verify-admin-ops.ts",
     "verify:office-hours": "tsx scripts/verify-office-hours.ts",
     "verify:caller-context": "tsx scripts/verify-caller-context.ts",

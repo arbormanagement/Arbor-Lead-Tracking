@@ -494,6 +494,29 @@ export const hcpJobs = pgTable(
     // note on `hcpEstimates.leadSourceRaw`. Same field, same trap.
     leadSourceRaw: text("lead_source_raw"),
     address: jsonb("address"),
+    /**
+     * The job's line items, verbatim from `GET /jobs/{id}/line_items`.
+     *
+     * Not in the `/jobs` list payload at all, so this costs one request per job and
+     * is filled by the `hcp-lineitems` hydration job rather than the sync. Stored as
+     * the provider sent it — every derived figure (discounts, quoted hours, which
+     * services a job contains) reads out of it in SQL, so a new question needs no
+     * re-crawl of 10.9k jobs.
+     *
+     * `[]` and NULL mean different things: `[]` is a job HCP says has no line items,
+     * NULL is one we have not asked about yet. `lineItemsSyncedAt` is the honest
+     * test for the second — see its note.
+     */
+    lineItems: jsonb("line_items"),
+    /**
+     * When `line_items` was last fetched. The hydration queue is driven off this, not
+     * off `line_items IS NULL`: a job whose items are genuinely empty would otherwise
+     * be re-fetched forever, and it is the empty ones a $0 job produces in bulk.
+     *
+     * Re-fetched when `updated_at_hcp` moves past it — a price edit, an added tree, a
+     * discount applied after the fact all bump the job's own timestamp.
+     */
+    lineItemsSyncedAt: timestamp("line_items_synced_at", { withTimezone: true }),
     createdAtHcp: timestamp("created_at_hcp", { withTimezone: true }),
     /** When the cold-zone crawl last saw this row — see hcpCustomers.crawlSeenAt. */
     crawlSeenAt: timestamp("crawl_seen_at", { withTimezone: true }),
@@ -504,6 +527,10 @@ export const hcpJobs = pgTable(
   },
   (t) => [
     uniqueIndex("hcp_jobs_hcp_id_uq").on(t.hcpJobId),
+    // The hydration queue orders by "never fetched, then staled by an update". A
+    // partial index on the stamp keeps that a range scan rather than a seq scan of
+    // 10.9k rows every ten minutes.
+    index("hcp_jobs_line_items_synced_idx").on(t.lineItemsSyncedAt),
     index("hcp_jobs_crawl_seen_idx").on(t.crawlSeenAt),
     index("hcp_jobs_customer_idx").on(t.hcpCustomerId),
     index("hcp_jobs_created_hcp_idx").on(t.createdAtHcp),
@@ -579,13 +606,28 @@ export const hcpEstimates = pgTable(
     // looking like data. The honest answer for an unattributable estimate is the
     // `unattributed` bucket.
     leadSourceRaw: text("lead_source_raw"),
-    // Flattened line items across every option. NULL until the P5 hydration job
-    // exists — HCP's /estimates LIST payload carries options but NOT their line
-    // items, so filling this costs one API call per option (~23k calls for the
-    // account) and cannot ride along with the estimate sync. The `service_type`
-    // classifier and the discount maths both depend on it, so the column lands now
-    // to keep that a backfill rather than a second migration.
+    /**
+     * Line items across every option, verbatim from
+     * `GET /estimates/{id}/options/{option_id}/line_items`, each entry tagged with
+     * the `optionId` it came from so an option's own subtotal stays recoverable.
+     *
+     * HCP's `/estimates` LIST payload carries options but NOT their line items, so
+     * this costs one request per OPTION (~19.7k for the account at 1.27 options an
+     * estimate) and cannot ride along with the estimate sync. Filled by the
+     * `hcp-lineitems` hydration job.
+     *
+     * Stored as sent. Discounts, quoted hours and which services an estimate covers
+     * are all derived from it in SQL (`lib/hcp/line-items.ts`), so a new question
+     * costs a query rather than a second pass over the history.
+     *
+     * `[]` and NULL differ: `[]` is an estimate HCP says has no line items — very
+     * common here, because an estimate is written before it is priced — and NULL is
+     * one nobody has asked about. Use `lineItemsSyncedAt` to tell them apart.
+     */
     lineItems: jsonb("line_items"),
+    /** When `line_items` was last fetched; drives the hydration queue. See the twin
+     *  on `hcpJobs` for why the queue reads this rather than `line_items IS NULL`. */
+    lineItemsSyncedAt: timestamp("line_items_synced_at", { withTimezone: true }),
     // HCP's own updated_at — lets attribution re-derive leads whose estimate
     // changed long after creation (late approval, cancellation, price edit).
     updatedAtHcp: timestamp("updated_at_hcp", { withTimezone: true }),
@@ -599,6 +641,7 @@ export const hcpEstimates = pgTable(
   (t) => [
     uniqueIndex("hcp_estimates_hcp_id_uq").on(t.hcpEstimateId),
     index("hcp_estimates_crawl_seen_idx").on(t.crawlSeenAt),
+    index("hcp_estimates_line_items_synced_idx").on(t.lineItemsSyncedAt),
     index("hcp_estimates_customer_idx").on(t.hcpCustomerId),
     index("hcp_estimates_won_idx").on(t.won),
     index("hcp_estimates_phone_idx").on(t.customerPhoneE164),

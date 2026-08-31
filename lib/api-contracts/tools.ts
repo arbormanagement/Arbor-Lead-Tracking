@@ -377,6 +377,7 @@ export const ClassifyLeadInput = z.object({
 export const SYNC_JOBS = [
   "spend",
   "hcp",
+  "hcp-lineitems",
   "attribution",
   "reaper",
   "twilio-fallback",
