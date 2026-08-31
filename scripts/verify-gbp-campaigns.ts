@@ -27,6 +27,8 @@ import { adSpend, attributions, campaigns, leads, roiDaily, sources, trackingNum
 import { seedDefaults } from "@/lib/db/seed-data";
 import { campaignIdFromUrl, resolveCampaignId, SPEND_REPULL_DAYS } from "@/lib/campaigns";
 import { resolveInboundAttribution } from "@/lib/twilio/inbound";
+import { applyNumberPatch } from "@/lib/twilio/numbers";
+import { listTrackingNumbers } from "@/lib/queries/numbers";
 import { runAttribution } from "@/lib/sync/attribution";
 
 let failures = 0;
@@ -133,7 +135,24 @@ async function main() {
   const [pooledAfter] = await db.select().from(trackingNumbers).where(eq(trackingNumbers.id, pooled.id));
   ok(pooledAfter.staticCampaignId === null, "pooled number NOT wired (its campaign comes from the lease)");
 
-  const att = await resolveInboundAttribution(edwNumAfter);
+  // `applyNumberPatch` is what both Settings → Numbers and the MCP
+  // `arbor_update_number` tool call, so pointing a number at a campaign has to work
+  // through it and not only through the seed.
+  const patched = await applyNumberPatch(edwNum.id, { staticCampaignId: ofa.id });
+  ok(patched?.staticCampaignId === ofa.id, "applyNumberPatch re-points a number's campaign");
+  const cleared = await applyNumberPatch(edwNum.id, { staticCampaignId: null });
+  ok(cleared?.staticCampaignId === null, "…and null clears it");
+  const untouched = await applyNumberPatch(edwNum.id, { friendlyName: "GBP Edwardsville" });
+  ok(untouched?.staticSourceId === gbp.id, "…while an unrelated field leaves the source alone");
+  ok((await applyNumberPatch("no-such-id", { friendlyName: "x" })) === null, "…and an unknown id returns null, not a throw");
+  await applyNumberPatch(edwNum.id, { staticCampaignId: edw.id });
+
+  const listed = (await listTrackingNumbers()).find((n) => n.id === edwNum.id);
+  ok(listed?.sourceKey === "gbp" && listed?.campaignName === "Edwardsville",
+    "list_numbers resolves the source key and campaign name, so a caller needs no second lookup");
+
+  const [edwNumAfter2] = await db.select().from(trackingNumbers).where(eq(trackingNumbers.id, edwNum.id));
+  const att = await resolveInboundAttribution(edwNumAfter2);
   ok(att.staticCampaignId === edw.id, "resolveInboundAttribution returns it for a static number");
   ok(att.lease === null && att.sourceKey === "gbp", "…alongside the source, with no lease");
   const pooledAtt = await resolveInboundAttribution(pooledAfter);

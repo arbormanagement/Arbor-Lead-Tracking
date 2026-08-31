@@ -5,7 +5,7 @@ import { authorizeAdmin, unauthorized } from "@/lib/admin-auth";
 import { getSession } from "@/lib/auth";
 import { db } from "@/lib/db/client";
 import { sources } from "@/lib/db/schema";
-import { releaseNumber, setNumberStatus, updateNumber } from "@/lib/twilio/numbers";
+import { applyNumberPatch, releaseNumber } from "@/lib/twilio/numbers";
 import { LOCATIONS } from "@/lib/locations";
 
 export const runtime = "nodejs";
@@ -52,33 +52,12 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
   const b = parsed.data;
 
   try {
-    if (b.status) await setNumberStatus(id, b.status);
-
-    const hasMeta =
-      b.pool !== undefined || b.isStatic !== undefined || b.location !== undefined ||
-      b.staticSourceKey !== undefined || b.staticCampaignId !== undefined || b.friendlyName !== undefined ||
-      b.forwardDestination !== undefined || b.whisperMessage !== undefined || b.recordCalls !== undefined ||
-      b.greetingMessage !== undefined || b.greetingEnabled !== undefined;
-    if (hasMeta) {
-      const staticSourceId =
-        b.staticSourceKey !== undefined ? await resolveSource(b.staticSourceKey) : undefined;
-      const row = await updateNumber(id, {
-        pool: b.pool,
-        isStatic: b.isStatic,
-        staticCampaignId: b.staticCampaignId,
-        location: b.location,
-        friendlyName: b.friendlyName,
-        forwardDestination: b.forwardDestination,
-        whisperMessage: b.whisperMessage,
-        recordCalls: b.recordCalls,
-        greetingMessage: b.greetingMessage,
-        greetingEnabled: b.greetingEnabled,
-        ...(staticSourceId !== undefined ? { staticSourceId } : {}),
-      });
-      return Response.json({ ok: true, number: row });
-    }
-
-    return Response.json({ ok: true });
+    // One implementation, shared with the MCP `arbor_update_number` tool — see
+    // applyNumberPatch. A second copy here would drift from the Twilio-side
+    // fallback update that lives inside it.
+    const row = await applyNumberPatch(id, b);
+    if (!row) return Response.json({ error: "no such number" }, { status: 404 });
+    return Response.json({ ok: true, number: row });
   } catch (err) {
     return Response.json({ ok: false, error: err instanceof Error ? err.message : String(err) }, { status: 500 });
   }
@@ -97,9 +76,3 @@ export async function DELETE(_req: Request, { params }: { params: Promise<{ id: 
   }
 }
 
-async function resolveSource(key: string): Promise<string | null> {
-  if (!key) return null;
-  await db.insert(sources).values({ key, displayName: displayNameFor(key) }).onConflictDoNothing({ target: sources.key });
-  const [s] = await db.select({ id: sources.id }).from(sources).where(eq(sources.key, key)).limit(1);
-  return s?.id ?? null;
-}

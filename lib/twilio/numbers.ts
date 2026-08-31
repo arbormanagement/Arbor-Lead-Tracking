@@ -1,6 +1,7 @@
 import { eq } from "drizzle-orm";
 import { db } from "@/lib/db/client";
-import { trackingNumbers } from "@/lib/db/schema";
+import { sources, trackingNumbers } from "@/lib/db/schema";
+import { displayNameFor } from "@/lib/sources/naming";
 import { getTwilioClient, getTwilioConfig } from "./client";
 import { env } from "@/lib/env";
 import { getDefaultForwardNumber } from "@/lib/routing";
@@ -326,6 +327,83 @@ export async function updateNumber(
 }
 
 /** Enable/disable a number in-app (keeps the Twilio number; just stops using it). */
+/**
+ * Resolve a source KEY to its id, creating the row if it is new.
+ *
+ * Was copy-pasted into both /api/numbers handlers. It is here now because a third
+ * caller arrived — the MCP `arbor_update_number` tool — and three copies of "what
+ * does naming a source mean" is three chances for the surfaces to disagree.
+ */
+export async function resolveSourceIdByKey(key: string): Promise<string | null> {
+  await db.insert(sources).values({ key, displayName: displayNameFor(key) }).onConflictDoNothing({ target: sources.key });
+  const [s] = await db.select({ id: sources.id }).from(sources).where(eq(sources.key, key)).limit(1);
+  return s?.id ?? null;
+}
+
+/** Everything a caller may change about an existing number. `undefined` means
+ *  "leave alone"; `null` on a nullable field means "clear it". */
+export interface NumberPatch {
+  pool?: Pool;
+  isStatic?: boolean;
+  /** A source KEY (e.g. `gbp`), not an id. Empty string clears the source. */
+  staticSourceKey?: string;
+  staticCampaignId?: string | null;
+  location?: Loc;
+  status?: NumberStatus;
+  friendlyName?: string;
+  forwardDestination?: string | null;
+  whisperMessage?: string | null;
+  recordCalls?: boolean;
+  greetingMessage?: string | null;
+  greetingEnabled?: boolean;
+}
+
+/**
+ * Apply an edit to a tracking number — the ONE implementation behind both
+ * `PATCH /api/numbers/[id]` and the MCP `arbor_update_number` tool.
+ *
+ * Shared rather than mirrored on purpose: `updateNumber` also re-points the
+ * Twilio-side voice fallback when the forward destination moves, and a second
+ * hand-rolled copy of this would eventually forget that and leave the fallback
+ * aimed at a dead number — a failure nobody sees until a call is already lost.
+ *
+ * Returns null when the id matches no number.
+ */
+export async function applyNumberPatch(id: string, patch: NumberPatch) {
+  if (patch.status) await setNumberStatus(id, patch.status);
+
+  const touchesMeta = (
+    ["pool", "isStatic", "staticSourceKey", "staticCampaignId", "location", "friendlyName",
+     "forwardDestination", "whisperMessage", "recordCalls", "greetingMessage", "greetingEnabled"] as const
+  ).some((k) => patch[k] !== undefined);
+  if (!touchesMeta) {
+    const [row] = await db.select().from(trackingNumbers).where(eq(trackingNumbers.id, id)).limit(1);
+    return row ?? null;
+  }
+
+  const staticSourceId =
+    patch.staticSourceKey !== undefined
+      ? patch.staticSourceKey
+        ? await resolveSourceIdByKey(patch.staticSourceKey)
+        : null
+      : undefined;
+
+  const row = await updateNumber(id, {
+    pool: patch.pool,
+    isStatic: patch.isStatic,
+    staticCampaignId: patch.staticCampaignId,
+    location: patch.location,
+    friendlyName: patch.friendlyName,
+    forwardDestination: patch.forwardDestination,
+    whisperMessage: patch.whisperMessage,
+    recordCalls: patch.recordCalls,
+    greetingMessage: patch.greetingMessage,
+    greetingEnabled: patch.greetingEnabled,
+    ...(staticSourceId !== undefined ? { staticSourceId } : {}),
+  });
+  return row ?? null;
+}
+
 export async function setNumberStatus(id: string, status: NumberStatus) {
   const [row] = await db
     .update(trackingNumbers)

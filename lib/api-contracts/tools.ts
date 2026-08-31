@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { LOCATIONS } from "@/lib/locations";
 
 /**
  * Typed contracts for the MCP tool catalog served at /api/mcp.
@@ -400,6 +401,56 @@ export const SetCampaignExcludedInput = z.object({
       "true = non-customer-acquisition (recruiting/brand): kept out of every ROI number while its spend stays on record; false = counts normally",
     ),
 });
+
+export const ListNumbersInput = z.object({});
+
+export const NumberRow = z.object({
+  id: z.string(),
+  phoneNumber: z.string(),
+  friendlyName: z.string().nullable(),
+  pool: z.string(),
+  status: z.string(),
+  isStatic: z.boolean(),
+  sourceKey: z.string().nullable(),
+  staticCampaignId: z.string().nullable(),
+  campaignName: z.string().nullable(),
+  location: z.string().nullable(),
+  forwardDestination: z.string().nullable(),
+  recordCalls: z.boolean(),
+});
+export const ListNumbersOutput = z.object({ numbers: z.array(NumberRow) });
+
+export const UpdateNumberInput = z.object({
+  id: z.string().max(64).describe("Tracking number row id, from list_numbers"),
+  friendlyName: z.string().max(120).optional(),
+  /**
+   * A number is either a SOURCE number or part of the website DNI rotation, and the
+   * two read their attribution from opposite places — which is why these fields are
+   * only meaningful on a static one.
+   */
+  isStatic: z.boolean().optional().describe("true = a source number that names its own source/campaign; false = website DNI rotation"),
+  staticSourceKey: z
+    .string()
+    .max(100)
+    .optional()
+    .describe('sources.key this number represents, e.g. "gbp". Empty string clears it. Static numbers only.'),
+  staticCampaignId: z
+    .string()
+    .max(64)
+    .nullable()
+    .optional()
+    .describe(
+      "Campaign id this number represents, from list_campaigns — for when the source is too coarse, e.g. one of two Google Business Profile listings, or a Google Ads call asset. null clears it. Static numbers only: a pooled number takes its campaign from the visitor's lease.",
+    ),
+  location: z.enum(LOCATIONS).optional(),
+  status: z.enum(["active", "disabled"]).optional().describe("disabled stops using the number without releasing it"),
+  forwardDestination: z.string().max(20).nullable().optional().describe("E.164; null = the account default"),
+  whisperMessage: z.string().max(300).nullable().optional(),
+  recordCalls: z.boolean().optional(),
+  greetingMessage: z.string().max(300).nullable().optional(),
+  greetingEnabled: z.boolean().optional(),
+});
+export const UpdateNumberOutput = z.object({ number: NumberRow.nullable() });
 
 export const SetAttributionModelInput = z.object({
   model: z
