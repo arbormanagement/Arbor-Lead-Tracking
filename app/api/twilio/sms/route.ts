@@ -121,7 +121,6 @@ export async function POST(req: Request) {
       fromE164,
       body,
       sourceId,
-      location: tn.location ?? "unknown",
       spam,
       lease,
       conversionPage,
@@ -164,7 +163,6 @@ async function attachToOpenLeadOrCreate(args: {
   fromE164: string;
   body: string;
   sourceId: string | null;
-  location: "edwardsville" | "ofallon" | "unknown";
   spam: boolean;
   lease: typeof numberAssignments.$inferSelect | null;
   /** Last page of the leased session — what they were reading when they texted. */
@@ -172,7 +170,7 @@ async function attachToOpenLeadOrCreate(args: {
   /** Set only for a static number that names a campaign — see resolveInboundAttribution. */
   staticCampaignId: string | null;
 }): Promise<string> {
-  const { thread, fromE164, body, sourceId, location, spam, lease, conversionPage, staticCampaignId } = args;
+  const { thread, fromE164, body, sourceId, spam, lease, conversionPage, staticCampaignId } = args;
 
   const [open] = await db
     .select({ id: leads.id })
@@ -204,7 +202,6 @@ async function attachToOpenLeadOrCreate(args: {
       conversationId: thread.conversationId,
       contactId: thread.contactId,
       sourceId,
-      location,
       isSpam: spam,
       campaignId,
       medium: lease?.medium ?? null,

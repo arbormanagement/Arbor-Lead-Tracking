@@ -54,7 +54,7 @@ const INSERT_CHUNK = 500;
  *   2. rebuildAttributions one 'last' touch per non-spam lead (first-touch arrives
  *                          with web tracking in Phase 3; the table already supports it).
  *   3. rebuildRoiDaily     aggregate leads + ad_spend into roi_daily per
- *                          (date, source, campaign, location) with CPL/CPA/ROI.
+ *                          (date, source, campaign) with CPL/CPA/ROI.
  *                          Campaigns flagged `excluded` (recruiting) contribute
  *                          neither spend nor leads — see `lib/campaigns.ts`.
  *
@@ -406,7 +406,6 @@ interface RoiAcc {
   touchType: TouchModel;
   sourceId: string | null;
   campaignId: string | null;
-  location: "edwardsville" | "ofallon" | "unknown";
   contactsCount: number;
   estimatesCount: number;
   callsCount: number;
@@ -454,7 +453,6 @@ async function rebuildRoiDaily(windowDays: number): Promise<number> {
       contactId: leads.contactId,
       sourceId: leads.sourceId,
       campaignId: leads.campaignId,
-      location: leads.location,
     })
     .from(leads)
     .where(and(isNotNull(leads.contactId), eq(leads.isSpam, false)))
@@ -481,8 +479,7 @@ async function rebuildRoiDaily(windowDays: number): Promise<number> {
     touchType: TouchModel;
     sourceId: string | null;
     campaignId: string | null;
-    location: string;
-  }) => `${a.date}|${a.touchType}|${a.sourceId ?? ""}|${a.campaignId ?? ""}|${a.location}`;
+  }) => `${a.date}|${a.touchType}|${a.sourceId ?? ""}|${a.campaignId ?? ""}`;
   const bump = (seed: Omit<RoiAcc, "contactsCount" | "estimatesCount" | "callsCount" | "formsCount" | "wonCount" | "spendCents" | "revenueCents" | "quoteValueCents">) => {
     const k = keyOf(seed);
     let row = acc.get(k);
@@ -504,7 +501,6 @@ async function rebuildRoiDaily(windowDays: number): Promise<number> {
       occurredAt: leads.occurredAt,
       sourceId: leads.sourceId,
       campaignId: leads.campaignId,
-      location: leads.location,
       type: leads.type,
       contactId: leads.contactId,
     })
@@ -541,7 +537,6 @@ async function rebuildRoiDaily(windowDays: number): Promise<number> {
         touchType,
         sourceId: src.sourceId ?? null,
         campaignId: src.campaignId ?? null,
-        location: (src.location ?? "unknown") as RoiAcc["location"],
       });
       row.contactsCount++;
       if (l.type === "call") row.callsCount++;
@@ -568,11 +563,9 @@ async function rebuildRoiDaily(windowDays: number): Promise<number> {
       // `countableEstimateDate`. Without it such a row reaches the loop below and
       // dates itself off a NULL appointment.
       createdAtHcp: hcpEstimates.createdAtHcp,
-      estLocation: hcpEstimates.location,
       leadOccurredAt: leads.occurredAt,
       leadSourceId: leads.sourceId,
       leadCampaignId: leads.campaignId,
-      leadLocation: leads.location,
       leadContactId: leads.contactId,
       hcpCustomerId: hcpEstimates.hcpCustomerId,
     })
@@ -635,18 +628,17 @@ async function rebuildRoiDaily(windowDays: number): Promise<number> {
       const src =
         touchType === "last"
           ? attributed
-            ? { sourceId: e.leadSourceId, campaignId: e.leadCampaignId, location: e.leadLocation }
-            : { sourceId: null, campaignId: null, location: e.estLocation }
+            ? { sourceId: e.leadSourceId, campaignId: e.leadCampaignId }
+            : { sourceId: null, campaignId: null }
           : ft
-            ? { sourceId: ft.sourceId, campaignId: ft.campaignId, location: ft.location }
-            : { sourceId: null, campaignId: null, location: e.estLocation };
+            ? { sourceId: ft.sourceId, campaignId: ft.campaignId }
+            : { sourceId: null, campaignId: null };
 
       const row = bump({
         date,
         touchType,
         sourceId: src.sourceId ?? unsourcedSourceId,
         campaignId: src.campaignId ?? null,
-        location: (src.location ?? "unknown") as RoiAcc["location"],
       });
       row.estimatesCount++;
       row.quoteValueCents += e.total ?? 0;
@@ -657,17 +649,15 @@ async function rebuildRoiDaily(windowDays: number): Promise<number> {
     }
   }
 
-  // Spend side (platform → source; campaign carries location)
+  // Spend side (platform → source; the campaign id rolls up on its own)
   const spendRows = await db
     .select({
       date: adSpend.date,
       platform: adSpend.platform,
       campaignId: adSpend.campaignId,
       spendCents: adSpend.spendCents,
-      location: campaigns.location,
     })
     .from(adSpend)
-    .leftJoin(campaigns, eq(adSpend.campaignId, campaigns.id))
     .where(and(gte(adSpend.date, sinceDate), campaignNotExcluded(adSpend.campaignId, excluded)));
 
   for (const s of spendRows) {
@@ -681,7 +671,6 @@ async function rebuildRoiDaily(windowDays: number): Promise<number> {
         touchType,
         sourceId: sourceKey ? sourceIdByKey.get(sourceKey) ?? null : null,
         campaignId: s.campaignId ?? null,
-        location: (s.location ?? "unknown") as RoiAcc["location"],
       });
       row.spendCents += s.spendCents ?? 0;
     }
@@ -708,7 +697,7 @@ async function rebuildRoiDaily(windowDays: number): Promise<number> {
       const dateStr = `${m.month.slice(0, 7)}-${String(d).padStart(2, "0")}`;
       if (dateStr < sinceDate || dateStr > todayDate || dayCents === 0) continue;
       for (const touchType of ["last", "first"] as const) {
-        const row = bump({ date: dateStr, touchType, sourceId: m.sourceId, campaignId: null, location: "unknown" });
+        const row = bump({ date: dateStr, touchType, sourceId: m.sourceId, campaignId: null });
         row.spendCents += dayCents;
       }
     }
@@ -730,7 +719,6 @@ async function rebuildRoiDaily(windowDays: number): Promise<number> {
           touchType: r.touchType,
           sourceId: r.sourceId,
           campaignId: r.campaignId,
-          location: r.location,
           contactsCount: r.contactsCount,
           estimatesCount: r.estimatesCount,
           callsCount: r.callsCount,

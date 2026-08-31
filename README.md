@@ -6,7 +6,7 @@ system that answers *"what lead sources produce what leads, and what's the ROI o
 - **Native call tracking + DNI** on Twilio (own the numbers, swap/forward/record/transcribe).
 - **Web + form tracking** via a first-party `track.js` snippet on arbor-mgmt.com.
 - **Facebook lead-gen** ingestion via the existing MCP webhook.
-- **Revenue from HousecallPro** job value → ROI per source/campaign/location.
+- **Revenue from HousecallPro** job value → ROI per source/campaign/branch.
 - **Ad spend** pulled from Google & Facebook through the **Arbor MCP server** (no ad
   credentials live in this app).
 

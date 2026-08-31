@@ -149,7 +149,7 @@ export const RoiSummaryInput = z.object({
     .enum(["channel", "campaign", "location"])
     .default("channel")
     .describe(
-      "channel = per source (google/cpc, gbp, direct, …); campaign = per ad campaign (the floor of money reporting); location = Edwardsville vs O'Fallon",
+      "channel = per source (google/cpc, gbp, direct, …); campaign = per ad campaign (the floor of money reporting); location = branch (Edwardsville vs O'Fallon), derived from the Google Business Profile listing campaign — the only thing that names a branch",
     ),
 });
 
@@ -204,7 +204,6 @@ export const ListEstimatesInput = z.object({
   source: z.string().max(200).optional().describe('sources.key, or "none" for unattributed'),
   campaign: z.string().max(200).optional().describe('campaigns.name, or "none"'),
   page: z.string().max(200).optional().describe('Normalised landing path (e.g. "/services/tree-removal"), or "none"'),
-  location: z.enum(["edwardsville", "ofallon", "unknown"]).optional(),
   type: z.string().max(50).optional().describe('Lead channel (call, web_form, sms, facebook_leadgen, …), or "none" for untracked'),
   arborist: z.string().max(200).optional().describe('Assigned employee, substring match (e.g. "Brooks"), or "none" for unassigned'),
   city: z.string().max(200).optional().describe('Service-address city, case-insensitive, or "none" where HCP holds no address'),
@@ -231,7 +230,6 @@ export const EstimateRow = z.object({
   keyword: z.string().nullable(),
   landingPage: z.string().nullable().describe("Normalised path"),
   selfReportedSource: z.string().nullable().describe('Caller\'s own answer to "how did you hear about us"'),
-  location: z.string().nullable(),
 
   // The HousecallPro side of the estimate. Everything above answers "where did this
   // come from"; these answer "what is it and who has it".
@@ -662,7 +660,7 @@ export const RoiRow = z.object({
   campaignId: z.string().nullable().optional().describe("null = not campaign-attributed"),
   platform: z.string().nullable().optional(),
   sourceName: z.string().nullable().optional(),
-  location: z.string().nullable().optional(),
+  location: z.string().nullable().optional().describe("Branch, derived from the GBP listing campaign"),
   contacts: z.number().int(),
   estimates: z.number().int().describe("Countable: scheduled or won, not cancelled"),
   won: z.number().int(),
@@ -740,7 +738,6 @@ export const LeadRowSchema = z.object({
   wbraid: z.string().nullable(),
   fbclid: z.string().nullable(),
   landingPage: z.string().nullable(),
-  location: z.string().nullable(),
   isSpam: z.boolean(),
   isFirstTime: z.boolean().nullable(),
   hcpEstimateId: z.string().nullable(),

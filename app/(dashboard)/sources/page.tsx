@@ -57,9 +57,9 @@ export default async function SourcesPage({
           {view === "channel" && (
             <p className="page-sub" style={{ marginTop: 2, fontSize: 12 }}>
               <span className="muted">
-                A source expands by location only where it can actually tell them apart — Google Business Profile is two
-                profiles, one per branch, each with its own link tag and tracking number. Elsewhere location is inferred
-                from the landing page and is mostly unknown, so it is not broken out.
+                A source expands by branch only where it can actually tell them apart — Google Business Profile is two
+                profiles, one per branch, each with its own link tag and tracking number, so each arrives as its own
+                campaign. Nothing else names a branch, so nothing else is broken out.
               </span>
             </p>
           )}
