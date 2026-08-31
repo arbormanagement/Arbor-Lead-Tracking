@@ -21,6 +21,8 @@ import {
 } from "@/lib/db/schema";
 import { readSwapCoverage } from "@/lib/dni/outcomes";
 import { env } from "@/lib/env";
+import { optionCountSql } from "@/lib/estimates/hcp-fields";
+import { discountCentsSql, lineItemCountSql, lineItemReconcileSql } from "@/lib/hcp/line-items";
 import { getSetting } from "@/lib/settings";
 import { MAX_EXPORT_ATTEMPTS } from "@/lib/sync/conversions";
 import { businessDate, BUSINESS_TZ } from "@/lib/tz";
@@ -436,6 +438,63 @@ export async function diagnosticsReport(): Promise<{ httpStatus: number; report:
     })
     .from(hcpJobs);
 
+  /**
+   * Line-item hydration coverage, and — more importantly — whether the DISCOUNT
+   * MATHS is right.
+   *
+   * `mismatched` is the load-bearing number. Every hydrated record carries an
+   * independent answer to what it should total: HCP's own `total_amount_cents`. So
+   * `gross - discount` can be checked against it on every row rather than trusted
+   * from the three records the formula was derived on. A shape the formula gets
+   * wrong — compounding percent discounts, a percent taken after a fixed one,
+   * gratuity handled differently — shows up here as a non-zero count instead of as
+   * a column that has been quietly wrong for months.
+   *
+   * Estimates are checked only where `optionCount = 1`: with several options
+   * `total_amount_cents` is the highest one, not the sum, so there is nothing for a
+   * flat line-item total to reconcile against. That is a limit of the check, not of
+   * the maths.
+   */
+  const [liJobs] = await db
+    .select({
+      total: sql<number>`count(*)::int`,
+      hydrated: sql<number>`count(*) filter (where ${hcpJobs.lineItemsSyncedAt} is not null)::int`,
+      withItems: sql<number>`count(*) filter (where ${lineItemCountSql(hcpJobs.lineItems)} > 0)::int`,
+      discounted: sql<number>`count(*) filter (where ${discountCentsSql(hcpJobs.lineItems)} > 0)::int`,
+      mismatched: sql<number>`count(*) filter (where ${lineItemReconcileSql(hcpJobs.lineItems, hcpJobs.totalAmountCents)})::int`,
+    })
+    .from(hcpJobs);
+  const [liEstimates] = await db
+    .select({
+      total: sql<number>`count(*)::int`,
+      hydrated: sql<number>`count(*) filter (where ${hcpEstimates.lineItemsSyncedAt} is not null)::int`,
+      withItems: sql<number>`count(*) filter (where ${lineItemCountSql(hcpEstimates.lineItems)} > 0)::int`,
+      discounted: sql<number>`count(*) filter (where ${discountCentsSql(hcpEstimates.lineItems)} > 0)::int`,
+      mismatched: sql<number>`count(*) filter (where ${optionCountSql} = 1 and ${lineItemReconcileSql(hcpEstimates.lineItems, hcpEstimates.totalAmountCents)})::int`,
+    })
+    .from(hcpEstimates);
+
+  const lineItems = {
+    jobs: {
+      hydrated: liJobs?.hydrated ?? 0,
+      pending: (liJobs?.total ?? 0) - (liJobs?.hydrated ?? 0),
+      withItems: liJobs?.withItems ?? 0,
+      discounted: liJobs?.discounted ?? 0,
+      mismatched: liJobs?.mismatched ?? 0,
+    },
+    estimates: {
+      hydrated: liEstimates?.hydrated ?? 0,
+      pending: (liEstimates?.total ?? 0) - (liEstimates?.hydrated ?? 0),
+      withItems: liEstimates?.withItems ?? 0,
+      discounted: liEstimates?.discounted ?? 0,
+      mismatched: liEstimates?.mismatched ?? 0,
+    },
+    note:
+      "mismatched = records where line-item gross minus discounts does not equal HCP's own total. " +
+      "It is the check on the discount maths (a 'percent discount' line carries basis points, not cents) " +
+      "and should be 0. Estimates are checked only at optionCount = 1, where a flat total is comparable.",
+  };
+
   const expandCoverage = {
     doNotService: {
       known: expandRow?.doNotServiceKnown ?? 0,
@@ -557,6 +616,18 @@ export async function diagnosticsReport(): Promise<{ httpStatus: number; report:
         `a mailing filter must require do_not_service IS FALSE, not IS NOT TRUE`,
     );
   }
+  // A non-zero mismatch means a discount figure somewhere is WRONG, not merely
+  // missing, so it is louder than a coverage gap: a wrong number gets reported as
+  // fact, while an absent one gets noticed.
+  for (const [what, li] of [["job", lineItems.jobs], ["estimate", lineItems.estimates]] as const) {
+    if (li.mismatched > 0) {
+      warnings.push(
+        `${li.mismatched} ${what}(s) do NOT reconcile: line-item gross minus discounts differs from ` +
+          `HousecallPro's own total. The discount derivation in lib/hcp/line-items.ts is wrong for some ` +
+          `shape in the data — do not report discountCents until this is 0`,
+      );
+    }
+  }
   for (const [name, state] of Object.entries(hcpSync)) {
     if (state.drift != null && state.drift !== 0) {
       // A surplus fully accounted for by rows HCP has dropped is explained, not
@@ -659,6 +730,7 @@ export async function diagnosticsReport(): Promise<{ httpStatus: number; report:
       volume: { ...vol, ...callVol },
       estimateSync,
       hcpSync,
+      lineItems,
       expandCoverage,
       duplicateCampaignNames,
       credentials: creds,

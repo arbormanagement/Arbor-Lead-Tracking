@@ -35,6 +35,14 @@
 import { eq, inArray } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { hcpEstimates, hcpJobs } from "@/lib/db/schema";
+import {
+  discountCentsSql,
+  discountNamesSql,
+  grossCentsSql,
+  netCentsSql,
+  quotedHoursSql,
+  serviceNamesSql,
+} from "@/lib/hcp/line-items";
 import type { HcpLineItem } from "@/lib/integrations/types";
 import { syncHcpLineItems } from "@/lib/sync/hcp-line-items";
 
@@ -76,12 +84,149 @@ const provider = {
   },
 };
 
+
+/**
+ * ── The discount maths ──────────────────────────────────────────────────────
+ *
+ * Three REAL jobs, transcribed from the live API on 2026-08-31, each of which
+ * reconciles to the cent against HousecallPro's own total. They are fixtures rather
+ * than a live fetch so the arithmetic stays checkable without an API key — and so
+ * the day HCP changes how a discount is encoded, this fails loudly rather than the
+ * numbers just moving.
+ *
+ * The case that matters is the percent one. `unit_price: 1000` on a
+ * 'percent discount' line means 10.00%, NOT $10.00, and `amount` mirrors it — so the
+ * obvious `sum(amount) where kind like '%discount%'` reports a $1,172.50 discount as
+ * $10.00. Both fixtures below would pass a naive implementation's "it produced a
+ * number" test and fail this one.
+ */
+const HOUR = (q: number, name = "Tree Removal") => ({
+  kind: "labor", name, unit_price: 70_000, unit_of_measure: "Hour(s)", quantity: q, amount: q * 70_000,
+});
+
+const FIXTURES = [
+  {
+    id: "lix_fx_pct_big", label: "inv 10036158 — 12 labor lines, 'Bundle' 10%",
+    total: 1_055_250, gross: 1_172_500, discount: 117_250, hours: 16.75,
+    items: [
+      { kind: "labor", name: "Arborist Notes", unit_price: 0, quantity: 1, amount: 0 },
+      HOUR(3), HOUR(3), HOUR(1.5, "Tree Deadwood"), HOUR(1.25), HOUR(0.5), HOUR(2.5),
+      HOUR(0.5, "Tree Deadwood"), HOUR(0.5, "Tree Deadwood"), HOUR(3),
+      HOUR(0.5, "Tree Deadwood"), HOUR(0.5, "Tree Deadwood"),
+      { kind: "percent discount", name: "Bundle", unit_price: 1000, quantity: 1, amount: 1000 },
+    ],
+  },
+  {
+    id: "lix_fx_pct_small", label: "inv 10036152 — 4 labor lines, 'Bundle' 10%",
+    total: 393_750, gross: 437_500, discount: 43_750, hours: 6.25,
+    items: [
+      HOUR(1.75, "Tree Deadwood"), HOUR(1.75, "Tree Raising"), HOUR(1.75, "Tree Raising"), HOUR(1, "Tree Raising"),
+      { kind: "percent discount", name: "Bundle", unit_price: 1000, quantity: 1, amount: 1000 },
+    ],
+  },
+  {
+    id: "lix_fx_fixed", label: "inv 10036162 — 10 labor lines, 'Cash' $1,000 fixed",
+    total: 600_000, gross: 700_000, discount: 100_000, hours: 10,
+    items: [
+      HOUR(3), HOUR(1, "Tree Raising/Reduction"), HOUR(0.5, "Tree Reduction"), HOUR(1.25),
+      HOUR(1, "Tree Raising/Reduction"), HOUR(0.5, "Neighbors Tree Trimming"), HOUR(2, "Land Clearing"),
+      HOUR(0.25), HOUR(0.5, "Tree Trimming"),
+      { kind: "labor", name: "Arborist Notes", unit_price: 0, quantity: 1, amount: 0 },
+      { kind: "fixed discount", name: "Cash", unit_price: 100_000, quantity: 1, amount: 100_000 },
+    ],
+  },
+];
+
+/** Shapes that must degrade to zero rather than throw. A `jsonb_array_elements` on a
+ *  non-array takes down the WHOLE list query, not one cell, so this is about a page
+ *  of the app going blank rather than about a wrong number. */
+const EDGE = [
+  { id: "lix_fx_empty", label: "empty array", items: [] as unknown[] },
+  { id: "lix_fx_null", label: "null column", items: null },
+  { id: "lix_fx_obj", label: "an object where an array belongs", items: { oops: 1 } },
+  // No `kind` at all — HCP defaults it to labor, and treating it as null would drop
+  // the line out of the gross and understate every total containing one.
+  { id: "lix_fx_nokind", label: "a line with no kind", items: [{ name: "X", unit_price: 5000, quantity: 1, amount: 5000 }] },
+];
+
+async function checkDerivations() {
+  const ids = [...FIXTURES.map((f) => f.id), ...EDGE.map((e) => e.id)];
+  await db.delete(hcpJobs).where(inArray(hcpJobs.id, ids));
+  await db.insert(hcpJobs).values([
+    ...FIXTURES.map((f) => ({ id: f.id, hcpJobId: f.id, totalAmountCents: f.total, lineItems: f.items })),
+    ...EDGE.map((e) => ({ id: e.id, hcpJobId: e.id, totalAmountCents: 0, lineItems: e.items })),
+  ]);
+
+  const rows = await db
+    .select({
+      id: hcpJobs.id,
+      gross: grossCentsSql(hcpJobs.lineItems),
+      discount: discountCentsSql(hcpJobs.lineItems),
+      net: netCentsSql(hcpJobs.lineItems),
+      hours: quotedHoursSql(hcpJobs.lineItems),
+      services: serviceNamesSql(hcpJobs.lineItems),
+      discountNames: discountNamesSql(hcpJobs.lineItems),
+      total: hcpJobs.totalAmountCents,
+    })
+    .from(hcpJobs)
+    .where(inArray(hcpJobs.id, ids));
+  const by = Object.fromEntries(rows.map((r) => [r.id, r]));
+
+  for (const f of FIXTURES) {
+    const r = by[f.id]!;
+    ok(Number(r.gross) === f.gross, `${f.label}: gross ${Number(r.gross)} = ${f.gross}`);
+    ok(Number(r.discount) === f.discount, `…discount ${Number(r.discount)} = ${f.discount}`);
+    // The identity that makes the whole derivation checkable on every real record.
+    ok(Number(r.net) === f.total, `…net reconciles to HCP's own total (${Number(r.net)} = ${f.total})`);
+    ok(Number(r.hours) === f.hours, `…quoted hours ${Number(r.hours)} = ${f.hours}`);
+  }
+
+  ok(
+    !by["lix_fx_pct_big"]!.services?.includes("Arborist Notes"),
+    "$0 'Arborist Notes' is excluded from services — it is not one of the most-sold things Arbor does",
+  );
+  ok(by["lix_fx_fixed"]!.services?.includes("Land Clearing") === true, "…while real services are listed");
+  ok(by["lix_fx_pct_big"]!.discountNames === "Bundle", "the discount is named, so WHY it was given survives");
+
+  for (const e of EDGE) {
+    const r = by[e.id]!;
+    ok(Number(r.gross) === 0 || e.id === "lix_fx_nokind", `${e.label}: gross 0, no throw`);
+    ok(Number(r.discount) === 0, `${e.label}: discount 0`);
+  }
+  ok(Number(by["lix_fx_nokind"]!.gross) === 5000, "a line with no kind counts as labor, not as nothing");
+
+  // Both discount kinds on one record: the one shape no live sample carried, and the
+  // one where the two plausible orderings diverge. Pinned so the choice is explicit
+  // rather than accidental — 10% of the GROSS, then the fixed amount.
+  await db.delete(hcpJobs).where(eq(hcpJobs.id, "lix_fx_both"));
+  await db.insert(hcpJobs).values({
+    id: "lix_fx_both", hcpJobId: "lix_fx_both", totalAmountCents: 0,
+    lineItems: [
+      HOUR(10), // 700,000
+      { kind: "percent discount", name: "Bundle", unit_price: 1000, quantity: 1, amount: 1000 },
+      { kind: "fixed discount", name: "Cash", unit_price: 50_000, quantity: 1, amount: 50_000 },
+    ],
+  });
+  const [both] = await db
+    .select({ d: discountCentsSql(hcpJobs.lineItems) })
+    .from(hcpJobs)
+    .where(eq(hcpJobs.id, "lix_fx_both"));
+  ok(
+    Number(both!.d) === 120_000,
+    `fixed + percent together: percent is taken on the GROSS (${Number(both!.d)} = 70,000 + 50,000). ` +
+      "If HCP ever disagrees, /api/diagnostics lineItems.mismatched is what says so",
+  );
+  await db.delete(hcpJobs).where(inArray(hcpJobs.id, [...ids, "lix_fx_both"]));
+
+}
+
 async function reset() {
   await db.delete(hcpEstimates).where(inArray(hcpEstimates.id, EST_IDS));
   await db.delete(hcpJobs).where(inArray(hcpJobs.id, JOB_IDS));
 }
 
 async function main() {
+  await checkDerivations();
   await reset();
   const now = new Date();
 
