@@ -1,4 +1,3 @@
-import { locationLabel } from "@/lib/locations";
 import {
   FILTER_KEYS,
   NONE,
@@ -22,7 +21,6 @@ export function filterLabel(key: (typeof FILTER_KEYS)[number], value: string): s
     source: "Source",
     campaign: "Campaign",
     page: "Landing page",
-    location: "Location",
     type: "Channel",
     arborist: "Arborist",
     city: "City",
@@ -31,8 +29,7 @@ export function filterLabel(key: (typeof FILTER_KEYS)[number], value: string): s
     const none = key === "type" ? "no tracked contact" : key === "arborist" ? "unassigned" : "none";
     return `${noun}: ${none}`;
   }
-  const pretty = key === "location" ? locationLabel(value) : value;
-  return `${noun}: ${pretty}`;
+  return `${noun}: ${value}`;
 }
 
 /** `/estimates` URL with one filter added or removed, preserving everything else. */

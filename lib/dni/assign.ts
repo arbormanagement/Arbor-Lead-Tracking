@@ -136,7 +136,7 @@ export async function getNewestAssignmentAtVisitorCap(vid: string): Promise<Leas
  *
  * The pool exists to tell SOURCES apart. Two visitors who both resolve to `direct` with no
  * click id, no campaign and no keyword are already indistinguishable in every report the app
- * produces — `roi_daily` keys on (date, source, campaign, location), and both would land on
+ * produces — `roi_daily` keys on (date, source, campaign), and both would land on
  * the same row. Giving them separate numbers buys nothing and consumes the capacity that a
  * visitor arriving on a gclid genuinely needs, because that one cannot be shared with anybody.
  *

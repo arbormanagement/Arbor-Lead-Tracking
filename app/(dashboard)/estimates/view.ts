@@ -1,13 +1,13 @@
 /** Groupable dimensions for the Inbox — shared by the page (server) and the
  *  view controls (client). Selected groupings travel as `?g=a,b` (ordered).
  *
- *  `location` was one of these and is not any more. It only ever separated the two
- *  Google Business Profile listings, which are campaigns now — and it separated them
- *  worse, since it read as the customer's city and disagreed with the service
- *  address half the time. `campaign` above answers the same question for every
- *  channel. The column and the `?location=` filter both still exist (the MCP tools
- *  offer them), so an old bookmarked URL keeps working; this is only about what the
- *  page offers to group by. */
+ *  `location` was one of these and is now gone entirely — dimension, column, filter
+ *  and database column alike. It only ever separated the two Google Business Profile
+ *  listings, which are campaigns now, and it separated them worse: it read as the
+ *  customer's city and disagreed with the service address half the time. `campaign`
+ *  above answers the same question for every channel, and the service address answers
+ *  the where-is-the-tree question properly. A stale `?location=` in a bookmarked URL
+ *  is ignored rather than erroring. */
 export type Dim = "source" | "campaign" | "stage" | "type" | "day" | "week" | "month";
 
 export const DIMS: Array<{ key: Dim; label: string }> = [

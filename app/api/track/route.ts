@@ -123,7 +123,6 @@ export async function POST(req: Request) {
   // classify lowercases its output; normalize raw UTM the same way so "CPC" and
   // "cpc" don't split dashboard groupings.
   const medium = utm.medium?.toLowerCase() ?? cls.medium;
-  const location = inferLocation(form?.pageUrl ?? url, utm.campaign);
   // Recorded, never acted on here. /api/dni/assign refuses a crawler a pool number, but
   // nothing was storing what asked — so 'are bots draining the pool?' was unanswerable
   // both before and after that gate. The column already existed; it was simply never written.
@@ -173,7 +172,6 @@ export async function POST(req: Request) {
       referrer,
       landingPage: url,
       lastPage: url,
-      location,
       derivedSourceId: sourceId,
     })
     .onConflictDoUpdate({
@@ -191,7 +189,6 @@ export async function POST(req: Request) {
         // drop out of every surface that groups sessions by source. COALESCE keeps
         // the session's original last-touch frozen where it already exists.
         derivedSourceId: sql`coalesce(${webSessions.derivedSourceId}, excluded.derived_source_id)`,
-        location: sql`coalesce(${webSessions.location}, excluded.location)`,
         content: sql`coalesce(${webSessions.content}, excluded.content)`,
         msclkid: sql`coalesce(${webSessions.msclkid}, excluded.msclkid)`,
       },
@@ -308,7 +305,6 @@ export async function POST(req: Request) {
         // moving a single existing number.
         conversionPage: form.pageUrl ?? url,
         referrer: referrer ?? sess?.referrer,
-        location,
         visitorId: vid,
         webSessionId: sid,
         occurredAt: now,
@@ -372,28 +368,22 @@ async function getOrCreateSource(key: string): Promise<string | null> {
   return s?.id ?? null;
 }
 
-/**
- * Which branch a touch belongs to.
+/*
+ * `inferLocation` lived here and is deliberately gone.
  *
- * `utm_campaign` is checked FIRST and is not an afterthought: the two Google
- * Business Profiles each tag their website link explicitly
- * (`utm_campaign=edwardsville` / `ofallon`) while BOTH point at the homepage — so
- * the page URL carries no location at all and every GBP web click was landing as
- * `unknown`. The matching calls already split correctly, because each profile has
- * its own tracking number and `/voice` takes the location from the number, so the
- * two halves of GBP disagreed for no reason other than where this function looked.
+ * It decided a contact's BRANCH by string-matching "edwardsville" / "ofallon" in the
+ * utm_campaign OR THE PAGE URL. The campaign half was right but redundant — the two
+ * Google Business Profiles already arrive as their own campaigns, and since #137 a
+ * call to a profile's tracking number gets that campaign too, so the branch is
+ * carried by `campaign` on every path. The URL half was simply wrong: reading
+ * /locations/edwardsville-tree-services is a page view, not a branch touch, and it
+ * recorded paid traffic as Google Business Profile traffic. Four Google Ads estimates
+ * carried a branch that way.
  *
- * Reading the campaign also picks up location-named ad campaigns for free, which is
- * the same signal by a different route.
+ * Branch reporting now derives from the campaign (see `branchExpr` in
+ * lib/queries/sources.ts). Nothing should write a branch onto a session again.
  */
-function inferLocation(url?: string, utmCampaign?: string | null): "edwardsville" | "ofallon" | "unknown" {
-  const match = (v: string): "edwardsville" | "ofallon" | null => {
-    if (v.includes("edwardsville")) return "edwardsville";
-    if (v.includes("ofallon") || v.includes("o-fallon") || v.includes("o'fallon")) return "ofallon";
-    return null;
-  };
-  return match((utmCampaign ?? "").toLowerCase()) ?? match((url ?? "").toLowerCase()) ?? "unknown";
-}
+
 
 /** Field names that should never be stored, whatever their value. */
 const SENSITIVE_NAME =

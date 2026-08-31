@@ -241,7 +241,6 @@ async function recordCall(args: {
       conversationId: thread?.conversationId ?? null,
       contactId: thread?.contactId ?? null,
       sourceId,
-      location: tn.location ?? "unknown",
       isSpam: status === "rejected_spam",
       isFirstTime,
       campaignId,

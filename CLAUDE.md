@@ -76,7 +76,7 @@ Edwardsville + O'Fallon). WhatConverts-style. Single-tenant. Owner: Justin
   points at the voice agent).
 - **Web/form tracking** via first-party `track.js` on arbor-mgmt.com.
 - **Facebook lead-gen** via the MCP webhook.
-- **ROI = attributed HousecallPro won-estimate revenue ÷ ad spend**, per source/campaign/location. Revenue event = a customer-approved (won) estimate, valued at the approved-option amount (`hcp_estimates`).
+- **ROI = attributed HousecallPro won-estimate revenue ÷ ad spend**, per source/campaign/branch. Revenue event = a customer-approved (won) estimate, valued at the approved-option amount (`hcp_estimates`).
 - **Four money numbers exist and must never be blended** (jobs + invoices + customers landed 2026-08-25): estimate APPROVED value (the only ROI revenue), job QUOTED total, invoice BILLED, invoice COLLECTED. `roi_daily` reads the first and only the first — an estimate is approved the moment the customer says yes, which is when the marketing did its job, while an invoice is written days or weeks later and paid later still. Re-anchoring ROI on invoices would move every historical figure and lag the channel that earned it. Jobs and invoices answer "was the work done and did we get paid", never "did the ads work". Justin chose this explicitly (2026-08-25) over a second ROI lens or a replacement.
 - **⚠️ `do_not_service` is THREE-STATE, and the third state is the dangerous one.**
   `true` / `false` / **`null` = UNKNOWN**. HCP only returns the field when the request
@@ -231,16 +231,14 @@ raw session/lead timestamps, so totals won't reconcile at a window edge. Views l
 **The two pages are two DIRECTIONS through one join** (`leads.hcp_estimate_id` →
 `leads.source_id`), and both are now navigable. Every `/sources` row links to the
 estimates behind it (`sources/drilldown.ts`), and `/estimates` accepts
-`?source=&campaign=&page=&location=&type=` (`estimates/filters.ts`), rendering active
+`?source=&campaign=&page=&type=&arborist=&city=` (`estimates/filters.ts`), rendering active
 filters as removable chips. **`none` is a real value on every filter** — ~41% of
 estimates have no lead at all, so "show me the unattributed ones" has to be askable
 directly rather than by elimination. Each estimate row also shows its full chain
 inline (source → campaign → landing page → keyword → self-reported), every value
-linking to the list filtered by it. Two gotchas, both verified against the schema:
+linking to the list filtered by it. One gotcha, verified against the schema:
 the drill-down counts won't match `/sources` exactly (different date buckets, as
-above), and `leads.location` DEFAULTS to `'unknown'` rather than null, so a matched
-contact with unknown location beats the estimate's own — the filter inherits that
-from the column it filters, deliberately.
+above).
 
 **Phase 6 lives in the `arbor-general` repo** — `callrail-migration/` (plan, number
 inventory, transfer mechanics) plus a summary in that repo's CLAUDE.md. It is vendor and
@@ -773,27 +771,44 @@ re-argued rather than assumed.
     the tracking NUMBER even when a lease is present and a pool number has none.
     `/api/track` never had this bug — `inferLocation` reads `utm_campaign` first. So on exactly
     the rows where `location` fails, the campaign text is present and correct.
-  - **The seed backfills all of it and the rollup carries it.** Three passes in `seedDefaults`,
-    all fill-only-a-NULL so they are safe on every deploy and cannot overwrite a hand
-    correction: the listings' own numbers, leads whose listing was recorded as a location, and
-    leads whose listing is only in the landing-page tag. `runAttribution` then rebuilds a
+  - **The seed backfills all of it and the rollup carries it.** Two passes in `seedDefaults`,
+    both fill-only-a-NULL so they are safe on every deploy and cannot overwrite a hand
+    correction: the listings' own numbers, and leads whose listing is only in the
+    landing-page tag. (A third read `leads.location`; it ran once, in migration 0046, on
+    the way to dropping the column.) `runAttribution` then rebuilds a
     365-day window of `roi_daily`/`attributions` from `leads`, and tracking began 2026-08-08,
     so there is no history the rebuild cannot reach. `npm run verify:campaigns` asserts all of
     it against a real Postgres, including that a 60-day-old backfilled lead reaches `roi_daily`.
-  - **`location` is being RETIRED in two stages, and stage 1 is done.** Stage 1 (2026-08-30)
-    stopped the surfaces reading it — `/sources` expands a source into its CAMPAIGNS, the
-    campaign view's "By location" table is gone, and `location` is no longer an `/estimates`
-    grouping — while leaving every column, writer and MCP filter in place, so it is one file
-    away from reverting. Stage 2 is the drop: seven tables, the enum, the `roi_daily` re-key
-    (`location` is in `roi_daily_key_uq`) plus a rebuild, `inferLocation`, the location args in
-    `/voice` and `/sms`, and the MCP contract (`roi_summary` grain, `list_estimates` filter).
-    **Do not do stage 2 until stage 1 has run for a few weeks** — the re-key is on the money
-    path and is the one change here worth not making twice.
-  - Two things that look like reasons to keep `location` and are not: it does NOT say where the
+  - **`location` IS RETIRED from the attribution tables — both stages are done.** Stage 1
+    (2026-08-30) stopped the surfaces reading it: `/sources` expands a source into its
+    CAMPAIGNS, the campaign view's "By location" table is gone, and `location` stopped being
+    an `/estimates` grouping. Stage 2 (2026-08-31, Justin: "address the location issue
+    entirely") dropped it from `leads`, `web_sessions`, `hcp_estimates` and `roi_daily` —
+    migration **0046** — along with `inferLocation`, the location args on `/voice` and `/sms`,
+    the `?location=` filter, and the `location` field on the MCP `EstimateRow`, `LeadRow` and
+    `list_estimates` input. The staged wait was cut deliberately, not forgotten: stage 1 left
+    the branch split reading from the campaign, and once the reports no longer consult the
+    column, keeping it only lets it drift.
+  - **Branch reporting is now DERIVED, in exactly one place:** `branchExpr` in
+    `lib/queries/sources.ts`, a `case` on `campaigns.external_campaign_id in
+    ('edwardsville','ofallon')`. The `roi_summary` grain `location` and the per-source split
+    still exist and mean the same thing; they just read the campaign instead of a stored copy.
+    So a page view can no longer masquerade as a branch touch, which was the column's worst
+    writer.
+  - **The re-key was the risky part and it is tested.** `roi_daily_key_uq` lost `location`, so
+    rows that differed only by it collapse; 0046 SUMS them into the oldest of each group and
+    recomputes the derived rates, rather than keeping one and silently deleting the others'
+    contacts, estimates and spend. `runAttribution` rewrites the last 365 days on its next
+    pass regardless, so the merge only has to be right behind that. Verified end to end
+    against a real Postgres — full migration history, seeded duplicate groups, then 0046 —
+    plus all 48 `npm run verify:campaigns` checks on the post-drop schema.
+  - `location` STAYS on `campaigns`, `tracking_numbers` and `pools`. There it is
+    CONFIGURATION — what an asset represents — not an inference about a person.
+  - Two things that looked like reasons to keep it and were not: it does NOT say where the
     work is (`hcp_estimates.address->>'city'` and `zip` do, are already projected, and are
     already filterable on `/estimates`), and `hcp_customers.location` / `hcp_estimates.location`
-    are **dead columns** — `lib/sync/hcp.ts` contains zero references to `location` and nothing
-    has ever written them on ~15.5k estimates.
+    were **dead columns** — `lib/sync/hcp.ts` contains zero references to `location` and nothing
+    ever wrote them on ~15.5k estimates.
 - **Pool capacity is set by HOLD TIME, not pool size** — `LEASE_MINUTES` ÷ numbers is how many
   visitors an hour the pool can serve, and the lease window is pushed forward on every pageview,
   so it is idle time after the LAST one. At 30 minutes the 5 numbers served ~7.5 visitors/hour
@@ -844,7 +859,7 @@ re-argued rather than assumed.
     ACCEPTED, but only after `req.text()` has already buffered whatever was sent.
 - **Two visitors with IDENTICAL attribution share one number** (`findShareableLease`, checked
   before leasing). The pool exists to tell sources apart, and `roi_daily` keys on
-  (date, source, campaign, location) — so two `direct` visitors with no click id already land
+  (date, source, campaign) — so two `direct` visitors with no click id already land
   on the same row and separate numbers buy nothing, while consuming capacity a gclid visitor
   can't do without. **A click id is never shared in either direction**: it identifies one
   specific ad click, so two visitors behind it is a wrong answer rather than a coarse one.

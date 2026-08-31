@@ -128,7 +128,6 @@ export const webSessions = pgTable(
     lastPage: text("last_page"),
     ipHash: text("ip_hash"),
     userAgent: text("user_agent"),
-    location: locationEnum("location").default("unknown"),
     derivedSourceId: text("derived_source_id").references(() => sources.id),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
@@ -539,7 +538,6 @@ export const hcpEstimates = pgTable(
     customerEmailLc: text("customer_email_lc"),
     customerName: text("customer_name"),
     address: jsonb("address"),
-    location: locationEnum("location").default("unknown"),
     createdAtHcp: timestamp("created_at_hcp", { withTimezone: true }),
     // The estimate VISIT being booked — HCP's schedule.scheduled_start. Distinct
     // from createdAtHcp: an estimate is created the moment the office writes it,
@@ -856,7 +854,6 @@ export const leads = pgTable(
      */
     conversionPage: text("conversion_page"),
     referrer: text("referrer"),
-    location: locationEnum("location").default("unknown"),
     // Linkage
     visitorId: text("visitor_id").references(() => visitors.id),
     webSessionId: text("web_session_id").references(() => webSessions.id),
@@ -1069,7 +1066,6 @@ export const roiDaily = pgTable(
     touchType: touchTypeEnum("touch_type").notNull().default("last"),
     sourceId: text("source_id").references(() => sources.id),
     campaignId: text("campaign_id").references(() => campaigns.id),
-    location: locationEnum("location").default("unknown"),
     // DEMAND — inbound contacts, bucketed on the day they contacted us. Non-spam
     // only: `is_lead` no longer gates anything here (an unclassified call from a
     // real person is still demand), which is what stops the three rival "what is a
@@ -1107,7 +1103,7 @@ export const roiDaily = pgTable(
     // constraint builder exposes NULLS NOT DISTINCT (it creates a unique index
     // underneath either way). The rebuild is delete-then-insert, so nothing
     // targets this in an ON CONFLICT clause.
-    unique("roi_daily_key_uq").on(t.date, t.touchType, t.sourceId, t.campaignId, t.location).nullsNotDistinct(),
+    unique("roi_daily_key_uq").on(t.date, t.touchType, t.sourceId, t.campaignId).nullsNotDistinct(),
     index("roi_daily_date_idx").on(t.date),
   ],
 );

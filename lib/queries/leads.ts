@@ -47,7 +47,6 @@ export interface LeadRow {
   wbraid: string | null;
   fbclid: string | null;
   landingPage: string | null;
-  location: string | null;
   isSpam: boolean;
   isFirstTime: boolean | null;
   hcpEstimateId: string | null;
@@ -114,7 +113,6 @@ export async function searchLeads(
       wbraid: leads.wbraid,
       fbclid: leads.fbclid,
       landingPage: leads.landingPage,
-      location: leads.location,
       isSpam: leads.isSpam,
       isFirstTime: leads.isFirstTime,
       hcpEstimateId: leads.hcpEstimateId,

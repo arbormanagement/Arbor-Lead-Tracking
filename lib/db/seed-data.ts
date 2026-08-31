@@ -176,29 +176,16 @@ export async function seedDefaults(db: Db, onRow?: (label: string) => void) {
         ),
       );
 
-    // 2. Leads already on this source whose listing is known only from `location`.
-    await db
-      .update(schema.leads)
-      .set({ campaignId: row.id })
-      .where(
-        and(
-          eq(schema.leads.sourceId, src.id),
-          eq(schema.leads.location, c.location),
-          isNull(schema.leads.campaignId),
-        ),
-      );
-
-    // 3. …and the ones whose listing is in the LANDING PAGE but not in `location`,
-    //    which is a bigger group than it sounds and is the case that settled the
-    //    design. A GBP visitor who is handed a DNI pool number and then rings it
-    //    reaches /voice, which reads location off the tracking NUMBER — and a pool
-    //    number has none, so the branch is dropped even though the lease it just
-    //    resolved carries `utm_campaign=edwardsville` verbatim. Every one of the 13
-    //    GBP contacts sitting at `location: unknown` on 2026-08-30 is this: 7
-    //    Edwardsville and 6 O'Fallon, each with the tag in its landing page.
+    // 2. Leads whose listing is legible only from the LANDING PAGE, which is a
+    //    bigger group than it sounds and is the case that settled the design. A GBP
+    //    visitor handed a DNI pool number who then rings it reaches /voice, and a
+    //    pool number carries no static campaign — even though the lease it just
+    //    resolved holds `utm_campaign=edwardsville` verbatim.
     //
     //    Forward-going leads no longer need this — /voice matches the lease's
     //    campaign text now — so it exists to repair the rows written before that.
+    //    The half of the repair that read the retired `location` column ran once, in
+    //    migration 0043, on the way to dropping it.
     //    Matched on the tag with its delimiter so `ofallon` cannot also match a
     //    hypothetical `ofallon-something`.
     await db

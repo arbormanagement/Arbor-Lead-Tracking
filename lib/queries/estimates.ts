@@ -57,7 +57,6 @@ export interface EstimateListRow {
   /** Normalised landing PATH, so it groups and filters the same way /sources does. */
   landingPage: string | null;
   selfReportedSource: string | null;
-  location: string | null;
 
   // ---- The HousecallPro side of the estimate ------------------------------
   // Synced since the estimate sync existed, but projected only from 2026-08-25:
@@ -230,10 +229,8 @@ export async function listEstimates(opts: WindowInput & {
       estName: hcpEstimates.customerName,
       phone: hcpEstimates.customerPhoneE164,
       email: hcpEstimates.customerEmailLc,
-      estLocation: hcpEstimates.location,
       leadId: leads.id,
       leadType: leads.type,
-      leadLocation: leads.location,
       sourceKey: sourceKeySql,
       sourceName: sourceNameSql,
       campaignName: campaigns.name,
@@ -271,9 +268,6 @@ export async function listEstimates(opts: WindowInput & {
     keyword: r.keyword,
     landingPage: r.landingPage,
     selfReportedSource: r.selfReportedSource,
-    // The attributed contact's location when there is one, the estimate's own
-    // otherwise — the same precedence the rollup uses, so the two agree.
-    location: r.leadLocation ?? r.estLocation,
     ...hcpFieldValues(r),
   }));
 
@@ -352,10 +346,8 @@ export async function getEstimateDetail(id: string): Promise<EstimateDetail | nu
       estName: hcpEstimates.customerName,
       phone: hcpEstimates.customerPhoneE164,
       email: hcpEstimates.customerEmailLc,
-      estLocation: hcpEstimates.location,
       leadId: leads.id,
       leadType: leads.type,
-      leadLocation: leads.location,
       leadOccurredAt: leads.occurredAt,
       conversationId: conversations.id,
       sourceKey: sourceKeySql,
@@ -396,7 +388,6 @@ export async function getEstimateDetail(id: string): Promise<EstimateDetail | nu
     keyword: r.keyword,
     landingPage: r.landingPage,
     selfReportedSource: r.selfReportedSource,
-    location: r.leadLocation ?? r.estLocation,
     conversationId: r.conversationId,
     leadOccurredAt: r.leadOccurredAt,
   };

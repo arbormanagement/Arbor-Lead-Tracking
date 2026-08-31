@@ -32,7 +32,6 @@ export interface EstimateFilters {
   /** Normalised landing path (see lib/landing-page.ts), or "none". */
   page?: string;
   /** `edwardsville` | `ofallon` | `unknown`. */
-  location?: string;
   /** Lead channel: call, web_form, sms, facebook_leadgen… or "none" for untracked. */
   type?: string;
   /**
@@ -49,7 +48,7 @@ export interface EstimateFilters {
 export const NONE = "none";
 
 /** Which of the params are actually set, in a stable order for rendering chips. */
-export const FILTER_KEYS = ["source", "campaign", "page", "location", "type", "arborist", "city"] as const;
+export const FILTER_KEYS = ["source", "campaign", "page", "type", "arborist", "city"] as const;
 
 export function parseFilters(sp: Record<string, string | undefined>): EstimateFilters {
   const pick = (v: string | undefined) => {
@@ -60,7 +59,6 @@ export function parseFilters(sp: Record<string, string | undefined>): EstimateFi
     source: pick(sp.source),
     campaign: pick(sp.campaign),
     page: pick(sp.page),
-    location: pick(sp.location),
     type: pick(sp.type),
     arborist: pick(sp.arborist),
     city: pick(sp.city),
@@ -73,14 +71,6 @@ export function hasAnyFilter(f: EstimateFilters): boolean {
 
 /**
  * SQL for the active filters, or undefined when none are set.
- *
- * Location mirrors the Location column exactly: `coalesce(lead, estimate)`. Note
- * that `leads.location` DEFAULTS TO 'unknown' rather than null, so a matched contact
- * whose location was never determined beats the estimate's own — filtering
- * `location=edwardsville` will not return an estimate that HCP marked edwardsville if
- * its lead says unknown. That is what the column displays, and a filter that
- * disagreed with the column it filters would be worse than one that inherits its
- * quirk. Verified against the real schema, including this case.
  *
  * Any query using the source/campaign filters must join `sources` / `campaigns`
  * (via the lead), or Postgres rejects the reference.
@@ -113,9 +103,6 @@ export function filterSql(f: EstimateFilters): SQL | undefined {
         ? or(isNull(leads.landingPage), eq(leads.landingPage, ""))!
         : eq(landingPathSql(leads.landingPage), f.page),
     );
-  }
-  if (f.location) {
-    parts.push(sql`coalesce(${leads.location}, ${hcpEstimates.location}) = ${f.location}`);
   }
   if (f.type) {
     parts.push(f.type === NONE ? isNull(leads.id)! : eq(leads.type, f.type as never));

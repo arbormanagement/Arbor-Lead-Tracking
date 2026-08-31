@@ -64,6 +64,24 @@ export interface SourceCampaignRow {
  * `isCountableEstimate` within scheduled estimates, so "Estimates" and "Cancelled"
  * count the same kind of thing and cannot drift.
  */
+/**
+ * Which BRANCH a rolled-up row belongs to, derived from the campaign rather than
+ * read from `roi_daily.location`.
+ *
+ * The two Google Business Profiles are the only thing that identifies a branch, and
+ * they already arrive as campaigns: their website links carry
+ * `utm_campaign=edwardsville` / `ofallon`, and since #137 a call to a profile's own
+ * tracking number is given that same campaign. So the campaign IS the branch, and the
+ * dedicated column was a second copy of it that also collected false positives — any
+ * visitor who merely READ a page with a city in its path was recorded as a contact
+ * from that branch. Deriving it here means one source of truth and no way for a page
+ * view to masquerade as a branch touch.
+ */
+const branchExpr = sql<string>`case
+  when ${campaigns.externalCampaignId} in ('edwardsville', 'ofallon') then ${campaigns.externalCampaignId}
+  else 'unknown'
+end`;
+
 export async function sourcePerformance(
   days: number,
   touch: TouchModel,
@@ -96,11 +114,12 @@ export async function sourcePerformance(
     // measurement. It matters most for GBP, which is really TWO profiles with their
     // own tracking numbers and utm_campaign tags.
     db
-      .select({ key: sources.key, location: roiDaily.location, ...agg })
+      .select({ key: sources.key, location: branchExpr, ...agg })
       .from(roiDaily)
       .leftJoin(sources, eq(roiDaily.sourceId, sources.id))
+      .leftJoin(campaigns, eq(roiDaily.campaignId, campaigns.id))
       .where(inWindow)
-      .groupBy(sources.key, roiDaily.location)
+      .groupBy(sources.key, branchExpr)
       .orderBy(desc(sql`coalesce(sum(${roiDaily.revenueCents}),0)`)),
     // The same rollup split by CAMPAIGN — what the channel view expands a source
     // into. Spend is real here, which is the difference from the location split
@@ -251,10 +270,11 @@ export async function campaignPerformance(
       .groupBy(roiDaily.campaignId, campaigns.name, campaigns.platform, sources.displayName)
       .orderBy(desc(sql`coalesce(sum(${roiDaily.spendCents}),0)`)),
     db
-      .select({ location: roiDaily.location, ...agg })
+      .select({ location: branchExpr, ...agg })
       .from(roiDaily)
+      .leftJoin(campaigns, eq(roiDaily.campaignId, campaigns.id))
       .where(inWindow)
-      .groupBy(roiDaily.location)
+      .groupBy(branchExpr)
       .orderBy(desc(sql`coalesce(sum(${roiDaily.revenueCents}),0)`)),
   ]);
 
