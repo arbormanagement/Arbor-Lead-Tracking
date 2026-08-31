@@ -23,13 +23,15 @@
  */
 import { eq, inArray } from "drizzle-orm";
 import { db } from "@/lib/db/client";
-import { conversionExports, leads, pools, sources, trackingNumbers } from "@/lib/db/schema";
+import { conversionExports, facebookLeads, leads, pools, sources, trackingNumbers } from "@/lib/db/schema";
 import { seedDefaults } from "@/lib/db/seed-data";
 import { createPool, deletePool, listPools, updatePool } from "@/lib/pools";
 import { deleteManualSpend, listManualSpend, normalizeMonth, setManualSpend } from "@/lib/spend/manual";
 import { DEFAULT_ALLOWED_ORIGINS, setTrackingOrigins, trackingOrigins } from "@/lib/origin";
 import { setRoutingConfig } from "@/lib/routing";
 import { resetFailedExports } from "@/lib/sync/conversions";
+import { runLeadCleanup } from "@/lib/leads/cleanup";
+import { setIncludedFormIds } from "@/lib/sync/facebook-leads";
 
 let failures = 0;
 const ok = (c: boolean, m: string) => {
@@ -44,6 +46,10 @@ async function main() {
   // Fixtures first, so a re-run is not a different test from the first run.
   await db.delete(trackingNumbers).where(eq(trackingNumbers.phoneNumber, PHONE));
   await db.delete(pools).where(inArray(pools.key, [POOL]));
+  const staleFb = db.select({ id: facebookLeads.leadId }).from(facebookLeads)
+    .where(inArray(facebookLeads.fbLeadgenId, ["verify-keep", "verify-drop"]));
+  await db.delete(facebookLeads).where(inArray(facebookLeads.fbLeadgenId, ["verify-keep", "verify-drop"]));
+  await db.delete(leads).where(inArray(leads.id, staleFb));
   await seedDefaults(db);
 
   // ── pools ──────────────────────────────────────────────────────────────────
@@ -137,6 +143,39 @@ async function main() {
 
   await db.delete(conversionExports).where(eq(conversionExports.leadId, lead.id));
   await db.delete(leads).where(eq(leads.id, lead.id));
+
+  // ── lead cleanup: the only hard delete in the app ──────────────────────────
+  // Two things must hold before this is safe to expose: a dry run must change
+  // nothing, and an EMPTY Facebook allowlist must mean "all forms allowed, nothing
+  // excluded" — reading it the other way round would delete every Facebook lead
+  // on file.
+  await setIncludedFormIds([]);
+  const noneExcluded = await runLeadCleanup("unselected_facebook_forms", true);
+  ok(noneExcluded.wouldRemove === 0, "an EMPTY form allowlist excludes NOTHING — the inversion that would delete everything");
+  ok(!!noneExcluded.note, "…and says why, rather than reporting a silent zero");
+
+  const [keepForm] = await db.insert(leads).values({ type: "facebook_leadgen", occurredAt: new Date() }).returning();
+  const [dropForm] = await db.insert(leads).values({ type: "facebook_leadgen", occurredAt: new Date() }).returning();
+  await db.insert(facebookLeads).values([
+    { fbLeadgenId: "verify-keep", fbFormId: "form-keep", leadId: keepForm.id },
+    { fbLeadgenId: "verify-drop", fbFormId: "form-drop", leadId: dropForm.id },
+  ]);
+  await setIncludedFormIds(["form-keep"]);
+
+  const dry = await runLeadCleanup("unselected_facebook_forms", false);
+  ok(dry.wouldRemove === 1 && dry.removed === 0, "a dry run reports what would go and deletes nothing");
+  ok((await db.select().from(leads).where(eq(leads.id, dropForm.id))).length === 1, "…the lead is still there afterwards");
+
+  const applied = await runLeadCleanup("unselected_facebook_forms", true);
+  ok(applied.removed === 1, "apply:true deletes it");
+  ok((await db.select().from(leads).where(eq(leads.id, dropForm.id))).length === 0, "…the excluded lead is gone");
+  ok((await db.select().from(leads).where(eq(leads.id, keepForm.id))).length === 1, "…and the selected form's lead is untouched");
+  ok((await db.select().from(facebookLeads).where(eq(facebookLeads.fbLeadgenId, "verify-drop"))).length === 0,
+    "…with its facebook_leads row cascaded, not orphaned");
+
+  await db.delete(facebookLeads).where(inArray(facebookLeads.fbLeadgenId, ["verify-keep", "verify-drop"]));
+  await db.delete(leads).where(inArray(leads.id, [keepForm.id, dropForm.id]));
+  await setIncludedFormIds([]);
 }
 
 main()

@@ -1,7 +1,7 @@
 import { facebook } from "@/lib/integrations/facebook";
 import { getPlatformCreds } from "@/lib/credentials";
 import { ingestFacebookLead } from "@/lib/facebook/ingest";
-import { getSetting } from "@/lib/settings";
+import { getSetting, setSetting } from "@/lib/settings";
 import { incrementalWindowDays, withSyncRun } from "./run";
 
 /** Settings key: form IDs to poll. Empty ⇒ all ACTIVE forms (default). */
@@ -78,4 +78,16 @@ export async function syncFacebookLeads({ sinceDays }: { sinceDays?: number } = 
       windowDays: Number(windowDays.toFixed(3)),
     };
   });
+}
+
+/** The lead forms currently polled. Empty = every ACTIVE form is allowed, which is
+ *  NOT the same as none — see planLeadCleanup, where confusing the two would delete
+ *  every Facebook lead on file. */
+export async function getIncludedFormIds(): Promise<string[]> {
+  return getSetting<string[]>(FB_INCLUDED_FORMS_KEY, []);
+}
+
+/** Replace the polled-form selection. An empty list restores "all active forms". */
+export async function setIncludedFormIds(formIds: string[]): Promise<void> {
+  await setSetting(FB_INCLUDED_FORMS_KEY, formIds.length ? formIds : null);
 }
