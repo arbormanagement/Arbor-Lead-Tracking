@@ -1,4 +1,5 @@
-import { and, desc, eq, gte, isNotNull, isNull, lt, ne, sql } from "drizzle-orm";
+import { and, desc, eq, gte, isNotNull, isNull, lt, ne, sql, type SQL, type SQLWrapper } from "drizzle-orm";
+import type { PgColumn } from "drizzle-orm/pg-core";
 import { isLikelyBot } from "@/lib/bot";
 import { SPEND_REPULL_DAYS } from "@/lib/campaigns";
 import { credentialStatus } from "@/lib/credentials";
@@ -22,7 +23,13 @@ import {
 import { readSwapCoverage } from "@/lib/dni/outcomes";
 import { env } from "@/lib/env";
 import { optionCountSql } from "@/lib/estimates/hcp-fields";
-import { discountCentsSql, lineItemCountSql, lineItemReconcileSql } from "@/lib/hcp/line-items";
+import {
+  discountCentsSql,
+  grossCentsSql,
+  lineItemCountSql,
+  lineItemReconcileSql,
+  netCentsSql,
+} from "@/lib/hcp/line-items";
 import { getSetting } from "@/lib/settings";
 import { MAX_EXPORT_ATTEMPTS } from "@/lib/sync/conversions";
 import { businessDate, BUSINESS_TZ } from "@/lib/tz";
@@ -474,6 +481,36 @@ export async function diagnosticsReport(): Promise<{ httpStatus: number; report:
     })
     .from(hcpEstimates);
 
+  /**
+   * WHICH records fail to reconcile, not just how many.
+   *
+   * A count with nothing to look at is a dead end: it says the discount maths is
+   * wrong somewhere in 25k records and gives no way to find out where. The sample
+   * carries the numbers that make the disagreement diagnosable on sight — gross,
+   * discount, what we compute, and what HousecallPro says — so the shape can be
+   * read off the diagnostic instead of hunted for.
+   *
+   * Only queried when there is a mismatch, so the common case costs nothing.
+   */
+  const mismatchSample = async (
+    table: typeof hcpJobs | typeof hcpEstimates,
+    items: SQLWrapper,
+    total: PgColumn,
+    label: PgColumn,
+    extra?: SQL,
+  ) =>
+    db
+      .select({
+        label,
+        gross: grossCentsSql(items),
+        discount: discountCentsSql(items),
+        computed: netCentsSql(items),
+        hcpTotal: total,
+      })
+      .from(table)
+      .where(extra ? and(lineItemReconcileSql(items, total), extra) : lineItemReconcileSql(items, total))
+      .limit(5);
+
   const lineItems = {
     jobs: {
       hydrated: liJobs?.hydrated ?? 0,
@@ -481,6 +518,9 @@ export async function diagnosticsReport(): Promise<{ httpStatus: number; report:
       withItems: liJobs?.withItems ?? 0,
       discounted: liJobs?.discounted ?? 0,
       mismatched: liJobs?.mismatched ?? 0,
+      mismatchSample: (liJobs?.mismatched ?? 0) > 0
+        ? await mismatchSample(hcpJobs, hcpJobs.lineItems, hcpJobs.totalAmountCents, hcpJobs.invoiceNumber)
+        : [],
     },
     estimates: {
       hydrated: liEstimates?.hydrated ?? 0,
@@ -488,6 +528,15 @@ export async function diagnosticsReport(): Promise<{ httpStatus: number; report:
       withItems: liEstimates?.withItems ?? 0,
       discounted: liEstimates?.discounted ?? 0,
       mismatched: liEstimates?.mismatched ?? 0,
+      mismatchSample: (liEstimates?.mismatched ?? 0) > 0
+        ? await mismatchSample(
+            hcpEstimates,
+            hcpEstimates.lineItems,
+            hcpEstimates.totalAmountCents,
+            hcpEstimates.hcpEstimateId,
+            sql`${optionCountSql} = 1`,
+          )
+        : [],
     },
     note:
       "mismatched = records where line-item gross minus discounts does not equal HCP's own total. " +
