@@ -190,6 +190,67 @@ Edwardsville + O'Fallon). WhatConverts-style. Single-tenant. Owner: Justin
 - Invoice payment/refund `status` vocabulary is `succeeded` | `failed`. Only `succeeded` counts
   toward collected. Discounts come back as NEGATIVE amounts; `discount_amount_cents` stores the
   positive magnitude. "Credit Card Processing Fee" is modelled by HCP as a TAX line.
+- **⚠️ A `percent discount` LINE ITEM carries BASIS POINTS, not cents** (verified against the live
+  account 2026-08-31, and this is the most expensive trap on the whole line-item surface). A line
+  item's `kind` is one of `materials | labor | fixed gratuity | fixed discount | percent discount`,
+  and the two discount kinds do NOT encode their value the same way:
+
+  | kind | `unit_price` / `amount` | `1000` means |
+  |---|---|---|
+  | `fixed discount` | cents | $10.00 off |
+  | `percent discount` | basis points | 10.00% off |
+
+  `amount` mirrors `unit_price × quantity` on both, so the obvious
+  `sum(amount) where kind like '%discount%'` reports a 10% discount on an $11,725 job as
+  **$10.00** — wrong by 117×, and entirely plausible-looking in a table. Never compute a discount
+  by hand; use `discountCents` from `lib/hcp/line-items.ts`, which converts both kinds onto one
+  scale and is checked against HCP's own total on every record.
+- **Line items are the ONLY place three things live**, and none of them is visible anywhere else
+  in the payload: **discounts** (a discount is a line, not a field — the parent's total is
+  already net of it), **quoted hours** (the tree-work price book is priced per hour, so
+  `unit_of_measure: "Hour(s)"` + `quantity` is the estimator's own read of duration — the only
+  per-record one that exists), and **what the work was** (`name` is the price-book service;
+  `job_type` is set on about 1 record in 200).
+- **⚠️ The two line-item endpoints return DIFFERENT ENVELOPES**, and neither matches the rest of
+  the API: `GET /jobs/{id}/line_items` → `{object, data: [...], url}` with **no paging fields at
+  all**, while `GET /estimates/{id}/options/{oid}/line_items` → `{line_items: [...], page,
+  total_pages, has_more}`. Reading the wrong list key returns `undefined`, coerces to `[]`, and
+  records a job that has items as having none — silently. Both are named explicitly and throw.
+- **Line items are only reachable under their parent** — no collection endpoint, no window, no
+  filter — so filling them is one request per JOB and one per estimate OPTION (~10.9k + ~19.7k
+  for this account). That is why hydration is its own sync job (`hcp-lineitems`) on its own
+  schedule rather than part of the hourly `hcp` sync, and why `line_items_synced_at` exists:
+  **`[]` and NULL are different answers**, and the queue reads the stamp, never `line_items IS
+  NULL` (empty is common — an estimate is written before it is priced — so a null-column queue
+  re-fetches the same empty records forever and never reaches the rest).
+
+## Line items, discounts and quoted hours
+
+The maths and the option-scoping rule live in `lib/hcp/line-items.ts`; the traps above are the
+summary. Two things worth knowing before touching it:
+
+- **Nothing is precomputed into a column, deliberately.** The history cost ~30k HCP requests to
+  read, so a formula baked into a column and later found wrong means re-crawling all of it. A
+  formula in a view expression is one deploy.
+- **On a WON estimate the figures cover the APPROVED options only** — the work actually sold,
+  matching `approved`. Elsewhere they cover every option, and `optionCount` says whether that is
+  one bid or several ALTERNATIVE bids for the same work. Deliberately NOT resolved to "the
+  biggest option": an open multi-option estimate has no decided answer, and inventing one puts a
+  number in the column nobody agreed to.
+
+**`/api/diagnostics` → `lineItems` is the check on all of it.** Every hydrated record carries an
+independent answer to what it should total — HCP's own `total_amount_cents` — so `gross −
+discount = total` is verified on every row rather than trusted from the samples it was derived
+on. `mismatched` should be 0 and warns when it is not; `mismatchSample` names the records.
+
+⚠️ **`mismatched` and `staleParent` are different findings.** The parent row and the line items
+are read at different times by different jobs, so a record re-priced in HCP between the two reads
+disagrees innocently — both numbers are right, about different moments. Only a disagreement whose
+parent was read at or AFTER the items counts as `mismatched`; the rest is `staleParent` and clears
+on the next sync lap. This is not theoretical: the very first production run flagged one estimate,
+and the sample showed `discount 0`, which ruled out the discount maths outright — HCP had simply
+re-priced it. **A `staleParent` figure that stays high means the parent sync is not lapping**,
+which is a different problem needing a different fix.
 
 ## Inbox channels
 Each channel keeps its own rich table and carries a `conversation_id`; the thread view
