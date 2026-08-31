@@ -494,7 +494,6 @@ export const hcpJobs = pgTable(
     // note on `hcpEstimates.leadSourceRaw`. Same field, same trap.
     leadSourceRaw: text("lead_source_raw"),
     address: jsonb("address"),
-    location: locationEnum("location").default("unknown"),
     createdAtHcp: timestamp("created_at_hcp", { withTimezone: true }),
     /** When the cold-zone crawl last saw this row — see hcpCustomers.crawlSeenAt. */
     crawlSeenAt: timestamp("crawl_seen_at", { withTimezone: true }),
