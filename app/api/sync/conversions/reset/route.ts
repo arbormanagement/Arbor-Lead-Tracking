@@ -1,8 +1,5 @@
-import { and, eq, gte, sql } from "drizzle-orm";
 import { authorizeAdmin, unauthorized } from "@/lib/admin-auth";
-import { db } from "@/lib/db/client";
-import { conversionExports } from "@/lib/db/schema";
-import { MAX_EXPORT_ATTEMPTS } from "@/lib/sync/conversions";
+import { resetFailedExports } from "@/lib/sync/conversions";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -32,25 +29,15 @@ export async function POST(req: Request) {
   if (!auth.ok) return unauthorized();
 
   const url = new URL(req.url);
-  const onlyAbandoned = url.searchParams.get("abandoned") === "1";
-  const platform = url.searchParams.get("platform"); // "google" | "facebook" | null = both
-
-  const conditions = [eq(conversionExports.status, "error")];
-  if (onlyAbandoned) conditions.push(gte(conversionExports.attempts, MAX_EXPORT_ATTEMPTS));
-  if (platform === "google" || platform === "facebook") {
-    conditions.push(eq(conversionExports.platform, platform));
-  }
-
-  const reset = await db
-    .update(conversionExports)
-    .set({ status: "pending", attempts: 0, error: null, updatedAt: sql`now()` })
-    .where(and(...conditions))
-    .returning({ id: conversionExports.id });
+  const platform = url.searchParams.get("platform");
+  const result = await resetFailedExports({
+    onlyAbandoned: url.searchParams.get("abandoned") === "1",
+    platform: platform === "google" || platform === "facebook" ? platform : undefined,
+  });
 
   return Response.json({
     ok: true,
-    reset: reset.length,
-    scope: { status: "error", onlyAbandoned, platform: platform ?? "all" },
+    ...result,
     note: "Rows already 'sent' were not touched. Run the conversions.export job to retry these.",
   });
 }

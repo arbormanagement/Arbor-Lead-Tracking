@@ -1,8 +1,6 @@
-import { eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import { getSession } from "@/lib/auth";
-import { db } from "@/lib/db/client";
-import { pools, trackingNumbers } from "@/lib/db/schema";
+import { deletePool, updatePool } from "@/lib/pools";
 
 export const runtime = "nodejs";
 
@@ -10,6 +8,9 @@ export const runtime = "nodejs";
  * Per-pool admin: edit display metadata, or delete an unused pool. The `key` is the
  * stable identifier stored on tracking_numbers.pool, so it is immutable here —
  * editing changes the display name / description / DNI flag only.
+ *
+ * The work is in lib/pools.ts, shared with the MCP pool tools, including the two
+ * guards that stop a delete stranding numbers.
  */
 const Patch = z.object({
   displayName: z.string().min(1).max(80).optional(),
@@ -26,11 +27,7 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ key: s
   if (!parsed.success) return Response.json({ error: "invalid input" }, { status: 400 });
 
   try {
-    const [row] = await db
-      .update(pools)
-      .set({ ...parsed.data, updatedAt: new Date() })
-      .where(eq(pools.key, key))
-      .returning();
+    const row = await updatePool(key, parsed.data);
     if (!row) return Response.json({ error: "pool not found" }, { status: 404 });
     return Response.json({ ok: true, pool: row });
   } catch (err) {
@@ -43,25 +40,19 @@ export async function DELETE(_req: Request, { params }: { params: Promise<{ key:
   if (!session) return Response.json({ error: "unauthorized" }, { status: 401 });
 
   const { key } = await params;
-  if (key === "reserved") {
-    return Response.json({ error: "The reserved pool is the default and can’t be deleted" }, { status: 400 });
-  }
-
   try {
-    // Block deletion while numbers still reference the pool — reassign them first.
-    const [{ inUse }] = await db
-      .select({ inUse: sql<number>`count(*)::int` })
-      .from(trackingNumbers)
-      .where(eq(trackingNumbers.pool, key));
-    if (inUse > 0) {
+    const result = await deletePool(key);
+    if (result.ok) return Response.json({ ok: true });
+    if (result.reason === "reserved") {
+      return Response.json({ error: "The reserved pool is the default and can’t be deleted" }, { status: 400 });
+    }
+    if (result.reason === "in_use") {
       return Response.json(
-        { error: `${inUse} number(s) still use "${key}" — reassign them to another pool first` },
+        { error: `${result.numbers} number(s) still use "${key}" — reassign them to another pool first` },
         { status: 409 },
       );
     }
-    const deleted = await db.delete(pools).where(eq(pools.key, key)).returning();
-    if (!deleted.length) return Response.json({ error: "pool not found" }, { status: 404 });
-    return Response.json({ ok: true });
+    return Response.json({ error: "pool not found" }, { status: 404 });
   } catch (err) {
     return Response.json({ ok: false, error: err instanceof Error ? err.message : String(err) }, { status: 500 });
   }

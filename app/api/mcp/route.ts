@@ -28,7 +28,14 @@ import {
   ListJobsInput,
   ListJobsOutput,
   ListLeadsInput,
+  DeletePoolInput,
+  GetSettingsInput,
+  GetSettingsOutput,
+  ListManualSpendInput,
+  ListManualSpendOutput,
   ListNumbersInput,
+  ListPoolsInput,
+  ListPoolsOutput,
   ListNumbersOutput,
   ListThreadsInput,
   ReclassifySourcesInput,
@@ -39,7 +46,17 @@ import {
   SetThreadStateInput,
   SpendSummaryInput,
   TriggerSyncInput,
+  ResetConversionExportsInput,
+  ResetConversionExportsOutput,
+  SetManualSpendInput,
+  SetRoutingInput,
+  SetTrackingOriginsInput,
+  TestCredentialsInput,
+  TestCredentialsOutput,
+  TrackingOriginsOutput,
   UpdateNumberInput,
+  UpsertPoolInput,
+  UpsertPoolOutput,
   UpdateNumberOutput,
 } from "@/lib/api-contracts/tools";
 import { selectedTouchModel, setAttributionOptions } from "@/lib/attribution/model";
@@ -47,6 +64,12 @@ import { setCampaignExcluded } from "@/lib/campaigns";
 import { setLeadClassification } from "@/lib/leads/classify-override";
 import { listCampaignsWithVolume } from "@/lib/queries/campaigns";
 import { listTrackingNumbers } from "@/lib/queries/numbers";
+import { createPool, deletePool, listPools, updatePool } from "@/lib/pools";
+import { probeCredential } from "@/lib/credentials/probe";
+import { deleteManualSpend, listManualSpend, setManualSpend } from "@/lib/spend/manual";
+import { getDefaultForwardNumber, getSmsForwardNumber, setRoutingConfig } from "@/lib/routing";
+import { setTrackingOrigins, trackingOrigins } from "@/lib/origin";
+import { resetFailedExports } from "@/lib/sync/conversions";
 import { applyNumberPatch } from "@/lib/twilio/numbers";
 import { reclassifyUnmappedSources } from "@/lib/sources/reclassify";
 import { SendError, sendThreadSms } from "@/lib/messaging/send";
@@ -559,6 +582,189 @@ const handler = createMcpHandler(
         annotations: { readOnlyHint: true },
       },
       async () => json({ campaigns: await listCampaignsWithVolume() }),
+    );
+
+    server.registerTool(
+      "arbor_get_settings",
+      {
+        title: "Current configuration",
+        description:
+          "Routing (where calls forward and texts relay), the tracking-origin allowlist, and the attribution model — the settings the write tools below change. Read this before changing one: every setter takes a full value, not a delta.",
+        inputSchema: GetSettingsInput.shape,
+        outputSchema: GetSettingsOutput.shape,
+        annotations: { readOnlyHint: true },
+      },
+      async () =>
+        json({
+          defaultForward: await getDefaultForwardNumber(),
+          smsForward: await getSmsForwardNumber(),
+          allowedOrigins: await trackingOrigins(),
+          attributionModel: await selectedTouchModel(),
+        }),
+    );
+
+    server.registerTool(
+      "arbor_set_routing",
+      {
+        title: "Set call forwarding and text relay",
+        description:
+          "Where calls ring when a tracking number has no per-number override, and where inbound texts are relayed. Send only the field being changed; an empty string clears it. " +
+          "Changing the call default also re-points every number's Twilio-side voice FALLBACK, which is the destination used when the app itself is failing — leaving that stale is invisible until a call is already lost.",
+        inputSchema: SetRoutingInput.shape,
+        annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
+      },
+      async (patch) => {
+        const result = await setRoutingConfig(patch);
+        if (!result.ok) {
+          return fail(`'${patch[result.field]}' is not a valid phone number.`, "Use E.164, e.g. +16188368004.");
+        }
+        // `result` already carries ok:true plus whichever fields changed.
+        return json(result);
+      },
+    );
+
+    server.registerTool(
+      "arbor_set_tracking_origins",
+      {
+        title: "Set the tracking-origin allowlist",
+        description:
+          "The sites whose pages may POST to /api/track and /api/dni/assign. REPLACES the list — read arbor_get_settings first and send the full set. " +
+          "An empty list restores the built-in arbor-mgmt.com defaults rather than blocking everything. Takes effect within a minute (the built set is cached briefly). " +
+          "⚠️ Removing the live site's origin stops the DNI swap and form capture for every visitor.",
+        inputSchema: SetTrackingOriginsInput.shape,
+        outputSchema: TrackingOriginsOutput.shape,
+        annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true },
+      },
+      async ({ allowedOrigins }) => {
+        const result = await setTrackingOrigins(allowedOrigins);
+        if (!result.ok) return fail(`'${result.invalid}' is not a valid origin.`, "Use https://example.com or a bare hostname.");
+        return json({ allowedOrigins: result.allowedOrigins, defaults: result.defaults });
+      },
+    );
+
+    server.registerTool(
+      "arbor_list_pools",
+      {
+        title: "Number pools",
+        description:
+          "The buckets tracking numbers belong to. `isDni` is the load-bearing one: website DNI leasing draws ONLY from pools flagged with it, so a number in an un-flagged pool can never be handed to a visitor.",
+        inputSchema: ListPoolsInput.shape,
+        outputSchema: ListPoolsOutput.shape,
+        annotations: { readOnlyHint: true },
+      },
+      async () => json({ pools: await listPools() }),
+    );
+
+    server.registerTool(
+      "arbor_upsert_pool",
+      {
+        title: "Create or edit a number pool",
+        description:
+          "Creates the pool when the key is new (displayName required), otherwise edits display metadata and the DNI flag. The key is stored on every number in the pool and is immutable — a different key is a different pool. " +
+          "⚠️ Toggling isDni changes which numbers the website can hand to visitors.",
+        inputSchema: UpsertPoolInput.shape,
+        outputSchema: UpsertPoolOutput.shape,
+        annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
+      },
+      async ({ key, displayName, description, isDni }) => {
+        const existing = (await listPools()).find((p) => p.key === key);
+        if (!existing) {
+          if (!displayName) return fail(`Pool '${key}' does not exist.`, "Pass displayName to create it.");
+          const row = await createPool({ key, displayName, description, isDni });
+          if (!row) return fail(`Pool '${key}' already exists.`, "Retry without displayName to edit it.");
+          return json({ pool: row, created: true });
+        }
+        const row = await updatePool(key, { displayName, description, isDni });
+        return row ? json({ pool: row, created: false }) : fail(`Pool '${key}' disappeared mid-update.`, "Retry.");
+      },
+    );
+
+    server.registerTool(
+      "arbor_delete_pool",
+      {
+        title: "Delete a number pool",
+        description:
+          "Refused while any tracking number still points at the pool — reassign those first — and refused for 'reserved', which is where a newly provisioned number lands by default.",
+        inputSchema: DeletePoolInput.shape,
+        annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false },
+      },
+      async ({ key }) => {
+        const result = await deletePool(key);
+        if (result.ok) return json({ ok: true });
+        if (result.reason === "reserved") return fail("The reserved pool cannot be deleted.", "It is the default for new numbers.");
+        if (result.reason === "in_use") {
+          return fail(
+            `${result.numbers} number(s) still use '${key}'.`,
+            "Move them to another pool with arbor_update_number first.",
+          );
+        }
+        return fail(`No pool with key '${key}'.`, "Keys come from arbor_list_pools.");
+      },
+    );
+
+    server.registerTool(
+      "arbor_list_manual_spend",
+      {
+        title: "Hand-entered monthly spend",
+        description:
+          "Spend typed in for channels no API sync reaches — Local Services, Google Business Profile, print, yard signs. runAttribution spreads each month evenly across its days so these channels get CPL and ROAS beside the synced ones.",
+        inputSchema: ListManualSpendInput.shape,
+        outputSchema: ListManualSpendOutput.shape,
+        annotations: { readOnlyHint: true },
+      },
+      async () => json({ rows: await listManualSpend() }),
+    );
+
+    server.registerTool(
+      "arbor_set_manual_spend",
+      {
+        title: "Set or clear a month's manual spend",
+        description:
+          "Upserts one (source, month) figure in integer CENTS; null amountCents deletes the row. Never writes ad_spend, so a hand-entered figure cannot collide with a platform pull. " +
+          "Shows up in ROI on the next attribution rebuild (hourly, or arbor_trigger_sync('attribution')).",
+        inputSchema: SetManualSpendInput.shape,
+        annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
+      },
+      async ({ sourceId, month, amountCents, note }) => {
+        const result =
+          amountCents === null
+            ? await deleteManualSpend(sourceId, month)
+            : await setManualSpend({ sourceId, month, amountCents, note });
+        if (result.ok) return json({ ok: true });
+        return result.reason === "unknown_source"
+          ? fail(`No source with id '${sourceId}'.`, "This wants sources.id, not the source key — ids come from arbor_roi_summary rows.")
+          : fail(`'${month}' is not a month.`, "Use YYYY-MM.");
+      },
+    );
+
+    server.registerTool(
+      "arbor_reset_conversion_exports",
+      {
+        title: "Retry failed conversion uploads",
+        description:
+          "Reopens conversion exports sitting in 'error' so the next export run retries them. Deliberately narrow: a row already 'sent' is NEVER reopened, which is the guard that stops one conversion being uploaded twice. " +
+          "Use after fixing the cause of a failure, not as a routine retry — the exporter already retries within the attempt cap on its own.",
+        inputSchema: ResetConversionExportsInput.shape,
+        outputSchema: ResetConversionExportsOutput.shape,
+        annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
+      },
+      async ({ onlyAbandoned, platform }) => json(await resetFailedExports({ onlyAbandoned, platform })),
+    );
+
+    server.registerTool(
+      "arbor_test_credentials",
+      {
+        title: "Test a platform credential",
+        description:
+          "Makes the cheapest authenticated call to HousecallPro, Google Ads or Meta and reports whether it WORKED — which arbor_diagnostics cannot tell you, since it reports only that a value is present. Never returns the credential.",
+        inputSchema: TestCredentialsInput.shape,
+        outputSchema: TestCredentialsOutput.shape,
+        annotations: { readOnlyHint: true },
+      },
+      async ({ platform }) => {
+        const result = await probeCredential(platform);
+        return json({ platform, ...result });
+      },
     );
 
     server.registerTool(

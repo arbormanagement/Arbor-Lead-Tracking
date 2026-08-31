@@ -1,5 +1,5 @@
 import { env } from "@/lib/env";
-import { getSetting } from "@/lib/settings";
+import { getSetting, setSetting } from "@/lib/settings";
 
 /**
  * Origin allowlist for the public tracking endpoints (/api/track, /api/dni/assign).
@@ -74,4 +74,39 @@ export function normalizeOrigin(value: string): string | null {
   } catch {
     return null; // unparseable (e.g. the literal "null" from sandboxed iframes)
   }
+}
+
+export type TrackingOriginsResult =
+  | { ok: true; allowedOrigins: string[]; defaults: boolean }
+  | { ok: false; invalid: string };
+
+/**
+ * Save the tracking-origin allowlist — the sites whose pages may POST to
+ * /api/track and /api/dni/assign. Shared by `/api/settings/tracking` and the MCP
+ * `arbor_set_tracking_origins` tool.
+ *
+ * Accepts a comma- or newline-separated string, or a list. An empty set clears the
+ * stored value so the built-in arbor-mgmt.com defaults apply again — which is not
+ * the same as an empty allowlist, and is why it reports `defaults` back. Bare
+ * hostnames are accepted as a convenience and read as https.
+ *
+ * Takes effect within a minute: `trackingOrigins()` caches the built set briefly.
+ */
+export async function setTrackingOrigins(input: string | string[]): Promise<TrackingOriginsResult> {
+  const entries = (Array.isArray(input) ? input : input.split(/[,\n]/)).map((s) => s.trim()).filter(Boolean);
+
+  if (entries.length === 0) {
+    await setSetting(TRACKING_ORIGINS_KEY, null);
+    return { ok: true, allowedOrigins: DEFAULT_ALLOWED_ORIGINS, defaults: true };
+  }
+
+  const origins: string[] = [];
+  for (const entry of entries) {
+    const o = normalizeOrigin(entry.includes("://") ? entry : `https://${entry}`);
+    if (!o) return { ok: false, invalid: entry };
+    if (!origins.includes(o)) origins.push(o);
+  }
+
+  await setSetting(TRACKING_ORIGINS_KEY, origins);
+  return { ok: true, allowedOrigins: origins, defaults: false };
 }
