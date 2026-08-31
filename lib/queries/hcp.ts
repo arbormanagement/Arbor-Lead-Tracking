@@ -8,6 +8,14 @@ import {
   hcpInvoices,
   hcpJobs,
 } from "@/lib/db/schema";
+import {
+  discountCentsSql,
+  discountNamesSql,
+  grossCentsSql,
+  lineItemCountSql,
+  quotedHoursSql,
+  serviceNamesSql,
+} from "@/lib/hcp/line-items";
 import { resolveWindow, type WindowInput } from "@/lib/window";
 
 /**
@@ -196,6 +204,26 @@ export async function listJobs(opts: WindowInput & {
       // HCP's own lead_source — NOT attribution. Exposed so nobody has to dig it out
       // of `raw` and conclude it is usable; see the schema note.
       leadSourceRaw: hcpJobs.leadSourceRaw,
+
+      // ── Line items ────────────────────────────────────────────────────────
+      // Derived at read time from the hydrated jsonb — see lib/hcp/line-items.ts,
+      // which carries the discount maths and the reason a percent discount cannot
+      // be read straight off `amount`.
+      //
+      // `lineItemsSyncedAt` is what distinguishes "no line items" from "not read
+      // yet", and it is exposed for exactly that reason: without it a 0 here reads
+      // as a priced-at-nothing job during the hours the backfill is still running.
+      lineItemsSyncedAt: hcpJobs.lineItemsSyncedAt,
+      lineItemCount: lineItemCountSql(hcpJobs.lineItems),
+      // Before discounts. `totalCents` above is already net, so the pair is what
+      // makes a discount visible at all.
+      grossCents: grossCentsSql(hcpJobs.lineItems),
+      discountCents: discountCentsSql(hcpJobs.lineItems),
+      discountNames: discountNamesSql(hcpJobs.lineItems),
+      // The estimator's own read of duration, from the hourly price book. Crew
+      // hours as priced, NOT man-hours — see the note on quotedHoursSql.
+      quotedHours: quotedHoursSql(hcpJobs.lineItems),
+      services: serviceNamesSql(hcpJobs.lineItems),
     })
     .from(hcpJobs)
     .leftJoin(hcpCustomers, eq(hcpJobs.hcpCustomerId, hcpCustomers.id))
@@ -214,6 +242,13 @@ export async function listJobs(opts: WindowInput & {
       collectedCents: sql<number>`coalesce(sum(${hcpJobs.invoicePaidCents}), 0)::bigint`,
       dueCents: sql<number>`coalesce(sum(${hcpJobs.invoiceDueCents}), 0)::bigint`,
       uninvoiced: sql<number>`count(*) filter (where coalesce(${hcpJobs.invoiceCount}, 0) = 0)::int`,
+      // Summed over the window, so "what did we give away this month" is one read
+      // rather than a client-side pass over a paged list.
+      discountCents: sql<number>`coalesce(sum(${discountCentsSql(hcpJobs.lineItems)}), 0)::bigint`,
+      quotedHours: sql<number | null>`sum(${quotedHoursSql(hcpJobs.lineItems)})`,
+      // How much of the window can answer the two above. A discount total is
+      // meaningless without it while the backfill is still walking the history.
+      lineItemsHydrated: sql<number>`count(*) filter (where ${hcpJobs.lineItemsSyncedAt} is not null)::int`,
     })
     .from(hcpJobs)
     .leftJoin(hcpCustomers, eq(hcpJobs.hcpCustomerId, hcpCustomers.id))

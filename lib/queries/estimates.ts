@@ -6,10 +6,16 @@ import { filterSql, type EstimateFilters } from "@/lib/estimates/filters";
 import {
   addressPartSql,
   assignedToSql,
+  discountCentsEstimateSql,
+  discountNamesEstimateSql,
   estimateNumberSql,
+  grossCentsEstimateSql,
   jobTypeSql,
+  lineItemCountEstimateSql,
   optionCountSql,
+  quotedHoursEstimateSql,
   serviceNoteSql,
+  servicesEstimateSql,
 } from "@/lib/estimates/hcp-fields";
 import { isLiveEstimate } from "@/lib/estimates/countable";
 import { landingPathSql } from "@/lib/landing-page";
@@ -114,6 +120,17 @@ const hcpFieldColumns = {
   zip: addressPartSql("zip"),
   optionCount: optionCountSql,
   serviceNote: serviceNoteSql,
+  // Line items — see the block comment at the foot of lib/estimates/hcp-fields.ts.
+  // `lineItemsSyncedAt` is exposed alongside them and is load-bearing: without it a
+  // 0 discount reads as "no discount" during the hours the backfill is still
+  // walking the history, rather than as "not read yet".
+  lineItemsSyncedAt: hcpEstimates.lineItemsSyncedAt,
+  lineItemCount: lineItemCountEstimateSql,
+  grossCents: grossCentsEstimateSql,
+  discountCents: discountCentsEstimateSql,
+  discountNames: discountNamesEstimateSql,
+  quotedHours: quotedHoursEstimateSql,
+  services: servicesEstimateSql,
 } as const;
 
 /** The same fields, copied onto the row. Keys match `hcpFieldColumns` exactly. */
@@ -129,6 +146,13 @@ function hcpFieldValues(r: {
   zip: string | null;
   optionCount: number;
   serviceNote: string | null;
+  lineItemsSyncedAt: Date | null;
+  lineItemCount: number;
+  grossCents: number;
+  discountCents: number;
+  discountNames: string | null;
+  quotedHours: number | null;
+  services: string | null;
 }) {
   return {
     status: r.status,
@@ -142,6 +166,13 @@ function hcpFieldValues(r: {
     zip: r.zip,
     optionCount: r.optionCount ?? 0,
     serviceNote: r.serviceNote,
+    lineItemsSyncedAt: r.lineItemsSyncedAt,
+    lineItemCount: r.lineItemCount ?? 0,
+    grossCents: Number(r.grossCents ?? 0),
+    discountCents: Number(r.discountCents ?? 0),
+    discountNames: r.discountNames,
+    quotedHours: r.quotedHours == null ? null : Number(r.quotedHours),
+    services: r.services,
   };
 }
 

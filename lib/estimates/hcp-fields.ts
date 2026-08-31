@@ -1,5 +1,14 @@
 import { sql, type SQL } from "drizzle-orm";
 import { hcpEstimates } from "@/lib/db/schema";
+import {
+  discountCentsSql,
+  discountNamesSql,
+  estimateLineItemsSql,
+  grossCentsSql,
+  lineItemCountSql,
+  quotedHoursSql,
+  serviceNamesSql,
+} from "@/lib/hcp/line-items";
 
 /**
  * The HousecallPro estimate fields that live inside jsonb rather than in their own
@@ -78,3 +87,35 @@ export const serviceNoteSql: SQL<string | null> = sql<string | null>`(
   where nullif(trim(n->>'content'), '') is not null
   limit 1
 )`;
+
+/**
+ * ── Line items ──────────────────────────────────────────────────────────────
+ *
+ * Derived at read time from the hydrated `line_items` jsonb. The maths — in
+ * particular why a percent discount cannot be read straight off `amount` — lives in
+ * `lib/hcp/line-items.ts`, as does the rule for which OPTIONS these cover on a
+ * multi-option estimate.
+ *
+ * The short version of that rule: on a WON estimate the figures cover the approved
+ * options only (the work actually sold, the same population `approved_amount_cents`
+ * measures); everywhere else they cover every option, and `optionCount` above is
+ * what says whether that is one bid or several alternatives.
+ */
+const estimateItems = estimateLineItemsSql(hcpEstimates.lineItems, hcpEstimates.options, hcpEstimates.won);
+
+/** Line items across the covered options. 0 is a real answer — an estimate is
+ *  written before it is priced — so read it beside `lineItemsSyncedAt`, which is
+ *  what distinguishes it from "not fetched yet". */
+export const lineItemCountEstimateSql: SQL<number> = lineItemCountSql(estimateItems);
+/** Before discounts; `total`/`approved` are already net, so the pair is what makes
+ *  a discount visible at all. */
+export const grossCentsEstimateSql: SQL<number> = grossCentsSql(estimateItems);
+export const discountCentsEstimateSql: SQL<number> = discountCentsSql(estimateItems);
+/** WHY the discount was given — 'Cash', 'Combo', 'Bundle', 'Sales Dept'. */
+export const discountNamesEstimateSql: SQL<string | null> = discountNamesSql(estimateItems);
+/** The estimator's own read of duration, off the hourly price book. Crew hours as
+ *  PRICED, not man-hours — see the note on `quotedHoursSql`. */
+export const quotedHoursEstimateSql: SQL<number | null> = quotedHoursSql(estimateItems);
+/** Which services the estimate covers, from the price-book item names — the only
+ *  per-record answer to that question. */
+export const servicesEstimateSql: SQL<string | null> = serviceNamesSql(estimateItems);

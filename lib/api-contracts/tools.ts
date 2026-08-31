@@ -244,6 +244,44 @@ export const EstimateRow = z.object({
   zip: z.string().nullable(),
   optionCount: z.number().int().describe("Options on the estimate — why `total` is the highest option, not their sum"),
   serviceNote: z.string().nullable().describe("First option note — in practice the description of the work"),
+
+  // ── Line items ──────────────────────────────────────────────────────────────
+  // Hydrated separately from the record itself (one HCP request per job / per
+  // estimate option), so `lineItemsSyncedAt` is the only honest test of whether the
+  // zeroes below mean "nothing" or "not read yet". Check it before reporting a
+  // discount total as fact.
+  lineItemsSyncedAt: isoDate
+    .nullable()
+    .describe("When line items were last read from HCP. null = NEVER READ — the figures below are absent, not zero"),
+  lineItemCount: z.number().int().describe("0 is a real answer: a record is written before it is priced"),
+  grossCents: z.coerce
+    .number()
+    .int()
+    .describe("Line-item total BEFORE discounts. The money figures elsewhere are already net, so this is what makes a discount visible"),
+  discountCents: z.coerce
+    .number()
+    .int()
+    .describe(
+      "Discount in CENTS, both kinds converted onto one scale. ⚠️ Do NOT recompute this from raw line items: a 'percent discount' line carries BASIS POINTS in unit_price/amount (1000 = 10%), so summing amounts reports a 10% discount on an $11,725 job as $10.00",
+    ),
+  discountNames: z
+    .string()
+    .nullable()
+    .describe("Why it was given — 'Cash', 'Combo', 'Bundle', 'Sales Dept'. Comma-joined"),
+  quotedHours: z.coerce
+    .number()
+    .nullable()
+    .describe(
+      "The estimator's quoted hours, off the hourly price book — the only per-record estimate of duration there is. Crew hours AS PRICED, not man-hours: compare against the door-to-door clock, not clock x headcount",
+    ),
+  services: z
+    .string()
+    .nullable()
+    .describe("Price-book item names, comma-joined ('Tree Removal, Tree Deadwood') — the only per-record answer to what the work was. $0 lines like 'Arborist Notes' excluded"),
+  // ⚠️ On a WON estimate these cover the APPROVED options only — the work actually
+  // sold, matching `approved`. Otherwise they cover every option, which on an
+  // estimate with `optionCount > 1` means several ALTERNATIVE bids for the same
+  // work: do not read grossCents there as one quote.
 });
 export type Estimate = z.infer<typeof EstimateRow>;
 
@@ -874,6 +912,40 @@ export const JobRow = z.object({
     .string()
     .nullable()
     .describe("HCP's own lead_source. NOT attribution — it records how the record was typed into HCP. Never bill a channel from this"),
+
+  // ── Line items ──────────────────────────────────────────────────────────────
+  // Hydrated separately from the record itself (one HCP request per job / per
+  // estimate option), so `lineItemsSyncedAt` is the only honest test of whether the
+  // zeroes below mean "nothing" or "not read yet". Check it before reporting a
+  // discount total as fact.
+  lineItemsSyncedAt: isoDate
+    .nullable()
+    .describe("When line items were last read from HCP. null = NEVER READ — the figures below are absent, not zero"),
+  lineItemCount: z.number().int().describe("0 is a real answer: a record is written before it is priced"),
+  grossCents: z.coerce
+    .number()
+    .int()
+    .describe("Line-item total BEFORE discounts. The money figures elsewhere are already net, so this is what makes a discount visible"),
+  discountCents: z.coerce
+    .number()
+    .int()
+    .describe(
+      "Discount in CENTS, both kinds converted onto one scale. ⚠️ Do NOT recompute this from raw line items: a 'percent discount' line carries BASIS POINTS in unit_price/amount (1000 = 10%), so summing amounts reports a 10% discount on an $11,725 job as $10.00",
+    ),
+  discountNames: z
+    .string()
+    .nullable()
+    .describe("Why it was given — 'Cash', 'Combo', 'Bundle', 'Sales Dept'. Comma-joined"),
+  quotedHours: z.coerce
+    .number()
+    .nullable()
+    .describe(
+      "The estimator's quoted hours, off the hourly price book — the only per-record estimate of duration there is. Crew hours AS PRICED, not man-hours: compare against the door-to-door clock, not clock x headcount",
+    ),
+  services: z
+    .string()
+    .nullable()
+    .describe("Price-book item names, comma-joined ('Tree Removal, Tree Deadwood') — the only per-record answer to what the work was. $0 lines like 'Arborist Notes' excluded"),
 });
 
 export const JobAgg = z.object({
@@ -885,6 +957,12 @@ export const JobAgg = z.object({
   collectedCents: z.coerce.number().int(),
   dueCents: z.coerce.number().int(),
   uninvoiced: z.number().int().describe("Jobs with no live invoice at all"),
+  discountCents: z.coerce.number().int().describe("Total discounted across the window — what was given away"),
+  quotedHours: z.coerce.number().nullable().describe("Total quoted hours across the window"),
+  lineItemsHydrated: z
+    .number()
+    .int()
+    .describe("Jobs in the window whose line items have been read. Below `total` means the two figures above cover only part of it — say so rather than reporting them as the whole"),
 });
 
 export const ListJobsOutput = z.object({
