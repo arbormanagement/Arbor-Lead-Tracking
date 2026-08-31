@@ -1,0 +1,11 @@
+-- The last `location` on an HCP table, and a dead one: `lib/sync/hcp.ts` contains
+-- zero references to it, so every one of the ~10.9k job rows carries the 'unknown'
+-- default and always has. 0046 dropped the same never-written column from
+-- `hcp_estimates`; this is its twin, missed there only because nothing pointed at it.
+--
+-- Left in place it is a trap rather than a spare field: the next person to want a
+-- branch on a job finds a `location` column sitting ready and fills it in, which
+-- rebuilds exactly the second source of truth 0046 removed. Where the WORK is lives
+-- in `hcp_jobs.address` (city and zip, already projected); which listing produced the
+-- customer lives on the campaign.
+ALTER TABLE "hcp_jobs" DROP COLUMN "location";

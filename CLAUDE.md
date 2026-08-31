@@ -784,7 +784,8 @@ re-argued rather than assumed.
     CAMPAIGNS, the campaign view's "By location" table is gone, and `location` stopped being
     an `/estimates` grouping. Stage 2 (2026-08-31, Justin: "address the location issue
     entirely") dropped it from `leads`, `web_sessions`, `hcp_estimates` and `roi_daily` —
-    migration **0046** — along with `inferLocation`, the location args on `/voice` and `/sms`,
+    migration **0046**, and from `hcp_jobs` in **0047** — along with `inferLocation`,
+    the location args on `/voice` and `/sms`,
     the `?location=` filter, and the `location` field on the MCP `EstimateRow`, `LeadRow` and
     `list_estimates` input. The staged wait was cut deliberately, not forgotten: stage 1 left
     the branch split reading from the campaign, and once the reports no longer consult the
@@ -808,7 +809,8 @@ re-argued rather than assumed.
     work is (`hcp_estimates.address->>'city'` and `zip` do, are already projected, and are
     already filterable on `/estimates`), and `hcp_customers.location` / `hcp_estimates.location`
     were **dead columns** — `lib/sync/hcp.ts` contains zero references to `location` and nothing
-    ever wrote them on ~15.5k estimates.
+    ever wrote them on ~15.5k estimates or ~10.9k jobs. A never-written column is a trap, not a
+    spare field: the next person to want a branch on a job would have found one sitting ready.
 - **Pool capacity is set by HOLD TIME, not pool size** — `LEASE_MINUTES` ÷ numbers is how many
   visitors an hour the pool can serve, and the lease window is pushed forward on every pageview,
   so it is idle time after the LAST one. At 30 minutes the 5 numbers served ~7.5 visitors/hour
