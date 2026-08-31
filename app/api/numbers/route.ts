@@ -4,7 +4,7 @@ import { z } from "zod";
 import { authorizeAdmin, unauthorized, forbidden } from "@/lib/admin-auth";
 import { db } from "@/lib/db/client";
 import { pools, sources, trackingNumbers } from "@/lib/db/schema";
-import { provisionNumber } from "@/lib/twilio/numbers";
+import { provisionNumber, resolveSourceIdByKey } from "@/lib/twilio/numbers";
 import { LOCATIONS } from "@/lib/locations";
 
 export const runtime = "nodejs";
@@ -62,7 +62,7 @@ export async function POST(req: Request) {
   if (!poolRow) return Response.json({ error: `Unknown pool "${b.pool}"` }, { status: 400 });
 
   try {
-    const staticSourceId = b.isStatic && b.staticSourceKey ? await resolveSource(b.staticSourceKey) : null;
+    const staticSourceId = b.isStatic && b.staticSourceKey ? await resolveSourceIdByKey(b.staticSourceKey) : null;
     const row = await provisionNumber({
       pool: b.pool,
       areaCode: b.areaCode,
@@ -89,11 +89,6 @@ export async function POST(req: Request) {
   }
 }
 
-async function resolveSource(key: string): Promise<string | null> {
-  await db.insert(sources).values({ key, displayName: displayNameFor(key) }).onConflictDoNothing({ target: sources.key });
-  const [s] = await db.select({ id: sources.id }).from(sources).where(eq(sources.key, key)).limit(1);
-  return s?.id ?? null;
-}
 
 /**
  * List tracking numbers. Read-only, and the counterpart the token flow needs:

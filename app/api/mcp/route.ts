@@ -28,6 +28,8 @@ import {
   ListJobsInput,
   ListJobsOutput,
   ListLeadsInput,
+  ListNumbersInput,
+  ListNumbersOutput,
   ListThreadsInput,
   ReclassifySourcesInput,
   ReplyToThreadInput,
@@ -37,11 +39,15 @@ import {
   SetThreadStateInput,
   SpendSummaryInput,
   TriggerSyncInput,
+  UpdateNumberInput,
+  UpdateNumberOutput,
 } from "@/lib/api-contracts/tools";
 import { selectedTouchModel, setAttributionOptions } from "@/lib/attribution/model";
 import { setCampaignExcluded } from "@/lib/campaigns";
 import { setLeadClassification } from "@/lib/leads/classify-override";
 import { listCampaignsWithVolume } from "@/lib/queries/campaigns";
+import { listTrackingNumbers } from "@/lib/queries/numbers";
+import { applyNumberPatch } from "@/lib/twilio/numbers";
 import { reclassifyUnmappedSources } from "@/lib/sources/reclassify";
 import { SendError, sendThreadSms } from "@/lib/messaging/send";
 import { setThreadState } from "@/lib/messaging/thread";
@@ -553,6 +559,47 @@ const handler = createMcpHandler(
         annotations: { readOnlyHint: true },
       },
       async () => json({ campaigns: await listCampaignsWithVolume() }),
+    );
+
+    server.registerTool(
+      "arbor_list_numbers",
+      {
+        title: "Tracking numbers",
+        description:
+          "Every tracking number with its resolved source and campaign, so a number can be pointed somewhere without a second lookup. " +
+          "A STATIC number names its own source and campaign; a pooled (website DNI) number inherits both from the visitor's lease, which is why those read null on one. " +
+          "This is where `id` values for arbor_update_number come from.",
+        inputSchema: ListNumbersInput.shape,
+        outputSchema: ListNumbersOutput.shape,
+        annotations: { readOnlyHint: true },
+      },
+      async () => json({ numbers: await listTrackingNumbers() }),
+    );
+
+    server.registerTool(
+      "arbor_update_number",
+      {
+        title: "Edit a tracking number",
+        description:
+          "Change what a tracking number represents or how it routes: friendly name, source, campaign, location, forward destination, whisper, pre-call message, recording, or active/disabled. " +
+          "Same implementation as the Settings → Numbers editor, so the Twilio-side voice fallback follows a changed forward destination here too. " +
+          "`staticCampaignId` is the one to reach for when a source is too coarse — one of two Google Business Profile listings, or a Google Ads call asset — and it applies to calls from the moment it is set, NOT retroactively. " +
+          "Omit a field to leave it alone. Cannot buy or release a number: both are deliberately absent from this surface.",
+        inputSchema: UpdateNumberInput.shape,
+        outputSchema: UpdateNumberOutput.shape,
+        annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
+      },
+      async ({ id, ...patch }) => {
+        const row = await applyNumberPatch(id, patch);
+        if (!row) {
+          return fail(
+            `No tracking number with id '${id}'.`,
+            "Number ids come from arbor_list_numbers.",
+          );
+        }
+        const [fresh] = (await listTrackingNumbers()).filter((n) => n.id === id);
+        return json({ number: fresh ?? null });
+      },
     );
 
     server.registerTool(
