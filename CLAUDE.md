@@ -681,11 +681,35 @@ re-argued rather than assumed.
   campaign one. Arbor's four ad groups emitted `utm_source=adwords&utm_medium=<ad group prose>`
   and the account default emitted `utm_medium={adname}`, which is not a real ValueTrack
   parameter and passed through literally. All five are now consolidated into one campaign-level
-  template on `Search | Tree Services` (23633267649). **`utm_campaign` must carry
-  `{campaignname}`, NOT `{campaignid}`** — `/api/twilio/voice` links a lease to a campaign by
-  matching `campaigns.name`, so an id there resolves to null. The account-level default still
+  template on `Search | Tree Services` (23633267649). **`utm_campaign` used to have to carry
+  `{campaignname}` rather than `{campaignid}`, and as of 2026-08-30 the opposite is true.**
+  `resolveCampaignIdByName` now matches `external_campaign_id` as well as `name`, so an id
+  resolves; and a NAME no longer identifies a campaign, because two of Arbor's are both called
+  `Search | Tree Services` (23633267649 and 22596055602) — see the duplicate-name entry below.
+  Names still resolve, so bookmarked URLs minted by the old template keep working. The
+  account-level default still
   holds the old `{adname}` string and can only be edited in the Google Ads UI (no API tool);
   it is shadowed for every live campaign, so it bites only a campaign created without its own.
+- **⚠️ TWO Google Ads campaigns are both named `Search | Tree Services`, and the DEAD one is
+  capturing every lead** (found 2026-08-30, NOT fixed). `23633267649` is the live campaign —
+  $3,434 spend and **0 contacts** over the 14 days to 2026-08-30 — while `22596055602` has
+  spent **nothing** in that window and holds **42 contacts and $1,190 of revenue**. Lifetime it
+  is 12 leads on $38,821 against 51 leads on $4,663. Neither row is true, so Google Ads CPE and
+  ROAS at campaign grain are currently meaningless: the live row reads "no rev yet" and the dead
+  row reads "organic".
+  - The cause is that `resolveCampaignIdByName` matches `campaigns.name` and takes `limit(1)`,
+    and the `{campaignname}` template emits a name both rows share, so the tie is broken by
+    whatever order Postgres returns. The likely mechanism for the dead one winning consistently
+    is heap order: the spend sync UPDATEs the live campaign daily, which rewrites its row and
+    moves it later in the heap, while the campaign that stopped spending stops being rewritten
+    and stays early — so a campaign becomes MORE attractive to the matcher by dying.
+  - **The 2026-08-30 ordering change does not fix this** — it only prefers a name match over an
+    external-id match, and here both candidates are name matches.
+  - Fix it in Google Ads rather than in code: rename or remove `22596055602` so the names
+    differ, and/or switch the tracking template to `{campaignid}`, which is unique and which
+    `resolveCampaignIdByName` now understands. A code-side tie-break on "most recent spend"
+    would work but puts a heuristic on the `/voice` hot path; detecting duplicate names in
+    `/api/diagnostics` is the more in-keeping option.
 - **A promoted channel does NOT reclassify the leads already in `other`.** `classifySource`
   runs once, at ingest, and the key is frozen onto the lead — so adding a mapping fixes every
   future lead and none of the rows that prompted the mapping. `lib/sources/reclassify.ts`
