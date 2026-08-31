@@ -452,6 +452,104 @@ export const UpdateNumberInput = z.object({
 });
 export const UpdateNumberOutput = z.object({ number: NumberRow.nullable() });
 
+// ── settings, pools, manual spend ────────────────────────────────────────────
+export const GetSettingsInput = z.object({});
+export const GetSettingsOutput = z.object({
+  defaultForward: z.string().describe("E.164 the office rings when a number has no per-number override"),
+  smsForward: z.string().nullable().describe("Where inbound texts are relayed; null = not relayed anywhere"),
+  allowedOrigins: z.array(z.string()).describe("Sites whose pages may POST to /api/track and /api/dni/assign"),
+  attributionModel: z.enum(["first", "last"]),
+});
+
+export const SetRoutingInput = z.object({
+  defaultForward: z
+    .string()
+    .optional()
+    .describe("Account-wide call-forward destination. Empty string clears it (falls back to the env default). Omit to leave unchanged."),
+  smsForward: z
+    .string()
+    .optional()
+    .describe("Where inbound texts are relayed — a mobile someone reads. Empty string stops relaying. Omit to leave unchanged."),
+});
+
+export const SetTrackingOriginsInput = z.object({
+  allowedOrigins: z
+    .array(z.string().max(200))
+    .max(50)
+    .describe(
+      "Sites whose pages may POST to /api/track and /api/dni/assign. Bare hostnames are read as https. An EMPTY list restores the built-in arbor-mgmt.com defaults — it does not mean 'allow nothing'.",
+    ),
+});
+export const TrackingOriginsOutput = z.object({
+  allowedOrigins: z.array(z.string()),
+  defaults: z.boolean().describe("true = the stored value was cleared and the built-in defaults apply"),
+});
+
+export const ListPoolsInput = z.object({});
+export const PoolRowSchema = z.object({
+  key: z.string(),
+  displayName: z.string(),
+  description: z.string().nullable(),
+  isDni: z.boolean().describe("Website DNI leasing draws ONLY from pools flagged here"),
+});
+export const ListPoolsOutput = z.object({ pools: z.array(PoolRowSchema) });
+
+export const UpsertPoolInput = z.object({
+  key: z
+    .string()
+    .min(2)
+    .max(40)
+    .regex(/^[a-z0-9][a-z0-9_/-]*$/, "lowercase letters, digits, and - _ / only")
+    .describe("Stable identifier stored on tracking_numbers.pool. Immutable: creating with a new key makes a new pool."),
+  displayName: z.string().min(1).max(80).optional().describe("Required when creating"),
+  description: z.string().max(300).nullable().optional(),
+  isDni: z.boolean().optional().describe("⚠️ Changing this changes which numbers the website can hand to visitors"),
+});
+export const UpsertPoolOutput = z.object({ pool: PoolRowSchema, created: z.boolean() });
+
+export const DeletePoolInput = z.object({
+  key: z.string().max(40).describe("Refused while any number still points at the pool, and for 'reserved'"),
+});
+
+export const ListManualSpendInput = z.object({});
+export const ManualSpendRowSchema = z.object({
+  sourceId: z.string(),
+  sourceKey: z.string().nullable(),
+  month: z.string().describe("First of the month, YYYY-MM-DD"),
+  amountCents: z.number().int(),
+  note: z.string().nullable(),
+});
+export const ListManualSpendOutput = z.object({ rows: z.array(ManualSpendRowSchema) });
+
+export const SetManualSpendInput = z.object({
+  sourceId: z.string().min(1).describe("sources.id — from roi_summary/list_campaigns, not the source KEY"),
+  month: z.string().regex(/^\d{4}-\d{2}(-\d{2})?$/, "YYYY-MM"),
+  amountCents: z
+    .number()
+    .int()
+    .min(0)
+    .nullable()
+    .describe("Integer cents for the whole month, spread evenly across its days by the next attribution run. null DELETES the row."),
+  note: z.string().max(500).optional(),
+});
+
+export const ResetConversionExportsInput = z.object({
+  onlyAbandoned: z.boolean().default(false).describe("Only rows past the attempt cap — the permanently abandoned ones"),
+  platform: z.enum(["google", "facebook"]).optional().describe("Omit for both"),
+});
+export const ResetConversionExportsOutput = z.object({
+  reset: z.number().int(),
+  scope: z.object({ status: z.string(), onlyAbandoned: z.boolean(), platform: z.string() }),
+});
+
+export const TestCredentialsInput = z.object({
+  platform: z.enum(["housecallpro", "google_ads", "facebook"]),
+});
+export const TestCredentialsOutput = z.object({
+  platform: z.string(),
+  ok: z.boolean().describe("The credential actually worked — not merely that it is present"),
+});
+
 export const SetAttributionModelInput = z.object({
   model: z
     .enum(["last_touch", "first_touch"])

@@ -545,3 +545,36 @@ function eventSourceFor(leadType: string): EventSource {
   if (leadType === "web_form") return "WEB";
   return "OTHER";
 }
+
+export interface ResetExportsScope {
+  /** Only rows past MAX_EXPORT_ATTEMPTS — the permanently abandoned ones. */
+  onlyAbandoned?: boolean;
+  platform?: "google" | "facebook";
+}
+
+/**
+ * Reopen failed conversion exports for another attempt. Shared by
+ * `/api/sync/conversions/reset` and the MCP `arbor_reset_conversion_exports` tool.
+ *
+ * Deliberately narrow, because "retry everything" is how a conversion gets counted
+ * twice: only rows in `error` are touched, and a `sent` row is never reopened. That
+ * guard is the thing stopping a double upload, and it is not this function's
+ * business to override it. Google also dedups on `transactionId`, but that is a
+ * backstop, not a licence to skip the guard.
+ */
+export async function resetFailedExports(scope: ResetExportsScope = {}) {
+  const conditions = [eq(conversionExports.status, "error")];
+  if (scope.onlyAbandoned) conditions.push(gte(conversionExports.attempts, MAX_EXPORT_ATTEMPTS));
+  if (scope.platform) conditions.push(eq(conversionExports.platform, scope.platform));
+
+  const reset = await db
+    .update(conversionExports)
+    .set({ status: "pending", attempts: 0, error: null, updatedAt: sql`now()` })
+    .where(and(...conditions))
+    .returning({ id: conversionExports.id });
+
+  return {
+    reset: reset.length,
+    scope: { status: "error", onlyAbandoned: !!scope.onlyAbandoned, platform: scope.platform ?? "all" },
+  };
+}

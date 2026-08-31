@@ -1,21 +1,17 @@
-import { asc } from "drizzle-orm";
 import { z } from "zod";
 import { getSession } from "@/lib/auth";
-import { db } from "@/lib/db/client";
-import { pools } from "@/lib/db/schema";
+import { createPool, listPools } from "@/lib/pools";
 
 export const runtime = "nodejs";
 
 /**
- * Number pools (admin-gated):
- *   GET  → list pools
- *   POST → create a pool (key is the stable identifier stored on numbers)
+ * Number pools (admin-gated): GET lists, POST creates. The work is in lib/pools.ts,
+ * shared with the MCP pool tools.
  */
 export async function GET() {
   const session = await getSession();
   if (!session) return Response.json({ error: "unauthorized" }, { status: 401 });
-  const rows = await db.select().from(pools).orderBy(asc(pools.key));
-  return Response.json({ ok: true, pools: rows });
+  return Response.json({ ok: true, pools: await listPools() });
 }
 
 const Body = z.object({
@@ -37,15 +33,10 @@ export async function POST(req: Request) {
   if (!parsed.success) {
     return Response.json({ error: parsed.error.issues[0]?.message ?? "invalid input" }, { status: 400 });
   }
-  const b = parsed.data;
 
   try {
-    const [row] = await db
-      .insert(pools)
-      .values({ key: b.key, displayName: b.displayName, description: b.description ?? null, isDni: b.isDni })
-      .onConflictDoNothing({ target: pools.key })
-      .returning();
-    if (!row) return Response.json({ error: `Pool "${b.key}" already exists` }, { status: 409 });
+    const row = await createPool(parsed.data);
+    if (!row) return Response.json({ error: `Pool "${parsed.data.key}" already exists` }, { status: 409 });
     return Response.json({ ok: true, pool: row });
   } catch (err) {
     return Response.json({ ok: false, error: err instanceof Error ? err.message : String(err) }, { status: 500 });
