@@ -23,7 +23,7 @@
  */
 import { eq, inArray } from "drizzle-orm";
 import { db } from "@/lib/db/client";
-import { adSpend, attributions, campaigns, leads, roiDaily, sources, trackingNumbers, visitors, webSessions } from "@/lib/db/schema";
+import { adSpend, attributions, calls, campaigns, leads, roiDaily, sources, trackingNumbers, visitors, webSessions } from "@/lib/db/schema";
 import { seedDefaults } from "@/lib/db/seed-data";
 import { campaignIdFromUrl, resolveCampaignId, SPEND_REPULL_DAYS } from "@/lib/campaigns";
 import { resolveInboundAttribution } from "@/lib/twilio/inbound";
@@ -41,7 +41,7 @@ const ok = (c: boolean, m: string) => {
  *  mistaken for the real Google Business Profile lines. Cleaned up at the START of
  *  each run — both `phone_number` and `twilio_sid` are unique, so a second run would
  *  otherwise just collide. */
-const FIXTURES = ["+16185550001", "+16185550002", "+16185550003"];
+const FIXTURES = ["+16185550001", "+16185550002", "+16185550003", "+16185550004"];
 
 /** A duplicate NAME across two campaigns — the shape that misrouted every Google Ads
  *  lead for two weeks. Ids are outside any real account's range. */
@@ -64,6 +64,7 @@ async function main() {
     // on a virgin database is a verifier nobody runs twice.
     const stale = db.select({ id: leads.id }).from(leads).where(eq(leads.phoneE164, phone));
     await db.delete(attributions).where(inArray(attributions.leadId, stale));
+    await db.delete(calls).where(inArray(calls.leadId, stale));
     const sessionIds = db.select({ id: leads.webSessionId }).from(leads).where(eq(leads.phoneE164, phone));
     await db.delete(leads).where(eq(leads.phoneE164, phone));
     await db.delete(webSessions).where(inArray(webSessions.id, sessionIds));
@@ -321,6 +322,36 @@ async function main() {
   const staleAfter = await db.select().from(campaigns).where(inArray(campaigns.id, [ns1.id, ns2.id]));
   ok(staleAfter.every((c) => c.name !== NEITHER), "two stale campaigns are both suffixed");
   ok((await resolveCampaignId({ name: NEITHER })) === null, "…so the shared name resolves to nothing rather than a coin flip");
+
+  // ── a static number's campaign reaching the calls already taken ────────────
+  // /voice stamps static_campaign_id at call time, so pointing a number at a
+  // campaign leaves earlier calls uncampaigned. This is the shape of the Google Ads
+  // call asset: a static number whose callers carry no gclid and no landing page.
+  const [assetNum] = await db.insert(trackingNumbers).values({
+    phoneNumber: FIXTURES[3], twilioSid: "PNverifyAsset", pool: "reserved",
+    isStatic: true, staticSourceId: gbp.id, staticCampaignId: live.id,
+  }).returning();
+  const [callLead] = await db.insert(leads).values({
+    type: "call", sourceId: gbp.id, occurredAt: new Date(), phoneE164: FIXTURES[3],
+  }).returning();
+  const [alreadyAttributed] = await db.insert(leads).values({
+    type: "call", sourceId: gbp.id, occurredAt: new Date(), phoneE164: FIXTURES[3], campaignId: dead.id,
+  }).returning();
+  await db.insert(calls).values([
+    { twilioCallSid: "CAverify1", trackingNumberId: assetNum.id, leadId: callLead.id },
+    { twilioCallSid: "CAverify2", trackingNumberId: assetNum.id, leadId: alreadyAttributed.id },
+  ]);
+
+  await seedDefaults(db);
+  const [callFixed] = await db.select().from(leads).where(eq(leads.id, callLead.id));
+  ok(callFixed.campaignId === live.id, "an uncampaigned call inherits its static number's campaign");
+  const [notClobbered] = await db.select().from(leads).where(eq(leads.id, alreadyAttributed.id));
+  ok(notClobbered.campaignId === dead.id,
+    "…and a call that already had a campaign keeps it — the number is the coarsest signal, not the winner");
+
+  await db.delete(calls).where(inArray(calls.twilioCallSid, ["CAverify1", "CAverify2"]));
+  await db.delete(leads).where(inArray(leads.id, [callLead.id, alreadyAttributed.id]));
+  await db.delete(trackingNumbers).where(eq(trackingNumbers.id, assetNum.id));
 
   // Idempotency + non-destructiveness.
   await db.update(leads).set({ campaignId: edw.id }).where(eq(leads.id, oldLead.id));

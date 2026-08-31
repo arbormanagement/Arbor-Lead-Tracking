@@ -266,6 +266,39 @@ export async function seedDefaults(db: Db, onRow?: (label: string) => void) {
     onRow?.(`disambiguated ${disambiguated.rowCount} campaign name(s) that were shared`);
   }
 
+  // Give a call the campaign its own tracking NUMBER names.
+  //
+  // `/voice` stamps `static_campaign_id` onto a lead at call time, so pointing a
+  // number at a campaign fixes future calls and leaves the ones already taken
+  // uncampaigned. That gap is not theoretical: the Google Ads call asset
+  // +16184145907 is a static number, its callers carry no gclid and no landing page,
+  // and 13 of them sat under `google/cpc` with no campaign while the campaign that
+  // paid for them showed the spend.
+  //
+  // Fill-only-a-NULL, so it cannot overwrite a campaign resolved from a click id or
+  // a hand correction — the number is the coarsest of the three signals and only
+  // ever answers where nothing better did.
+  //
+  // `distinct on` picks the lead's EARLIEST call rather than letting Postgres choose
+  // among several: a lead with two calls on differently-configured numbers would
+  // otherwise get a campaign that changed between runs.
+  const fromNumber = await db.execute(sql`
+    update ${schema.leads} as l
+       set campaign_id = sub.campaign_id, updated_at = now()
+      from (
+        select distinct on (c.lead_id) c.lead_id as lead_id, tn.static_campaign_id as campaign_id
+          from ${schema.calls} c
+          join ${schema.trackingNumbers} tn on tn.id = c.tracking_number_id
+         where c.lead_id is not null and tn.static_campaign_id is not null
+         order by c.lead_id, c.created_at asc
+      ) sub
+     where sub.lead_id = l.id
+       and l.campaign_id is null
+  `);
+  if (fromNumber.rowCount) {
+    onRow?.(`attributed ${fromNumber.rowCount} call lead(s) to their number's campaign`);
+  }
+
   // Repair leads whose campaign was decided by a NAME that two campaigns share.
   //
   // Arbor has two campaigns called `Search | Tree Services` — 23633267649, which
