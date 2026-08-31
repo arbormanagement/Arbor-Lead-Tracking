@@ -1,13 +1,20 @@
 /** Groupable dimensions for the Inbox — shared by the page (server) and the
- *  view controls (client). Selected groupings travel as `?g=a,b` (ordered). */
-export type Dim = "source" | "campaign" | "stage" | "type" | "location" | "day" | "week" | "month";
+ *  view controls (client). Selected groupings travel as `?g=a,b` (ordered).
+ *
+ *  `location` was one of these and is not any more. It only ever separated the two
+ *  Google Business Profile listings, which are campaigns now — and it separated them
+ *  worse, since it read as the customer's city and disagreed with the service
+ *  address half the time. `campaign` above answers the same question for every
+ *  channel. The column and the `?location=` filter both still exist (the MCP tools
+ *  offer them), so an old bookmarked URL keeps working; this is only about what the
+ *  page offers to group by. */
+export type Dim = "source" | "campaign" | "stage" | "type" | "day" | "week" | "month";
 
 export const DIMS: Array<{ key: Dim; label: string }> = [
   { key: "source", label: "Source" },
   { key: "campaign", label: "Campaign" },
   { key: "stage", label: "Stage" },
   { key: "type", label: "Type" },
-  { key: "location", label: "Location" },
   { key: "day", label: "Day" },
   { key: "week", label: "Week" },
   { key: "month", label: "Month" },

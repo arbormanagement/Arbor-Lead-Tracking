@@ -15,6 +15,7 @@ import {
 } from "drizzle-orm/pg-core";
 import { relations, sql } from "drizzle-orm";
 import { ulid } from "ulid";
+import { LOCATIONS } from "@/lib/locations";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Conventions
@@ -34,7 +35,7 @@ const updatedAt = () =>
     .$onUpdate(() => new Date());
 
 // ── Enums ────────────────────────────────────────────────────────────────────
-export const locationEnum = pgEnum("location", ["edwardsville", "ofallon", "unknown"]);
+export const locationEnum = pgEnum("location", [...LOCATIONS]);
 // Pools are user-managed rows in `pools` (not a fixed enum), so a number's `pool`
 // is a plain text key referencing pools.key. Defaults seeded by the migrate/seed.
 export const numberStatusEnum = pgEnum("number_status", ["active", "disabled"]);
@@ -249,6 +250,18 @@ export const trackingNumbers = pgTable(
     // Static (source-level) numbers — flyers, GBP, call extensions — never pooled/recycled.
     isStatic: boolean("is_static").notNull().default(false),
     staticSourceId: text("static_source_id").references(() => sources.id),
+    /**
+     * The campaign a STATIC number stands for, when the source alone is too coarse.
+     *
+     * Exists because a static number carries no DNI lease — `resolveInbound` returns
+     * `lease: null` for one — so `/voice` and `/sms` had no `utm_campaign` text to
+     * match a campaign by, and every call to a published number reached `roi_daily`
+     * with a null campaign. The two Google Business Profiles are the case that
+     * forced it: they are one source (`gbp`) and two listings, each with its own
+     * number, and the listing is the thing worth comparing. Generalises to any
+     * number that IS a campaign — an LSA line, a mailer, one yard sign.
+     */
+    staticCampaignId: text("static_campaign_id").references(() => campaigns.id),
     location: locationEnum("location").default("unknown"),
     // Per-number call routing (override the global Twilio defaults). Null → fall
     // back to the account default forward / whisper / recording.

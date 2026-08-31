@@ -6,6 +6,7 @@ import { getSession } from "@/lib/auth";
 import { db } from "@/lib/db/client";
 import { sources } from "@/lib/db/schema";
 import { releaseNumber, setNumberStatus, updateNumber } from "@/lib/twilio/numbers";
+import { LOCATIONS } from "@/lib/locations";
 
 export const runtime = "nodejs";
 export const maxDuration = 30;
@@ -28,7 +29,10 @@ const Patch = z.object({
   pool: z.string().min(2).max(40).optional(),
   isStatic: z.boolean().optional(),
   staticSourceKey: z.string().optional(),
-  location: z.enum(["edwardsville", "ofallon", "unknown"]).optional(),
+  /** A campaign id, or null to clear. Only meaningful on a static number — a
+   *  pooled one takes its campaign from the visitor's lease. */
+  staticCampaignId: z.string().nullable().optional(),
+  location: z.enum(LOCATIONS).optional(),
   status: z.enum(["active", "disabled"]).optional(),
   friendlyName: z.string().max(120).optional(),
   forwardDestination: z.string().max(20).nullable().optional(),
@@ -52,7 +56,7 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
 
     const hasMeta =
       b.pool !== undefined || b.isStatic !== undefined || b.location !== undefined ||
-      b.staticSourceKey !== undefined || b.friendlyName !== undefined ||
+      b.staticSourceKey !== undefined || b.staticCampaignId !== undefined || b.friendlyName !== undefined ||
       b.forwardDestination !== undefined || b.whisperMessage !== undefined || b.recordCalls !== undefined ||
       b.greetingMessage !== undefined || b.greetingEnabled !== undefined;
     if (hasMeta) {
@@ -61,6 +65,7 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
       const row = await updateNumber(id, {
         pool: b.pool,
         isStatic: b.isStatic,
+        staticCampaignId: b.staticCampaignId,
         location: b.location,
         friendlyName: b.friendlyName,
         forwardDestination: b.forwardDestination,

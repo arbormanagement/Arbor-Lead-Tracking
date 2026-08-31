@@ -45,6 +45,17 @@ export interface SourceLocationRow {
   revenue: number;
 }
 
+export interface SourceCampaignRow {
+  key: string | null;
+  campaignId: string | null;
+  campaignName: string | null;
+  contacts: number;
+  estimates: number;
+  won: number;
+  spend: number;
+  revenue: number;
+}
+
 /**
  * Performance by source, from the `roi_daily` rollup — every figure is the same
  * number the ROI pipeline computed rather than a second count that could disagree
@@ -56,7 +67,7 @@ export interface SourceLocationRow {
 export async function sourcePerformance(
   days: number,
   touch: TouchModel,
-): Promise<{ rows: SourcePerfRow[]; locationRows: SourceLocationRow[] }> {
+): Promise<{ rows: SourcePerfRow[]; locationRows: SourceLocationRow[]; campaignRows: SourceCampaignRow[] }> {
   const windowStart = new Date(Date.now() - days * 86_400_000);
   const sinceBusinessDate = businessDate(windowStart);
   // Recruiting campaigns are not customer acquisition. roi_daily is built without
@@ -73,7 +84,7 @@ export async function sourcePerformance(
     revenue: sql<number>`coalesce(sum(${roiDaily.revenueCents}),0)::int`,
   };
 
-  const [rolled, locationRows, cancelledRows] = await Promise.all([
+  const [rolled, locationRows, campaignRows, cancelledRows] = await Promise.all([
     db
       .select({ key: sources.key, name: sources.displayName, ...agg })
       .from(roiDaily)
@@ -90,6 +101,18 @@ export async function sourcePerformance(
       .leftJoin(sources, eq(roiDaily.sourceId, sources.id))
       .where(inWindow)
       .groupBy(sources.key, roiDaily.location)
+      .orderBy(desc(sql`coalesce(sum(${roiDaily.revenueCents}),0)`)),
+    // The same rollup split by CAMPAIGN — what the channel view expands a source
+    // into. Spend is real here, which is the difference from the location split
+    // above: ad platforms report spend per campaign and never per location, so the
+    // location sub-rows had to show a dash where the money goes.
+    db
+      .select({ key: sources.key, campaignId: roiDaily.campaignId, campaignName: campaigns.name, ...agg })
+      .from(roiDaily)
+      .leftJoin(sources, eq(roiDaily.sourceId, sources.id))
+      .leftJoin(campaigns, eq(roiDaily.campaignId, campaigns.id))
+      .where(inWindow)
+      .groupBy(sources.key, roiDaily.campaignId, campaigns.name)
       .orderBy(desc(sql`coalesce(sum(${roiDaily.revenueCents}),0)`)),
     // Cancelled per source, bucketed exactly as the rollup buckets estimates: the
     // contact's day when we can attribute one, the appointment's day when we cannot.
@@ -116,7 +139,7 @@ export async function sourcePerformance(
     cancelled: cancelledByKey.get(r.key ?? null) ?? 0,
   }));
 
-  return { rows, locationRows };
+  return { rows, locationRows, campaignRows };
 }
 
 export interface BreakdownRow {

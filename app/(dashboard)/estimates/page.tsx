@@ -121,7 +121,6 @@ function dimKey(r: Row, dim: Dim): string {
     // what made a $2,100 priced estimate read as though nothing had happened to it.
     case "stage": return r.outcome === "won" || r.outcome === "lost" ? r.outcome : r.scheduled ? "open" : "unscheduled";
     case "type": return r.leadType ?? "untracked";
-    case "location": return r.location ?? "unknown";
     // Business-timezone buckets, so an estimate written in the evening cannot land
     // in tomorrow's group while its own timestamp renders as today.
     case "day": return businessDate(r.createdAt);
@@ -133,8 +132,6 @@ function dimKey(r: Row, dim: Dim): string {
 function dimLabel(key: string, dim: Dim): string {
   switch (dim) {
     case "type": return key === "untracked" ? "No tracked contact" : (TYPE_META[key]?.label ?? key);
-    case "location":
-      return key === "edwardsville" ? "Edwardsville" : key === "ofallon" ? "O'Fallon" : "Unknown";
     case "day":
       return new Date(key + "T00:00:00Z").toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
     case "week":

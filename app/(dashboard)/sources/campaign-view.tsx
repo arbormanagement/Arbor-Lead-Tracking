@@ -26,7 +26,7 @@ import type { TouchModel } from "@/lib/attribution/model";
 export async function CampaignView({ days, touch }: { days: number; touch: TouchModel }) {
   // The numbers live in lib/queries/sources.ts, shared with the MCP `roi_summary`
   // tool so the two surfaces cannot disagree.
-  const { rows, byLocation } = await campaignPerformance(days, touch);
+  const { rows } = await campaignPerformance(days, touch);
 
   const totals = rows.reduce(
     (a, r) => ({
@@ -158,47 +158,6 @@ export async function CampaignView({ days, touch }: { days: number; touch: Touch
         </div>
       )}
 
-      {/* Location is the one split worth carrying below campaign: it is two branches,
-          not a long tail, and `roi_daily` already keys on it. */}
-      <h2 className="page-title" style={{ fontSize: 16, marginBottom: 4 }}>By location</h2>
-      <p className="page-sub" style={{ marginBottom: 16 }}>
-        Edwardsville and O&apos;Fallon across every campaign. Each Google Business Profile tags its own link and has its
-        own tracking number, so location is known for far more than just paid traffic.
-      </p>
-      <div className="table-scroll" style={{ marginBottom: 26 }}>
-        <table>
-          <thead>
-            <tr>
-              <th>Location</th>
-              <th>Contacts</th>
-              <th>Estimates</th>
-              <th>Won</th>
-              <th>Spend</th>
-              <th>Revenue</th>
-              <th>Close rate</th>
-            </tr>
-          </thead>
-          <tbody>
-            {byLocation.map((l) => (
-              <tr key={l.location ?? "unknown"}>
-                <td style={{ textTransform: "capitalize" }}>
-                  <Link href={estimateDrilldown({ location: l.location ?? "unknown" }, days)} className="link">
-                    {l.location === "ofallon" ? "O'Fallon" : (l.location ?? "unknown")}
-                  </Link>
-                </td>
-                <td className="mono">{l.contacts}</td>
-                <td className="mono">{l.estimates}</td>
-                <td>{l.won > 0 ? <span className="badge win">{l.won}</span> : <span className="muted mono">0</span>}</td>
-                <td className="mono muted">{dollars(l.spend)}</td>
-                <td className="mono">{l.revenue > 0 ? dollars(l.revenue) : <span className="muted">—</span>}</td>
-                <td className="mono muted">
-                  {l.estimates ? Math.round((l.won / l.estimates) * 100) + "%" : "—"}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
     </>
   );
 }

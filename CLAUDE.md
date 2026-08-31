@@ -681,11 +681,46 @@ re-argued rather than assumed.
   campaign one. Arbor's four ad groups emitted `utm_source=adwords&utm_medium=<ad group prose>`
   and the account default emitted `utm_medium={adname}`, which is not a real ValueTrack
   parameter and passed through literally. All five are now consolidated into one campaign-level
-  template on `Search | Tree Services` (23633267649). **`utm_campaign` must carry
-  `{campaignname}`, NOT `{campaignid}`** — `/api/twilio/voice` links a lease to a campaign by
-  matching `campaigns.name`, so an id there resolves to null. The account-level default still
+  template on `Search | Tree Services` (23633267649). **`utm_campaign` used to have to carry
+  `{campaignname}` rather than `{campaignid}`, and as of 2026-08-30 the opposite is true.**
+  `resolveCampaignIdByName` now matches `external_campaign_id` as well as `name`, so an id
+  resolves; and a NAME no longer identifies a campaign, because two of Arbor's are both called
+  `Search | Tree Services` (23633267649 and 22596055602) — see the duplicate-name entry below.
+  Names still resolve, so bookmarked URLs minted by the old template keep working. The
+  account-level default still
   holds the old `{adname}` string and can only be edited in the Google Ads UI (no API tool);
   it is shadowed for every live campaign, so it bites only a campaign created without its own.
+- **⚠️ TWO Google Ads campaigns are both named `Search | Tree Services`, and the DEAD one is
+  capturing every lead** (found and fixed 2026-08-30). `23633267649` is the live campaign —
+  $3,434 spend and **0 contacts** over the 14 days to 2026-08-30 — while `22596055602` has
+  spent **nothing** in that window and holds **42 contacts and $1,190 of revenue**. Lifetime it
+  is 12 leads on $38,821 against 51 leads on $4,663. Neither row is true, so Google Ads CPE and
+  ROAS at campaign grain are currently meaningless: the live row reads "no rev yet" and the dead
+  row reads "organic".
+  - The cause is that `resolveCampaignIdByName` matches `campaigns.name` and takes `limit(1)`,
+    and the `{campaignname}` template emits a name both rows share, so the tie is broken by
+    whatever order Postgres returns. The likely mechanism for the dead one winning consistently
+    is heap order: the spend sync UPDATEs the live campaign daily, which rewrites its row and
+    moves it later in the heap, while the campaign that stopped spending stops being rewritten
+    and stays early — so a campaign becomes MORE attractive to the matcher by dying.
+  - **⚠️ It could NOT have been fixed in the Ads UI, which is why the fix is in code.**
+    `22596055602` is already **`status: REMOVED`** in Google Ads, and its last impression was
+    **2026-03-09** — nearly six months before it captured 51 of 67 tracked leads. REMOVED is
+    terminal: the campaign cannot be re-enabled and cannot be renamed, so "rename the stale one
+    so the names differ" was never available. A rename would not have reached us anyway —
+    `ensureCampaigns` only touches campaigns present in the spend pull, and one that has stopped
+    spending produces no rows to be renamed by.
+  - **FIXED 2026-08-30 by resolving on the campaign id Google puts in the URL**
+    (`resolveCampaignId`, replacing `resolveCampaignIdByName`): `gad_campaignid` from
+    auto-tagging first, then `campaign_id` from the tracking template, then the name. The id is
+    on the URL because Google put it there, so it survives a template change and needs nothing
+    from the Ads UI. Ranked in SQL rather than left to the planner. A seed pass re-points any
+    lead whose own landing page names a different campaign — self-limiting, so it is a no-op
+    once corrected — and `/api/diagnostics` now warns on any two campaigns sharing a name,
+    because a cached URL carrying only `utm_campaign=<name>` still resolves by name.
+  - **Do NOT delete the `campaigns` row.** `ad_spend` (its $4,663.50 of real historical spend),
+    `roi_daily` and `attributions` all reference it, and `runAttribution` rebuilds 365 days of
+    those. Same rule as everywhere else here: tombstone, never hard delete.
 - **A promoted channel does NOT reclassify the leads already in `other`.** `classifySource`
   runs once, at ingest, and the key is frozen onto the lead — so adding a mapping fixes every
   future lead and none of the rows that prompted the mapping. `lib/sources/reclassify.ts`
@@ -705,10 +740,60 @@ re-argued rather than assumed.
   note that assumed so was wrong (corrected 2026-08-14 against the live GBP API):** each
   profile tags its own link `utm_campaign=edwardsville` / `ofallon`, and each has its own
   tracking number ((618) 368-2902 / (618) 350-4451, both labelled on `tracking_numbers`). So
-  GBP *is* separable per profile — calls via the number, web clicks via `utm_campaign`, both
-  landing on `leads.location`, which `roi_daily` already keys on. It also maps `utm_source=adwords` to `google/cpc` on the source
+  GBP *is* separable per profile — calls via the number, web clicks via `utm_campaign`. **That
+  split now lands on `leads.campaign_id`, NOT on `leads.location` (2026-08-30, Justin) — see
+  the GBP-listing entry below.** It also maps `utm_source=adwords` to `google/cpc` on the source
   alone: the mediums beside it are prose, and those URLs stay bookmarked and cached long after
   the templates that minted them are fixed.
+- **The two Google Business Profile listings are CAMPAIGNS, not locations** (2026-08-30,
+  Justin). One source `gbp`, two campaigns `Edwardsville` / `O'Fallon`, seeded on
+  `platform: "other"` — the unique index is (platform, external_campaign_id) and no spend
+  sync writes `other`, so they cannot collide with a synced row. Their `external_campaign_id`
+  holds each profile's `utm_campaign` token verbatim, which is what makes the web half work:
+  `/api/track` already resolved a campaign from the session's `utm_campaign`, and
+  `resolveCampaignIdByName` now matches the external id as well as the name (which separately
+  fixes the `{campaignid}` template trap, where a numeric `utm_campaign` used to resolve to
+  null and drop the campaign off the lead).
+  - **The reason is that `location` was making a false claim.** It reads as the customer's
+    city and for GBP it is not one: over the 12 GBP wins to 2026-08-30 the listing and the
+    service-address city **disagree half the time** — the Edwardsville listing produced work
+    in Granite City, Bethalto, Alton, Fairview Heights and Collinsville, the O'Fallon listing
+    in Swansea, and Fairview Heights is nearer O'Fallon than Edwardsville. $12,370 of $39,480
+    in GBP revenue was work in a city that is neither branch, labelled as though it were.
+    People search "tree service near me" and click whichever listing Google shows them.
+  - **Calls needed `tracking_numbers.static_campaign_id`** (migration 0045), the mirror of
+    `static_source_id`. A static number carries no DNI lease, so there was no `utm_campaign`
+    text to match and every call to a published number reached `roi_daily` with a null
+    campaign — and calls are the large majority of GBP contacts. `/voice` and `/sms` prefer it
+    over the lease, which cannot conflict since only a pooled number has one. Generalises: an
+    LSA line, a mailer or one yard sign can each be a campaign.
+  - **Every unknown-location GBP contact was a POOL-number call, and that is the sharpest
+    argument for the whole change.** All 13 (7 Edwardsville, 6 O'Fallon) carry the listing in
+    their landing page and were recorded with no location, because `/voice` reads location off
+    the tracking NUMBER even when a lease is present and a pool number has none.
+    `/api/track` never had this bug — `inferLocation` reads `utm_campaign` first. So on exactly
+    the rows where `location` fails, the campaign text is present and correct.
+  - **The seed backfills all of it and the rollup carries it.** Three passes in `seedDefaults`,
+    all fill-only-a-NULL so they are safe on every deploy and cannot overwrite a hand
+    correction: the listings' own numbers, leads whose listing was recorded as a location, and
+    leads whose listing is only in the landing-page tag. `runAttribution` then rebuilds a
+    365-day window of `roi_daily`/`attributions` from `leads`, and tracking began 2026-08-08,
+    so there is no history the rebuild cannot reach. `npm run verify:campaigns` asserts all of
+    it against a real Postgres, including that a 60-day-old backfilled lead reaches `roi_daily`.
+  - **`location` is being RETIRED in two stages, and stage 1 is done.** Stage 1 (2026-08-30)
+    stopped the surfaces reading it — `/sources` expands a source into its CAMPAIGNS, the
+    campaign view's "By location" table is gone, and `location` is no longer an `/estimates`
+    grouping — while leaving every column, writer and MCP filter in place, so it is one file
+    away from reverting. Stage 2 is the drop: seven tables, the enum, the `roi_daily` re-key
+    (`location` is in `roi_daily_key_uq`) plus a rebuild, `inferLocation`, the location args in
+    `/voice` and `/sms`, and the MCP contract (`roi_summary` grain, `list_estimates` filter).
+    **Do not do stage 2 until stage 1 has run for a few weeks** — the re-key is on the money
+    path and is the one change here worth not making twice.
+  - Two things that look like reasons to keep `location` and are not: it does NOT say where the
+    work is (`hcp_estimates.address->>'city'` and `zip` do, are already projected, and are
+    already filterable on `/estimates`), and `hcp_customers.location` / `hcp_estimates.location`
+    are **dead columns** — `lib/sync/hcp.ts` contains zero references to `location` and nothing
+    has ever written them on ~15.5k estimates.
 - **Pool capacity is set by HOLD TIME, not pool size** — `LEASE_MINUTES` ÷ numbers is how many
   visitors an hour the pool can serve, and the lease window is pushed forward on every pageview,
   so it is idle time after the LAST one. At 30 minutes the 5 numbers served ~7.5 visitors/hour
