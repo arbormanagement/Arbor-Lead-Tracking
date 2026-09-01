@@ -1109,3 +1109,38 @@ export const ListCustomersOutput = z.object({
   }),
   ...PagingFields,
 });
+
+/**
+ * The individual priced lines of one estimate or job.
+ *
+ * `id` is this app's own id (as returned by arbor_list_estimates / arbor_list_jobs),
+ * never HousecallPro's estimate number or job id.
+ */
+export const LineItemsInput = z.object({
+  kind: z.enum(["estimate", "job"]),
+  id: z.string().max(64),
+});
+
+export const LineItemsOutput = z.object({
+  kind: z.enum(["estimate", "job"]),
+  id: z.string(),
+  syncedAt: z.string().nullable(),
+  lines: z.array(
+    z.object({
+      name: z.string(),
+      kind: z.string(),
+      quantity: z.number().nullable(),
+      unitOfMeasure: z.string().nullable(),
+      unitPriceRaw: z.number().nullable(),
+      amountCents: z.number(),
+      discountRate: z.number().nullable(),
+      optionId: z.string().nullable(),
+    }),
+  ),
+  grossCents: z.number(),
+  discountCents: z.number(),
+  netCents: z.number(),
+  quotedHours: z.number().nullable(),
+  recordTotalCents: z.number(),
+  reconciles: z.boolean(),
+});

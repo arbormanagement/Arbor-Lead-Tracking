@@ -35,6 +35,7 @@
 import { eq, inArray } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { hcpEstimates, hcpJobs } from "@/lib/db/schema";
+import { getLineItems } from "@/lib/queries/line-items";
 import {
   discountCentsSql,
   lineItemReconcileSql,
@@ -386,9 +387,85 @@ async function main() {
   );
 }
 
+/**
+ * The per-record line-item surface, checked against the aggregate columns.
+ *
+ * Runs after main() so it can read the rows the sync passes left behind.
+ */
+async function lineItemDetailChecks() {
+  // ── The per-line figures must agree with the aggregate ones ────────────────
+  //
+  // `arbor_line_items` resolves each line's cash effect so a caller never has to touch
+  // the basis-points rule itself. That resolution and the column aggregates are two
+  // expressions over the same data, and two expressions drift. If they ever disagree
+  // the app shows a set of lines that visibly do not add up to the total printed above
+  // them — which is worse than showing no lines at all, because it discredits both.
+  //
+  // So: sum the lines, compare to the columns, on a record carrying BOTH discount
+  // kinds — the case where the two encodings have to be handled differently in the
+  // same record and the one most likely to break.
+  {
+    // Built here rather than reused from the derivations block, so this section does
+    // not depend on another one's leftovers. Gross 700,000; -10% of it = 70,000; then
+    // 50,000 fixed => net 580,000, which the record's own total is set to.
+    const ID = "lix_detail_both";
+    await db.delete(hcpJobs).where(eq(hcpJobs.id, ID));
+    await db.insert(hcpJobs).values({
+      id: ID, hcpJobId: ID, totalAmountCents: 580_000, lineItemsSyncedAt: new Date(),
+      lineItems: [
+        HOUR(10),
+        { kind: "percent discount", name: "Bundle", unit_price: 1000, quantity: 1, amount: 1000 },
+        { kind: "fixed discount", name: "Cash", unit_price: 50_000, quantity: 1, amount: 50_000 },
+      ],
+    });
+    const detail = await getLineItems("job", ID);
+    ok(detail != null, "line-item detail reads back for a hydrated job");
+    if (detail) {
+      const summed = detail.lines.reduce((n, l) => n + l.amountCents, 0);
+      ok(summed === detail.netCents, `per-line sum equals netCents (${summed} = ${detail.netCents})`);
+      ok(
+        detail.netCents === detail.grossCents - detail.discountCents,
+        `…and netCents is gross - discount (${detail.netCents} = ${detail.grossCents} - ${detail.discountCents})`,
+      );
+
+      const pct = detail.lines.find((l) => l.kind === "percent discount");
+      ok(pct != null, "the percent-discount line is present");
+      // The whole point of the tool: the raw value is basis points, the resolved one
+      // is cash, and a consumer reading the wrong field is out by 117x.
+      ok(pct?.unitPriceRaw === 1000, `…its raw unit_price is still the stored 1000 bp (${pct?.unitPriceRaw})`);
+      ok(pct?.discountRate === 10, `…surfaced as a rate of 10% (${pct?.discountRate})`);
+      ok(pct?.amountCents === -70_000, `…and resolved to -$700.00, NOT -$10.00 (${pct?.amountCents})`);
+
+      const fixed = detail.lines.find((l) => l.kind === "fixed discount");
+      ok(fixed?.amountCents === -50_000, `the fixed discount resolves to -$500.00 (${fixed?.amountCents})`);
+      ok(
+        detail.lines.every((l) => (l.kind.includes("discount") ? l.amountCents < 0 : l.amountCents >= 0)),
+        "every discount line is signed negative and nothing else is",
+      );
+      ok(detail.reconciles, "the record reconciles against its own total");
+      // Lines read like an invoice: what was charged, then what came off.
+      ok(
+        !detail.lines[0]!.kind.includes("discount") && detail.lines.at(-1)!.kind.includes("discount"),
+        "lines are ordered charges first, discounts last",
+      );
+    }
+    await db.delete(hcpJobs).where(eq(hcpJobs.id, ID));
+  }
+
+  // An unread record must say so rather than looking unpriced — the distinction the
+  // whole `lineItemsSyncedAt` design rests on.
+  {
+    const unread = await getLineItems("job", "lix_job_429");
+    ok(unread?.syncedAt == null, "a record whose lines were never read reports syncedAt null");
+    ok(unread?.lines.length === 0, "…with no lines, which is ABSENT and not zero");
+  }
+
+}
+
 main()
+  .then(lineItemDetailChecks)
   .then(() => {
-    console.log(failures === 0 ? "\nAll checks passed." : `\n${failures} check(s) FAILED.`);
+console.log(failures === 0 ? "\nAll checks passed." : `\n${failures} check(s) FAILED.`);
     process.exit(failures === 0 ? 0 : 1);
   })
   .catch((err) => {

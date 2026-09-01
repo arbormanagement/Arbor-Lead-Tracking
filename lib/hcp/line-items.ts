@@ -273,3 +273,43 @@ export const estimateLineItemsSql = (
     else ${arr(items)}
   end
 )`;
+
+/**
+ * The individual lines, each carrying what it ACTUALLY did to the price.
+ *
+ * This exists so nothing downstream has to re-implement the basis-points rule. A
+ * caller showing a customer the lines of a job needs a number per line, and the
+ * number on a `percent discount` line is 1000 meaning 10% — so any consumer left to
+ * do that conversion itself walks straight into the 117x error the comment at the
+ * top of this file is about. There must be exactly one implementation of it, and
+ * this is the same one the aggregates use, applied per line.
+ *
+ * Each element is the stored line plus:
+ *   `kind`           defaulted to labor, so consumers never see a null
+ *   `resolvedCents`  its real signed effect — negative on both discount kinds, and
+ *                    on a percent line the resolved cash value, never the raw 1000
+ *   `discountRate`   the percent itself (1000 bp -> 10), null on every other kind,
+ *                    so a UI can say "10% off" AND "-$1,172.50" rather than picking
+ *
+ * Ordered the way an invoice reads: what was charged, then what came off.
+ */
+export const lineItemsResolvedSql = (col: SQLWrapper): SQL => sql`(
+  select coalesce(jsonb_agg(
+    i || jsonb_build_object(
+      'kind', ${kind("i")},
+      'resolvedCents',
+        case
+          when ${kind("i")} = 'percent discount'
+            then -round(${grossCentsSql(col)}::numeric * coalesce((i->>'unit_price')::numeric, 0) / 10000)
+          when ${kind("i")} like '%discount%' then -${amount("i")}
+          else ${amount("i")}
+        end,
+      'discountRate',
+        case when ${kind("i")} = 'percent discount'
+          then coalesce((i->>'unit_price')::numeric, 0) / 100
+          else null end
+    )
+    order by (${kind("i")} like '%discount%'), coalesce(i->>'name', '')
+  ), '[]'::jsonb)
+  from jsonb_array_elements(${arr(col)}) i
+)`;
