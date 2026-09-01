@@ -5,6 +5,7 @@
   "description": "Internal lead-tracking & ROI app for Arbor Management (WhatConverts-style): native Twilio call tracking + DNI, web/form capture, HousecallPro revenue, ad-spend ROI.",
   "scripts": {
     "dev": "next dev",
+    "prebuild": "tsx scripts/build-track-snippet.ts",
     "build": "next build",
     "start": "next start -H ${HOST:-0.0.0.0}",
     "cron": "tsx scripts/cron.ts",
@@ -52,6 +53,7 @@
     "@types/react": "^19.0.7",
     "@types/react-dom": "^19.0.3",
     "drizzle-kit": "^0.30.2",
+    "esbuild": "^0.28.2",
     "eslint": "^9.18.0",
     "eslint-config-next": "^15.1.6",
     "typescript": "^5.7.3"
