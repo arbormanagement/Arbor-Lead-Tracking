@@ -8,6 +8,8 @@ import {
   DiagnosticsInput,
   EstimateDetailInput,
   EstimateDetailOutput,
+  LineItemsInput,
+  LineItemsOutput,
   FunnelOverviewInput,
   FunnelOverviewOutput,
   LandingPagesOutput,
@@ -87,6 +89,7 @@ import { SendError, sendThreadSms } from "@/lib/messaging/send";
 import { setThreadState } from "@/lib/messaging/thread";
 import { runSyncJob } from "@/lib/sync/run-job";
 import { getEstimateDetail, listEstimates } from "@/lib/queries/estimates";
+import { getLineItems } from "@/lib/queries/line-items";
 import { listCustomers, listInvoices, listJobs } from "@/lib/queries/hcp";
 import { getThreadDetail, listThreads } from "@/lib/queries/inbox";
 import { searchLeads } from "@/lib/queries/leads";
@@ -237,6 +240,38 @@ const handler = createMcpHandler(
           return fail(
             `No estimate with id '${id}'.`,
             "Ids come from arbor_list_estimates (the `id` field), not from HousecallPro's own estimate number. If you have a customer name or phone instead, find the estimate with arbor_list_estimates and read its id.",
+          );
+        }
+        return json(detail);
+      },
+    );
+
+    server.registerTool(
+      "arbor_line_items",
+      {
+        title: "Line items on one estimate or job",
+        description:
+          "The individual priced lines of ONE record — what is actually on it, which on a tree job is the list of trees and what each was priced at. " +
+          "Every other line-item field is a rollup (a count, a sum, a joined list of names); this is the only place the lines themselves are readable. " +
+          "⚠️ READ `amountCents`, NOT `unitPriceRaw`. A 'percent discount' line stores BASIS POINTS in unit_price — 1000 means 10%, not $10.00 — so reading the raw value " +
+          "reports a 10% discount on an $11,725 job as ten dollars, wrong by 117x. `amountCents` is the line's real signed effect with both discount kinds already converted " +
+          "onto one scale (negative on a discount), and `discountRate` carries the percentage itself so you can say both '10% off' and '-$1,172.50'. " +
+          "`unitPriceRaw` is kept only for reconciling against HousecallPro's own screen. " +
+          "A discount is a LINE and not a field, so the record's own total is ALREADY NET of it — `grossCents` is what it would have been. " +
+          "On a WON estimate the lines cover the APPROVED options only, matching its approved value; elsewhere they cover every option, which on a multi-option estimate are usually " +
+          "ALTERNATIVE bids for the same work, so do not read them as one job's contents. " +
+          "`syncedAt: null` means the lines have not been read from HousecallPro yet — NOT that the record is unpriced, which is an empty `lines` with a non-null syncedAt. " +
+          "`reconciles: false` means these lines disagree with the record's own total and the figures should not be quoted until that is understood.",
+        inputSchema: LineItemsInput.shape,
+        outputSchema: LineItemsOutput.shape,
+        annotations: { readOnlyHint: true },
+      },
+      async ({ kind, id }) => {
+        const detail = await getLineItems(kind, id);
+        if (!detail) {
+          return fail(
+            `No ${kind} with id '${id}'.`,
+            `Ids come from arbor_list_${kind}s (the \`id\` field) — not from HousecallPro's estimate number, invoice number or job id.`,
           );
         }
         return json(detail);
