@@ -1,5 +1,10 @@
 # Migrating Arbor-Automations into Arbor-Lead-Tracking
 
+**Status (2026-09-03): MIGRATION COMPLETE AND THE OLD INFRASTRUCTURE IS DELETED.**
+Railway project `9efa0d39-f17a-41a8-983c-d091acc7331c` was deleted 2026-09-03 on Justin's
+approval, a day later than scheduled because the Wednesday run aborted on its own pre-check
+(see the retirement note below). Nothing remains to cut over.
+
 **Status (2026-08-31): FUNCTIONAL CUTOVER COMPLETE — all four paths live on LT.**
 Slice 4 finished 2026-08-31 ~15:00 UTC: Justin repointed the HCP `invoice.paid` webhook
 (test POST verified landing on LT at 14:48), the old app redeployed with
@@ -33,18 +38,55 @@ template); the post-sync sweep had been masking it. **Slice 6 executed the same 
   recommending it. `sleep_application` was added to that tool for this
   (`Arbor-MCP-Server` #223) and the stale advice corrected. Verified in the deployed
   manifest: `sleepApplication: true`. Reversible in one call if anything is ever missed.
-  **Retirement is scheduled for Wednesday 2026-09-02 evening, and the pg_dump is WAIVED
-  (Justin, 2026-08-31).** Deleting Railway project `9efa0d39-…` removes the Express app,
-  its Postgres 16, that volume's daily backups and the `roundhouse.proxy.rlwy.net:38186`
-  proxy in one irreversible step, so what is not already in LT is gone for good. What that
-  costs is bounded and known: `review_requests` (478) and `catchup_texts` (255) are
-  imported and verified here, and the two tables the lean-import decision deliberately
-  skipped — `service_requests` and `call_summaries` — are the only history that dies with
-  it. Both are superseded going forward (website leads write straight to HCP; Chloe's
-  summaries land in `retell_call_summaries` plus the info@ mailbox), which is why the dump
-  stopped being worth its cost. The scheduled run re-checks that the app never woke, that
-  LT's four pipelines are healthy and that the imported rows are present BEFORE deleting,
-  and aborts to a report if any of that fails.
+  **RETIREMENT EXECUTED 2026-09-03** (approved by Justin that afternoon; the pg_dump was
+  WAIVED by him on 2026-08-31). Railway project `9efa0d39-f17a-41a8-983c-d091acc7331c` was
+  deleted with `railway_delete_project(confirm: true)`, taking the Express app, its
+  Postgres 16, that volume's daily backups and the `roundhouse.proxy.rlwy.net:38186` TCP
+  proxy in one irreversible step. What died with it is bounded and was known in advance:
+  `review_requests` (478) and `catchup_texts` (255) are imported and verified here, and the
+  two tables the lean-import decision deliberately skipped — `service_requests` and
+  `call_summaries` — are the only history that is gone. Both are superseded going forward
+  (website leads write straight to HCP; Chloe's summaries land in `retell_call_summaries`
+  plus the info@ mailbox), which is why the dump stopped being worth its cost.
+  **The retirement ran a day late, and deliberately so.** The scheduled Wednesday-evening
+  run ABORTED at its own pre-check: the review workflow had enrolled nobody in two days.
+  Root cause was a bug this migration introduced, found and fixed before anything was
+  deleted — see the `getJobById` entry below. Deletion waited until a real `invoice.paid`
+  was observed enrolling and sending unaided on 2026-09-03. That is the pre-check earning
+  its place: an irreversible step gated on live evidence rather than a calendar.
+  Verified either side of the delete: `automations.arbor-mgmt.com/track/review` and
+  `app.arbor-mgmt.com/track/review` both 302 to the real Google review page, and
+  `/api/webhook/retell_inbound` still 403s without its secret.
+  **Still manual for Justin: archiving the `arbormanagement/Arbor-Automations` repo**
+  (Settings → Danger Zone → Archive). Neither MCP exposes an archive tool and the session
+  proxy refuses GitHub write paths, so this cannot be done from a Claude session. The repo
+  is now dead code — nothing deploys from it.
+
+  **⚠️ THE BUG THE RETIREMENT PRE-CHECK CAUGHT — the most valuable thing in this document.**
+  `getJobById` in `lib/integrations/housecallpro-write.ts` did
+  `(await response.json()) as { customer_id?: string; job_type_name?: string }`. A real HCP
+  job payload carries NEITHER key at the top level: the customer is nested at `customer.id`
+  and the type at `job_fields.job_type.name`. **A TypeScript cast is an assertion, not a
+  check** — it compiled clean and read `undefined` forever. Every `invoice.paid` exited at
+  `No customer_id on job`, silently, for two days (7 customers paid and none was asked for a
+  review). A SECOND latent bug sat behind it: with `job_type_name` undefined, the
+  `!== "tree service"` filter passed *everything*, so fixing only the first would have
+  started enrolling Stump Service and maintenance jobs. Both fixed in PR #150, plus the
+  per-exit logging the old app had and the port had dropped — which is the actual reason
+  the failure was invisible rather than merely wrong. Verified live on 2026-09-03: one
+  customer's Stump Service invoice skipped and their Tree Service invoice enrolled, in the
+  same minute.
+  **Lesson worth carrying past this migration: when porting a payload-reading function,
+  normalize the shape and log every exit. A cast plus a silent early-return is a pipeline
+  that reports success while doing nothing.**
+
+  **Quiet-hours guard added 2026-09-03** (Justin): review sends are held outside Mon–Fri
+  9:00 AM–7:00 PM CT rather than skipped, so nothing is lost — the step drains when the
+  window reopens. Weekends are skipped entirely. `email_skip` is exempt (it contacts
+  nobody). `isWithinSendWindow` lives in `lib/reviews/sequence.ts` and reuses `toZoned`
+  from the office-hours module, so the review window and Chloe's office hours cannot drift
+  apart in their DST handling. 13 cases in `scripts/verify-reviews.ts` cover both
+  boundaries, both weekend days, the Monday reopen and two winter/DST dates.
 The earlier per-leg detail below stands as written on 2026-08-30 evening:
 - **Retell: DONE.** v116 published (base v115): `create_estimate` tool URL and the agent's
   `call_summary` webhook both point at `app.arbor-mgmt.com` with `?secret=`, draft verified
