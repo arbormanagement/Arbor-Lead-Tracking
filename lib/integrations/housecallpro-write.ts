@@ -242,7 +242,28 @@ export async function getJobById(jobId: string): Promise<{
     console.log(`[hcp-write] job fetch failed: ${response.status} for ${jobId}`);
     return null;
   }
-  return (await response.json()) as { id: string; customer_id?: string; job_type_name?: string; tags?: string[] };
+  // ⚠️ NORMALIZE, don't cast. A real HCP job carries NEITHER `customer_id` NOR
+  // `job_type_name` at the top level — the customer is nested at `customer.id`
+  // and the type at `job_fields.job_type.name`, both null on the flat keys. The
+  // previous `as {...}` asserted fields that never exist, which TypeScript
+  // cannot check against a runtime payload, so it compiled clean and every
+  // caller read undefined. That silently broke the review workflow for two days
+  // (invoice.paid → "No customer_id on job, skipping") and would ALSO have
+  // disabled the Tree-Service-only filter the moment the first bug was fixed.
+  const data = (await response.json()) as {
+    id: string;
+    customer_id?: string;
+    customer?: { id?: string };
+    job_type_name?: string;
+    job_fields?: { job_type?: { name?: string } };
+    tags?: string[];
+  };
+  return {
+    id: data.id,
+    customer_id: data.customer_id || data.customer?.id || undefined,
+    job_type_name: data.job_fields?.job_type?.name || data.job_type_name || undefined,
+    tags: data.tags,
+  };
 }
 
 export async function getCustomerById(customerId: string): Promise<
