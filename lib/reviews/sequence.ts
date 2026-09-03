@@ -4,6 +4,8 @@
  * change here changes what customers receive). Split from `workflow.ts` so the
  * verify script runs with no database or environment.
  */
+import { toZoned } from "@/lib/retell/office-hours";
+
 export const SMS_DELAY_MS = 1 * 60 * 1000;
 export const EMAIL_DELAY_MS = 24 * 60 * 60 * 1000 + SMS_DELAY_MS;
 export const FINAL_SMS_DELAY_MS = EMAIL_DELAY_MS + 2 * 24 * 60 * 60 * 1000;
@@ -60,3 +62,27 @@ export function followUpEmailHtml(customerName: string, trackingUrl: string): st
 </div>`;
 }
 
+
+/**
+ * Quiet hours: customer-facing sends are held to weekday business hours in
+ * America/Chicago (Justin, 2026-09-03). Nothing in this sequence looked at the
+ * clock before — the steps are pure elapsed time from enrollment, so a job
+ * marked paid at 7:11 PM texted the customer at 7:12 PM, and a Thursday
+ * enrollment put its final SMS on Sunday morning.
+ *
+ * The window is a HOLD, never a skip: a step that comes due outside it stays
+ * due, and the 5-minute cron sends it at the next open minute. Weekends are
+ * skipped entirely, so Friday evening through Sunday rolls to Monday 9am.
+ *
+ * `toZoned` is borrowed from the office-hours module rather than re-derived —
+ * one definition of "what time is it in Chicago", already covered by that
+ * module's own suite, and correct across DST.
+ */
+export const SEND_WINDOW_START_HOUR = 9; // 9:00 AM CT, inclusive
+export const SEND_WINDOW_END_HOUR = 19; // 7:00 PM CT, exclusive
+
+export function isWithinSendWindow(now: Date): boolean {
+  const { hour, weekday } = toZoned(now);
+  if (weekday === 0 || weekday === 6) return false; // Sun/Sat: no sends at all
+  return hour >= SEND_WINDOW_START_HOUR && hour < SEND_WINDOW_END_HOUR;
+}
