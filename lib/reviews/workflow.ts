@@ -22,7 +22,7 @@ import { reviewRequests } from "@/lib/db/schema";
 import { sendEmail, sendFailureAlert } from "@/lib/email/sendgrid";
 import { env } from "@/lib/env";
 import { sendReviewSms } from "@/lib/reviews/outreach";
-import { MAX_RETRIES, finalSmsBody, followUpEmailHtml, initialSmsBody, nextDueStep, type ReviewStep } from "@/lib/reviews/sequence";
+import { MAX_RETRIES, finalSmsBody, followUpEmailHtml, initialSmsBody, isWithinSendWindow, nextDueStep, type ReviewStep } from "@/lib/reviews/sequence";
 
 type ReviewRow = typeof reviewRequests.$inferSelect;
 
@@ -124,9 +124,9 @@ async function runStep(row: ReviewRow, step: ReviewStep): Promise<void> {
   }
 }
 
-export async function processReviewWorkflows(): Promise<{ enabled: boolean; pending: number; stepsRun: number }> {
+export async function processReviewWorkflows(): Promise<{ enabled: boolean; pending: number; stepsRun: number; held: number }> {
   if (env.REVIEW_WORKFLOW_ENABLED !== "true") {
-    return { enabled: false, pending: 0, stepsRun: 0 };
+    return { enabled: false, pending: 0, stepsRun: 0, held: 0 };
   }
 
   const pending = await db
@@ -135,10 +135,20 @@ export async function processReviewWorkflows(): Promise<{ enabled: boolean; pend
     .where(and(eq(reviewRequests.status, "pending")));
 
   const now = new Date();
+  // Quiet hours are a HOLD, not a skip: a step due outside the window stays due
+  // and goes out on the first tick inside it. `email_skip` is exempt because it
+  // contacts nobody — it only marks a row that has no email on file, and making
+  // it wait would push that row's final SMS out by the length of the hold.
+  const sendable = isWithinSendWindow(now);
   let stepsRun = 0;
+  let held = 0;
   for (const row of pending) {
     const step = nextDueStep(row, now);
     if (!step) continue;
+    if (!sendable && step !== "email_skip") {
+      held++;
+      continue;
+    }
     stepsRun++;
     try {
       await runStep(row, step);
@@ -147,5 +157,10 @@ export async function processReviewWorkflows(): Promise<{ enabled: boolean; pend
       console.log(`[reviews] step runner error for ${row.id}: ${error instanceof Error ? error.message : error}`);
     }
   }
-  return { enabled: true, pending: pending.length, stepsRun };
+  if (held > 0) {
+    // Say it out loud. A silently-held queue reads exactly like an empty one,
+    // which is the failure mode that hid the getJobById bug for two days.
+    console.log(`[reviews] ${held} step(s) held outside the send window (Mon-Fri 9am-7pm CT)`);
+  }
+  return { enabled: true, pending: pending.length, stepsRun, held };
 }

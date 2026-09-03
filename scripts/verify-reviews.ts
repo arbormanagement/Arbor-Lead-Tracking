@@ -6,7 +6,7 @@
  *   npm run verify:reviews
  */
 import { determineCounty, getReviewUrl, shouldSkipReview, MADISON_REVIEW_URL, STCLAIR_REVIEW_URL } from "@/lib/reviews/county";
-import { EMAIL_DELAY_MS, FINAL_SMS_DELAY_MS, SMS_DELAY_MS, finalSmsBody, followUpEmailHtml, initialSmsBody, nextDueStep } from "@/lib/reviews/sequence";
+import { EMAIL_DELAY_MS, FINAL_SMS_DELAY_MS, SMS_DELAY_MS, finalSmsBody, followUpEmailHtml, initialSmsBody, isWithinSendWindow, nextDueStep } from "@/lib/reviews/sequence";
 
 let failed = 0;
 function check(label: string, got: unknown, want: unknown) {
@@ -62,6 +62,26 @@ check("initial SMS carries the link", initialSmsBody("Jane Doe", url).endsWith(u
 check("final SMS opens with first name", finalSmsBody("Jane Doe", url).startsWith("Hey Jane, just following up one last time."), true);
 check("email links the tracking url", followUpEmailHtml("Jane Doe", url).includes(`<a href="${url}">`), true);
 check("email signs off as Justin", followUpEmailHtml("Jane Doe", url).includes("Justin Hays<br>Arbor Management"), true);
+
+// ── Quiet hours: weekday 9am-7pm CT, weekends never ─────────────────────────
+// Dates chosen deliberately: 2026-09-03 is a Thursday, 09-05 a Saturday,
+// 09-06 a Sunday, 09-07 a Monday. CT is UTC-5 in September (CDT).
+const ct = (iso: string) => new Date(iso);
+check("Thu 8:59am CT -> closed", isWithinSendWindow(ct("2026-09-03T13:59:00Z")), false);
+check("Thu 9:00am CT -> open", isWithinSendWindow(ct("2026-09-03T14:00:00Z")), true);
+check("Thu 12:30pm CT -> open", isWithinSendWindow(ct("2026-09-03T17:30:00Z")), true);
+check("Thu 6:59pm CT -> open", isWithinSendWindow(ct("2026-09-03T23:59:00Z")), true);
+check("Thu 7:00pm CT -> closed", isWithinSendWindow(ct("2026-09-04T00:00:00Z")), false);
+check("Thu 7:11pm CT (the real Weingartner case) -> closed", isWithinSendWindow(ct("2026-09-04T00:11:00Z")), false);
+check("Fri 2am CT -> closed", isWithinSendWindow(ct("2026-09-04T07:00:00Z")), false);
+check("Sat 10am CT -> closed (weekend)", isWithinSendWindow(ct("2026-09-05T15:00:00Z")), false);
+check("Sun 9am CT -> closed (weekend)", isWithinSendWindow(ct("2026-09-06T14:00:00Z")), false);
+check("Sun 6pm CT -> closed (weekend)", isWithinSendWindow(ct("2026-09-06T23:00:00Z")), false);
+check("Mon 9:00am CT -> open again", isWithinSendWindow(ct("2026-09-07T14:00:00Z")), true);
+// DST: the window must follow Chicago, not a fixed UTC offset. In January CT
+// is UTC-6, so 15:00Z is 9:00am CT and 14:00Z is 8:00am CT (closed).
+check("winter: Thu 8:00am CT -> closed (DST-aware)", isWithinSendWindow(ct("2027-01-07T14:00:00Z")), false);
+check("winter: Thu 9:00am CT -> open (DST-aware)", isWithinSendWindow(ct("2027-01-07T15:00:00Z")), true);
 
 console.log(failed === 0 ? "\nALL PASS" : `\n${failed} FAILURES`);
 process.exit(failed === 0 ? 0 : 1);
