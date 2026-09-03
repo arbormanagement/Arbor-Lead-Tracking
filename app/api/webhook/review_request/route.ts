@@ -43,17 +43,25 @@ export async function POST(req: Request) {
     const jobId: string = invoice.job_id || "";
     const invoiceId: string = String(invoice.invoice_number || invoice.id || "");
 
+    console.log(`[review_request] invoice=${invoiceId || "(none)"} job_id=${jobId || "(none)"}`);
+
     if (!jobId) {
+      console.log("[review_request] no job_id in payload, cannot look up customer");
       return Response.json({ message: "No job_id, skipping" });
     }
     // An empty invoice id would make (invoice_id, phone) collide across
     // unrelated customers on the unique index — refuse rather than enroll.
     if (!invoiceId) {
+      console.log("[review_request] no invoice id in payload, refusing to enroll");
       return Response.json({ message: "No invoice id, skipping" });
     }
 
     const job = await getJobById(jobId);
-    if (!job) return Response.json({ message: "Could not fetch job, skipping" });
+    if (!job) {
+      console.log(`[review_request] could not fetch job ${jobId} from HCP`);
+      return Response.json({ message: "Could not fetch job, skipping" });
+    }
+    console.log(`[review_request] job ${jobId}: type="${job.job_type_name ?? "(none)"}" customer=${job.customer_id ?? "(none)"}`);
 
     if (job.job_type_name && job.job_type_name.toLowerCase() !== "tree service") {
       console.log(`[review_request] skipping job type "${job.job_type_name}" — only Tree Service gets reviews`);
@@ -61,10 +69,16 @@ export async function POST(req: Request) {
     }
 
     const customerId = job.customer_id || "";
-    if (!customerId) return Response.json({ message: "No customer_id on job, skipping" });
+    if (!customerId) {
+      console.log(`[review_request] job ${jobId} has no customer_id, skipping`);
+      return Response.json({ message: "No customer_id on job, skipping" });
+    }
 
     const customer = await getCustomerById(customerId);
-    if (!customer) return Response.json({ message: "Could not fetch customer, skipping" });
+    if (!customer) {
+      console.log(`[review_request] could not fetch customer ${customerId} from HCP`);
+      return Response.json({ message: "Could not fetch customer, skipping" });
+    }
 
     if (shouldSkipReview(customer.tags ?? [], job.tags ?? [])) {
       console.log(`[review_request] skipping ${customer.first_name} ${customer.last_name} — tag filter`);
@@ -92,7 +106,10 @@ export async function POST(req: Request) {
       .from(reviewRequests)
       .where(and(eq(reviewRequests.invoiceId, invoiceId), eq(reviewRequests.customerPhoneE164, phone)))
       .limit(1);
-    if (dupe) return Response.json({ message: "Duplicate event, already processed" });
+    if (dupe) {
+      console.log(`[review_request] invoice ${invoiceId} + ${phone} already enrolled, skipping`);
+      return Response.json({ message: "Duplicate event, already processed" });
+    }
 
     const [recentPending] = await db
       .select({ id: reviewRequests.id })
@@ -107,6 +124,7 @@ export async function POST(req: Request) {
       .orderBy(desc(reviewRequests.createdAt))
       .limit(1);
     if (recentPending) {
+      console.log(`[review_request] ${phone} already has a pending request within 30 days, skipping`);
       return Response.json({ message: "Customer already has pending review request" });
     }
 
