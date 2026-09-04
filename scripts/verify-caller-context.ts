@@ -1,4 +1,4 @@
-import { normalizePhone, pickMatch, describeCaller, matchedPhoneField, chooseAddress, type LookupCustomer } from "@/lib/retell/caller-context";
+import { normalizePhone, pickMatch, describeCaller, matchedPhoneField, chooseAddress, callerContextVariables, UNKNOWN_CALLER, type LookupCustomer } from "@/lib/retell/caller-context";
 
 let failed = 0;
 function check(label: string, got: unknown, want: unknown) {
@@ -162,6 +162,27 @@ for (const [label, sent] of [["no-email", noEmailSentence], ["has-email", withEm
 // do_not_service invisibility survives this pass too.
 const flagged2 = describeCaller({ ...beau, do_not_service: true }, "6189240485").contextSentence;
 check("flagged still identical after rewrite", flagged2, noEmailSentence);
+
+// An unknown caller must OMIT caller_context so Retell's default fires. Sending
+// "" skips the default and hands the model nothing, which it fills by inference:
+// on 2026-09-04 that produced a create_estimate carrying Arbor's own office
+// address and info@ email for a caller who said "same address as before".
+check("unknown caller -> key omitted", callerContextVariables(UNKNOWN_CALLER.contextSentence), {});
+check("unknown caller -> no empty string", "caller_context" in callerContextVariables(""), false);
+check("ambiguous match is an unknown caller", pickMatch([beau, spouse], "6189240485").match, null);
+check(
+  "two duplicate records for ONE person still omit the key",
+  callerContextVariables(
+    pickMatch([beau, { ...beau, id: "cus_dup" }], "6189240485").match
+      ? "sentence"
+      : UNKNOWN_CALLER.contextSentence,
+  ),
+  {},
+);
+
+// A known caller must still send it, or the default would overwrite a real match.
+const knownSentence = describeCaller(beau, "6189240485").contextSentence;
+check("known caller -> key present", callerContextVariables(knownSentence).caller_context, knownSentence);
 
 console.log(failed === 0 ? "\nALL PASS" : `\n${failed} FAILURES`);
 process.exit(failed === 0 ? 0 : 1);

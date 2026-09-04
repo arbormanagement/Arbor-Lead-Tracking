@@ -1,5 +1,5 @@
 import { computeOfficeStatus, FAIL_SAFE_STATUS, TIME_ZONE } from "@/lib/retell/office-hours";
-import { UNKNOWN_CALLER } from "@/lib/retell/caller-context";
+import { UNKNOWN_CALLER, callerContextVariables } from "@/lib/retell/caller-context";
 import { lookupCaller } from "@/lib/retell/caller-lookup";
 import { webhookAuthorized } from "@/lib/intake/webhook-auth";
 
@@ -24,8 +24,9 @@ export const runtime = "nodejs";
  * a wrong "closed" still captures the lead) rather than returning nothing.
  *
  * The caller lookup runs AFTER the office answer is in hand and never throws;
- * every failure path yields UNKNOWN_CALLER, whose empty string leaves Chloe
- * behaving exactly as she does with no caller context at all.
+ * every failure path yields UNKNOWN_CALLER. An unknown caller OMITS
+ * `caller_context` rather than sending its empty string — see the note on the
+ * response below for why that distinction is load-bearing.
  */
 export async function POST(req: Request) {
   // The response describes real customers (name, address, email), so once the
@@ -68,12 +69,28 @@ export async function POST(req: Request) {
       ` ${Date.now() - startedAt}ms`,
   );
 
+  // ⚠️ An unknown caller must OMIT `caller_context`, never send "". Retell
+  // applies `default_dynamic_variables` only when a key is ABSENT; an explicit
+  // empty string renders as nothing and SKIPS the default. So v118's graded
+  // fail-safe — "We have no information on file for this caller … do not offer
+  // one" — only ever fired when this webhook itself failed, and never on an
+  // ordinary miss, which is the common case.
+  //
+  // Handing the model NOTHING is not neutral: it infers rather than asks. On
+  // 2026-09-04 a repeat caller whose number sits on two duplicate HCP records
+  // resolved to UNKNOWN, Chloe asked "the same address we've helped you with
+  // before?" with no record loaded, and on "yes" filled create_estimate with
+  // Arbor's OWN office address and info@arbor-mgmt.com
+  // (call_ce7664b8ca844a169f803fd99e8). That is the same failure the
+  // "state an absence POSITIVELY" rule in caller-context.ts already fixed one
+  // level down for a missing email — this is that rule applied to the whole
+  // caller. Omitting the key is what lets the already-graded default speak.
   return Response.json({
     call_inbound: {
       dynamic_variables: {
         office_status: status.statusSentence,
         office_next_open: status.nextOpenSentence,
-        caller_context: caller.contextSentence,
+        ...callerContextVariables(caller.contextSentence),
       },
     },
   });
@@ -98,10 +115,12 @@ export async function GET(req: Request) {
     holiday: status.holiday || null,
     caller_known: caller.known,
     caller_matches: caller.matchCount,
+    // Mirrors the POST exactly, omission included — a probe that always shows
+    // the key would hide the very thing this endpoint exists to verify.
     dynamic_variables: {
       office_status: status.statusSentence,
       office_next_open: status.nextOpenSentence,
-      caller_context: caller.contextSentence,
+      ...callerContextVariables(caller.contextSentence),
     },
   });
 }

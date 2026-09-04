@@ -93,6 +93,24 @@ export const UNKNOWN_CALLER: CallerContext = {
 };
 
 /**
+ * The dynamic-variable fragment for the caller, and the one place the
+ * omitted-vs-empty distinction is encoded.
+ *
+ * Retell applies `default_dynamic_variables` only when a key is ABSENT. An
+ * explicit "" renders as nothing and SKIPS the default, so sending the unknown
+ * caller's empty string silently discards the graded fail-safe sentence and
+ * hands the model nothing at all — which it fills in by inference rather than
+ * by asking. Omitting the key is what lets the default speak.
+ *
+ * This is the whole-caller form of the "state an absence POSITIVELY" rule in
+ * this file's header: the same failure that made the model invent an email
+ * address made it invent a service address, one level up.
+ */
+export function callerContextVariables(contextSentence: string): { caller_context?: string } {
+  return contextSentence ? { caller_context: contextSentence } : {};
+}
+
+/**
  * Every candidate is re-checked against all three of its phone fields. Under
  * the old live-HCP lookup this defended against HCP's fuzzy `q` search; here
  * the GIN overlap query already guarantees a phone match, but the re-check is
