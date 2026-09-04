@@ -7,6 +7,12 @@ export interface TouchParams {
   fbclid?: string | null;
   utmSource?: string | null;
   utmMedium?: string | null;
+  /**
+   * `utm_campaign`. Read for ONE purpose — recognising a Google Business Profile
+   * tag whose slots have been filled in the wrong order — and never to mint a
+   * channel from. See the `gbp` branch below.
+   */
+  utmCampaign?: string | null;
   referrer?: string | null;
   /** The page this touch happened on. Used only to recognize a same-site referrer
    *  (an internal navigation) so it isn't classified as a referral from ourselves. */
@@ -38,7 +44,8 @@ export function classifySource(p: TouchParams): Classification {
 
   const src = p.utmSource?.toLowerCase();
   const med = p.utmMedium?.toLowerCase();
-  if (src || med) {
+  const camp = p.utmCampaign?.toLowerCase();
+  if (src || med || camp) {
     // Match on a squashed form. The same channel reaches us spelled several ways
     // — `utm_source=google+my+business` arrives as "google my business" (a `+` in
     // a query string decodes to a space), and the same value is written elsewhere
@@ -46,6 +53,7 @@ export function classifySource(p: TouchParams): Classification {
     // whichever spelling the tag happened to use decided the source.
     const srcKey = squash(src);
     const medKey = squash(med);
+    const campKey = squash(camp);
 
     // Google Ads' own name for itself, and unambiguous: nothing organic tags
     // itself `adwords`. Deliberately a source-only test, because the mediums that
@@ -84,11 +92,24 @@ export function classifySource(p: TouchParams): Classification {
     // my business/organic` source sitting alongside `gbp` — the calls to the two
     // GBP tracking numbers landed on one and every click through to the website on
     // the other, so neither told you what the profiles were worth.
+    //
+    // The CAMPAIGN slot is read here too, and that is not belt-and-braces: both
+    // profiles' "Request a quote" buttons were tagged
+    // `?utm_campaign=gmb&utm_source=ofallon` from April to September 2026 — the two
+    // values transposed and no `utm_medium` at all — so the only unambiguous marker
+    // in the URL was sitting in the one slot this function did not look at. The tag
+    // is fixed at the profile end now; this is what would have caught it, and what
+    // catches the next one, since a hand-written tag is exactly where a transposition
+    // happens. It stays SUBORDINATE to the paid tests above: a click id or an
+    // explicit `medium=cpc` still wins, so a campaign token can never turn a paid
+    // click organic.
     if (
       srcKey.includes("gbp") ||
       srcKey.includes("googlemybusiness") ||
       srcKey.includes("googlebusiness") ||
-      medKey === "gbp"
+      srcKey === "gmb" ||
+      medKey === "gbp" ||
+      isGbpToken(campKey)
     ) {
       return { sourceKey: "gbp", medium: "organic" };
     }
@@ -111,7 +132,13 @@ export function classifySource(p: TouchParams): Classification {
     // runs: a third party can tag a link to your site however they like, and the
     // ROI page would grow a channel for it. The raw values survive on
     // `web_sessions`, so an `other` row can always be opened up.
-    return { sourceKey: UNMAPPED_SOURCE_KEY, medium: med ?? "referral" };
+    //
+    // A campaign tag ALONE is not a channel. It names the ASSET that was clicked,
+    // not where the visitor came from, so a URL carrying only `utm_campaign` falls
+    // through to the referrer below — which can still identify the visit — rather
+    // than being buried in `other`. Only a source or a medium is a claim about the
+    // channel itself, and only that makes a visit unmapped.
+    if (src || med) return { sourceKey: UNMAPPED_SOURCE_KEY, medium: med ?? "referral" };
   }
 
   if (p.referrer) {
@@ -143,6 +170,18 @@ export function classifySource(p: TouchParams): Classification {
  */
 function squash(v?: string | null): string {
   return (v ?? "").replace(/[^a-z0-9]/g, "");
+}
+
+/**
+ * Is this squashed utm value one of the names a Google Business Profile goes by?
+ *
+ * Matched EXACTLY, where the source-side test above uses `includes`, because this is
+ * applied to `utm_campaign` — a slot whose normal contents are a listing token or an
+ * ad campaign name. A substring test there would hand any campaign that happened to
+ * contain "gbp" to the profiles.
+ */
+function isGbpToken(v: string): boolean {
+  return v === "gbp" || v === "gmb" || v === "googlemybusiness" || v === "googlebusiness";
 }
 
 function hostOf(url: string): string | null {
