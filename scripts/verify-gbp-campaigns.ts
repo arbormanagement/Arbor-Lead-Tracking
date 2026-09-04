@@ -26,6 +26,7 @@ import { db } from "@/lib/db/client";
 import { adSpend, attributions, calls, campaigns, leads, roiDaily, sources, trackingNumbers, visitors, webSessions } from "@/lib/db/schema";
 import { seedDefaults } from "@/lib/db/seed-data";
 import { campaignIdFromUrl, resolveCampaignId, SPEND_REPULL_DAYS } from "@/lib/campaigns";
+import { classifySource } from "@/lib/attribution/classify";
 import { resolveInboundAttribution } from "@/lib/twilio/inbound";
 import { applyNumberPatch } from "@/lib/twilio/numbers";
 import { listTrackingNumbers } from "@/lib/queries/numbers";
@@ -171,6 +172,53 @@ async function main() {
   await seedDefaults(db);
   const [decoyAfter] = await db.select().from(leads).where(eq(leads.id, decoy.id));
   ok(decoyAfter.campaignId === null, "utm_campaign=ofallon-print-2026 does NOT match ofallon");
+
+  // ---------------------------------------------------------------------------
+  // The TRANSPOSED tag: `?utm_campaign=gmb&utm_source=ofallon`, which is what both
+  // profiles' "Request a quote" buttons carried from April to September 2026 — the
+  // listing in the source slot, the channel in the campaign slot, no utm_medium at
+  // all. It classified as `other` with a null campaign, so a $7,705 estimate on
+  // 2026-09-01 reached /sources as "Other / Unmapped". The buttons are fixed; these
+  // are the checks that the cached and bookmarked copies of them still land right.
+  // ---------------------------------------------------------------------------
+  ok(classifySource({ utmCampaign: "gmb", utmSource: "ofallon" }).sourceKey === "gbp",
+    "transposed GBP tag classifies as gbp, not other");
+  ok(classifySource({ utmSource: "gmb", utmMedium: "organic" }).sourceKey === "gbp",
+    "`gmb` in the source slot is gbp too — the abbreviation used to miss");
+  ok(classifySource({ utmSource: "google+my+business", utmMedium: "organic", utmCampaign: "ofallon" }).sourceKey === "gbp",
+    "the CORRECT tag is unaffected");
+  // The paid tests sit in front of this, and must stay there: a campaign token can
+  // never be allowed to turn a click that carries ad evidence into organic traffic.
+  ok(classifySource({ gclid: "abc", utmCampaign: "gmb" }).sourceKey === "google/cpc",
+    "a gclid still wins over a gbp campaign token");
+  ok(classifySource({ utmSource: "google", utmMedium: "cpc", utmCampaign: "gmb" }).sourceKey === "google/cpc",
+    "an explicit medium=cpc still wins over a gbp campaign token");
+  // A campaign slot alone says which ASSET was clicked, not where the visitor came
+  // from — so it must not bury an otherwise-identifiable visit in `other`.
+  ok(classifySource({ utmCampaign: "spring-sale", referrer: "https://google.com/" }).sourceKey === "organic/seo",
+    "an unrecognised campaign alone falls through to the referrer, not into other");
+  ok(classifySource({ utmSource: "mystery" }).sourceKey === "other",
+    "…while a source we do not know is still unmapped");
+
+  const [transposed] = await db.insert(leads).values({
+    type: "call", sourceId: gbp.id, occurredAt: new Date(), phoneE164: FIXTURES[3],
+    landingPage: "https://arbor-mgmt.com/get-a-quote?utm_campaign=gmb&utm_source=ofallon",
+  }).returning();
+  // The same delimiter rule has to hold in the source slot as in the campaign slot.
+  const [srcDecoy] = await db.insert(leads).values({
+    type: "call", sourceId: gbp.id, occurredAt: new Date(), phoneE164: FIXTURES[0],
+    landingPage: "https://arbor-mgmt.com/?utm_source=ofallon-yardsign",
+  }).returning();
+  await seedDefaults(db);
+  const [transposedAfter] = await db.select().from(leads).where(eq(leads.id, transposed.id));
+  ok(transposedAfter.campaignId === ofa.id, "listing recovered from the utm_SOURCE slot when the tag was transposed");
+  const [srcDecoyAfter] = await db.select().from(leads).where(eq(leads.id, srcDecoy.id));
+  ok(srcDecoyAfter.campaignId === null, "utm_source=ofallon-yardsign does NOT match ofallon");
+  // Fill-only-a-NULL survives the widened match: a listing already decided stays put.
+  await db.update(leads).set({ campaignId: edw.id }).where(eq(leads.id, transposed.id));
+  await seedDefaults(db);
+  const [transposedHeld] = await db.select().from(leads).where(eq(leads.id, transposed.id));
+  ok(transposedHeld.campaignId === edw.id, "…and a campaign already set is never overwritten by either slot");
 
   // Does the backfill actually REACH the dashboards? /sources reads roi_daily, not
   // leads, so a backfilled lead is invisible until the rollup is rebuilt over its

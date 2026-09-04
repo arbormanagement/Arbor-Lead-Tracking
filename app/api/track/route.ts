@@ -116,6 +116,7 @@ export async function POST(req: Request) {
     fbclid: click.fbclid,
     utmSource: utm.source,
     utmMedium: utm.medium,
+    utmCampaign: utm.campaign,
     referrer,
     currentUrl: form?.pageUrl ?? url,
   });

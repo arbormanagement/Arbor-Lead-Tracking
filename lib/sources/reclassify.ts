@@ -44,14 +44,20 @@ export interface ReclassifyResult {
   note: string;
 }
 
-/** utm_source / utm_medium off a stored landing-page URL, for leads with no session. */
-function utmFromUrl(landingPage: string | null): { source: string | null; medium: string | null } {
-  if (!landingPage) return { source: null, medium: null };
+/** utm_source / utm_medium / utm_campaign off a stored landing-page URL, for leads with no session. */
+function utmFromUrl(
+  landingPage: string | null,
+): { source: string | null; medium: string | null; campaign: string | null } {
+  if (!landingPage) return { source: null, medium: null, campaign: null };
   try {
     const q = new URL(landingPage).searchParams;
-    return { source: q.get("utm_source"), medium: q.get("utm_medium") };
+    return {
+      source: q.get("utm_source"),
+      medium: q.get("utm_medium"),
+      campaign: q.get("utm_campaign"),
+    };
   } catch {
-    return { source: null, medium: null };
+    return { source: null, medium: null, campaign: null };
   }
 }
 
@@ -102,6 +108,7 @@ export async function reclassifyUnmappedSources({
       landingPage: leads.landingPage,
       sessionSource: webSessions.source,
       sessionMedium: webSessions.medium,
+      sessionCampaign: webSessions.campaign,
       sessionReferrer: webSessions.referrer,
       sessionLanding: webSessions.landingPage,
     })
@@ -120,6 +127,11 @@ export async function reclassifyUnmappedSources({
     const cls = classifySource({
       utmSource: r.sessionSource ?? fallback.source,
       utmMedium: r.sessionMedium ?? fallback.medium,
+      // `web_sessions.campaign` is the RAW `utm_campaign`, unlike `.source`, which
+      // holds an already-classified key — so this one field reads the same whether
+      // the lead has a session or only a stored landing page, and a lead whose tag
+      // is legible only from the campaign slot is reachable either way.
+      utmCampaign: r.sessionCampaign ?? fallback.campaign,
       referrer: r.sessionReferrer,
       currentUrl: r.sessionLanding ?? r.landingPage,
     });

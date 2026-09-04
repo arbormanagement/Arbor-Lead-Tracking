@@ -18,6 +18,7 @@ const PRESETS = [
   { label: "Google Ads", qs: "gclid=test-gclid&utm_source=google&utm_medium=cpc&utm_campaign=tree-removal" },
   { label: "Facebook", qs: "fbclid=test-fbclid&utm_source=facebook&utm_medium=paid" },
   { label: "GBP", qs: "utm_source=gbp&utm_medium=organic" },
+  { label: "GBP (transposed tag)", qs: "utm_campaign=gmb&utm_source=ofallon" },
   { label: "Direct", qs: "" },
 ];
 
@@ -31,6 +32,7 @@ export default async function DniTestPage({ searchParams }: { searchParams: Prom
     fbclid: one(sp.fbclid),
     utmSource: one(sp.utm_source),
     utmMedium: one(sp.utm_medium),
+    utmCampaign: one(sp.utm_campaign),
   };
   const cls = classifySource(params);
 
@@ -39,7 +41,7 @@ export default async function DniTestPage({ searchParams }: { searchParams: Prom
     ["fbclid", params.fbclid],
     ["utm_source", params.utmSource],
     ["utm_medium", params.utmMedium],
-    ["utm_campaign", one(sp.utm_campaign)],
+    ["utm_campaign", params.utmCampaign],
   ].filter(([, v]) => v) as [string, string][];
 
   return (

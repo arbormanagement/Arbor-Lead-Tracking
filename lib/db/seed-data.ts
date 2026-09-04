@@ -188,6 +188,17 @@ export async function seedDefaults(db: Db, onRow?: (label: string) => void) {
     //    migration 0043, on the way to dropping it.
     //    Matched on the tag with its delimiter so `ofallon` cannot also match a
     //    hypothetical `ofallon-something`.
+    //
+    //    The listing token is looked for in the utm_SOURCE slot as well, because a
+    //    tag written by hand is a tag that can be written in the wrong order: both
+    //    profiles' "Request a quote" buttons carried
+    //    `?utm_campaign=gmb&utm_source=ofallon` from April to September 2026, i.e.
+    //    the listing in the source slot and the channel in the campaign slot. Those
+    //    URLs are cached, bookmarked and shared long after the buttons were fixed.
+    //    Reading both slots is safe HERE in a way it would not be generally, because
+    //    this pass is already scoped to leads on the `gbp` source with no campaign:
+    //    the only question left is WHICH listing, and either slot naming one is a
+    //    better answer than null.
     await db
       .update(schema.leads)
       .set({ campaignId: row.id })
@@ -195,7 +206,7 @@ export async function seedDefaults(db: Db, onRow?: (label: string) => void) {
         and(
           eq(schema.leads.sourceId, src.id),
           isNull(schema.leads.campaignId),
-          sql`${schema.leads.landingPage} ~ ${`[?&]utm_campaign=${c.externalCampaignId}(&|$)`}`,
+          sql`${schema.leads.landingPage} ~ ${`[?&]utm_(campaign|source)=${c.externalCampaignId}(&|$)`}`,
         ),
       );
   }

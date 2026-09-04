@@ -884,6 +884,27 @@ re-argued rather than assumed.
     pass regardless, so the merge only has to be right behind that. Verified end to end
     against a real Postgres — full migration history, seeded duplicate groups, then 0046 —
     plus all 48 `npm run verify:campaigns` checks on the post-drop schema.
+  - **⚠️ A GBP listing has MORE THAN ONE link, and the quote button was tagged
+    backwards for five months** (found and fixed 2026-09-04). Each profile's *website*
+    link was correct, but its **place action link** (the "Request a quote" /
+    `APPOINTMENT` button) carried `?utm_campaign=gmb&utm_source=<listing>` — the two
+    values transposed, no `utm_medium` at all — on BOTH listings, created April 2026.
+    `classifySource` read only source and medium, so `ofallon` in the source slot
+    matched nothing and the visit landed in `other` with a null campaign, while the
+    one unambiguous marker (`gmb`) sat in the slot nothing looked at. Cost: a $7,705
+    estimate on 2026-09-01 reading as "Other / Unmapped". It hid because the website
+    link is the high-traffic one — 26 of 27 GBP contacts that week classified fine.
+    Both links now match the website tagging exactly.
+    - Fixed at both ends: the profiles via `google_business_*_place_action_link`
+      (the API has no update — it is delete + create), and in code, where
+      `classifySource` now reads `utm_campaign` for the GBP markers and knows the
+      `gmb` abbreviation, and the seed's listing backfill matches the token in
+      `utm_source` as well as `utm_campaign`. Both stay SUBORDINATE to the paid
+      tests, so a campaign token can never turn a gclid click organic.
+    - **Audit every link slot on a listing, not just `websiteUri`** —
+      `google_business_list_place_action_links` per location is the check, and it
+      is not covered by anything automatic. Nothing in the app watches the `other`
+      bucket either, which is why this surfaced in September by eye.
   - `location` STAYS on `campaigns`, `tracking_numbers` and `pools`. There it is
     CONFIGURATION — what an asset represents — not an inference about a person.
   - Two things that looked like reasons to keep it and were not: it does NOT say where the
