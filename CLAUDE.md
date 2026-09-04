@@ -570,6 +570,26 @@ re-argued rather than assumed.
 
 ## Watch-outs
 - Twilio webhook idempotency on `twilio_call_sid`; Meta on `fb_leadgen_id`.
+- **⚠️ A TypeScript cast on a fetched payload is an ASSERTION, not a check — and it cost two
+  days of review requests (2026-09-03).** `getJobById` in
+  `lib/integrations/housecallpro-write.ts` did `(await res.json()) as { customer_id?; job_type_name? }`.
+  A real HCP job carries NEITHER key at the top level: the customer is at `customer.id`, the
+  type at `job_fields.job_type.name`. It compiled clean and read `undefined` forever, so every
+  `invoice.paid` exited at "no customer_id" and 7 customers who paid were never asked for a
+  review. **NORMALIZE a fetched payload into the shape you promise; never cast into it.**
+  - Two things made it invisible rather than merely wrong, and both generalize. **(a) The port
+    dropped the old app's per-exit logging**, so a webhook that returned 200 and did nothing
+    looked identical to one with no work to do — every early return on an ingest route needs a
+    log line naming which gate it hit. **(b) A second bug hid behind the first**: with
+    `job_type_name` undefined, the `!== "tree service"` filter passed *everything*, so fixing
+    only the visible half would have started enrolling Stump Service and maintenance jobs.
+    When a field reads undefined, check every predicate that reads it before shipping the fix.
+- **Review sends are held, not skipped, outside Mon–Fri 9am–7pm CT** (`isWithinSendWindow`,
+  `lib/reviews/sequence.ts`, added 2026-09-03 at Justin's request). A held step is retried when
+  the window reopens, so nothing is lost — `workflow.ts` returns `held` alongside `stepsRun`, and
+  a run that reports `held > 0` overnight is correct behavior, not a stall. `email_skip` is
+  exempt because it contacts nobody. It reuses `toZoned` from the office-hours module rather than
+  its own DST math, so the review window and Chloe's office hours cannot drift apart.
 - IL/MO mixed-consent recording → recording notice is played to callers.
 - E.164 normalization is load-bearing for lead↔HCP matching/ROI.
 - Scheduled jobs are fire-and-log: a failed run is logged and retried on the next tick, so
