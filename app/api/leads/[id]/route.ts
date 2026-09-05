@@ -42,7 +42,6 @@ export async function DELETE(req: Request, { params }: { params: Promise<{ id: s
     .select({
       id: leads.id,
       type: leads.type,
-      status: leads.status,
       name: leads.name,
       hcpCustomerId: leads.hcpCustomerId,
       hcpEstimateId: leads.hcpEstimateId,
@@ -95,7 +94,7 @@ export async function DELETE(req: Request, { params }: { params: Promise<{ id: s
 
   return Response.json({
     ok: true,
-    deleted: { id: lead.id, type: lead.type, status: lead.status, name: lead.name },
+    deleted: { id: lead.id, type: lead.type, name: lead.name },
     forced: force,
   });
 }

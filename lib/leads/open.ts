@@ -1,19 +1,15 @@
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import { db } from "@/lib/db/client";
-import { leads } from "@/lib/db/schema";
-
-/**
- * Stages a lead can still be sitting in. Anything past these is finished work.
- *
- * Extracted from the SMS webhook, which was the only path applying the rule. It is
- * the app's stated model — "one thread, many leads": a follow-up joins the enquiry
- * already in flight, while contact arriving after the last one was won or lost is
- * genuinely new business and gets its own lead, so repeat customers still count.
- */
-export const OPEN_STAGES = ["new", "working", "qualified", "quoted"] as const;
+import { hcpEstimates, leads } from "@/lib/db/schema";
+import { isOpenLead } from "@/lib/leads/stage";
 
 /**
  * The still-open lead on this conversation, if there is one.
+ *
+ * "One thread, many leads": a follow-up joins the enquiry already in flight, while
+ * contact arriving after the last one was won, lost or cancelled is genuinely new
+ * business and gets its own lead, so repeat customers still count. Open is derived
+ * from the estimate (`isOpenLead`), never from a stored stage.
  *
  * Web forms and Meta lead forms did not consult this and minted a lead per
  * submission, which is how one person became two rows eighteen seconds apart
@@ -35,7 +31,8 @@ export async function findOpenLead(conversationId: string | null | undefined): P
   const [open] = await db
     .select({ id: leads.id })
     .from(leads)
-    .where(and(eq(leads.conversationId, conversationId), inArray(leads.status, [...OPEN_STAGES])))
+    .leftJoin(hcpEstimates, eq(hcpEstimates.id, leads.hcpEstimateId))
+    .where(and(eq(leads.conversationId, conversationId), isOpenLead))
     .orderBy(desc(leads.occurredAt))
     .limit(1);
   return open?.id ?? null;

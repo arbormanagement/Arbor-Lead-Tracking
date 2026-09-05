@@ -462,8 +462,6 @@ const handler = createMcpHandler(
             disposition: l.disposition,
             dispositionManual: l.dispositionManual,
             dispositionReason: l.dispositionReason,
-            isLead: l.isLead,
-            leadReason: l.leadReason,
             quoteValueCents: l.quoteValueCents,
             salesValueCents: l.salesValueCents,
           })),

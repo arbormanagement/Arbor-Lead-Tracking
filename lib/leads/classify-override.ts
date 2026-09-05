@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { calls, leads } from "@/lib/db/schema";
 import { classifyCallLead } from "@/lib/transcription/classify-lead";
@@ -16,10 +16,6 @@ export type LeadDisposition = (typeof leads.$inferSelect)["disposition"];
  * classifier is re-run on the call transcript so a stale manual verdict does not
  * linger, or the row goes back to pending when there is nothing to classify.
  *
- * `is_lead` is dual-written for one deploy cycle (true ⇔ requested_work,
- * false ⇔ any negative value) so nothing reading the old column changes behaviour
- * before it is dropped.
- *
  * Returns null when the lead does not exist.
  */
 export async function setLeadDisposition(
@@ -34,10 +30,7 @@ export async function setLeadDisposition(
         disposition,
         dispositionManual: true,
         dispositionReason: reason ?? `manual: ${disposition.replace("_", " ")}`,
-        isLead: disposition === "requested_work",
-        isLeadManual: true,
-        leadReason: reason ?? `manual: ${disposition.replace("_", " ")}`,
-        ...(disposition === "spam" ? { isSpam: true, status: "spam" as const } : {}),
+        ...(disposition === "spam" ? { isSpam: true } : {}),
       })
       .where(eq(leads.id, id))
       .returning({
@@ -53,19 +46,18 @@ export async function setLeadDisposition(
   // Same call pattern as lib/sync/transcribe.ts (spam floors the verdict).
   const [call] = await db.select({ transcript: calls.transcript }).from(calls).where(eq(calls.leadId, id)).limit(1);
 
-  let auto: { disposition: LeadDisposition; dispositionReason: string; isLead: boolean | null; leadReason: string };
+  let auto: { disposition: LeadDisposition; dispositionReason: string };
   if (call?.transcript) {
     const cls = await classifyCallLead(call.transcript);
     const spam = cls.spamScore >= 0.5; // mirrors SPAM_THRESHOLD in lib/sync/transcribe.ts
-    const d: LeadDisposition = spam ? "spam" : cls.isLead ? "requested_work" : "not_business";
-    auto = { disposition: d, dispositionReason: cls.reason, isLead: spam ? false : cls.isLead, leadReason: cls.reason };
+    auto = { disposition: spam ? "spam" : cls.isLead ? "requested_work" : "not_business", dispositionReason: cls.reason };
   } else {
-    auto = { disposition: null, dispositionReason: "auto (override cleared)", isLead: null, leadReason: "auto (override cleared)" };
+    auto = { disposition: null, dispositionReason: "auto (override cleared)" };
   }
 
   const [row] = await db
     .update(leads)
-    .set({ dispositionManual: false, isLeadManual: false, ...auto })
+    .set({ dispositionManual: false, ...auto })
     .where(eq(leads.id, id))
     .returning({
       id: leads.id,
@@ -95,4 +87,4 @@ export async function setLeadClassification(
 }
 
 /** The guard every automatic classifier applies: a human decision is never overwritten. */
-export const notManuallyDispositioned = and(eq(leads.isLeadManual, false), eq(leads.dispositionManual, false));
+export const notManuallyDispositioned = eq(leads.dispositionManual, false);

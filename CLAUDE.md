@@ -801,6 +801,22 @@ re-argued rather than assumed.
   - **Do NOT delete the `campaigns` row.** `ad_spend` (its $4,663.50 of real historical spend),
     `roi_daily` and `attributions` all reference it, and `runAttribution` rebuilds 365 days of
     those. Same rule as everywhere else here: tombstone, never hard delete.
+- **An enquiry's stage and value are DERIVED from its estimate, never stored (2026-09-05,
+  migration 0053).** `leads.status`, `quote_value_cents` and `sales_value_cents` were the linked
+  estimate's lifecycle copied onto the lead by the attribution sync — the WhatConverts-shaped
+  model, where the lead row was the only place a value could live — kept in step by a sync,
+  exactly the second-copy shape `location` was retired for. `lib/leads/stage.ts` now holds
+  `leadStageSql` (the old vocabulary: new · qualified · quoted · won · lost · cancelled · spam,
+  from `hcp_estimates.outcome` / `status` / amounts), `leadQuoteCentsSql`, `leadSalesCentsSql`
+  and `isOpenLead`, each composing only into a query that left-joins `hcp_estimates` on
+  `leads.hcp_estimate_id` — same rule as `lib/estimates/countable.ts`. Readers moved: the
+  conversion exporter (its `won` value is the estimate's approved amount, read directly), the
+  SMS in-flight join (`findOpenLead`, now the one implementation), `/sources` breakdowns,
+  `list_leads` / `get_thread`, and both detail pages. `roi_daily` never read the columns. The
+  one thing `sales_value_cents` held that nothing else did — the customer-window rule's
+  accumulation of a repeat estimate's revenue onto the prior lead — never reached Google (an
+  export row reaches `sent` once) and the rollup already credits it by contact.
+  `npm run verify:lead-stage` proves the derivation for every estimate state.
 - **`disposition` replaced `is_lead` (2026-09-05, migration 0052; the old columns are dual-written
   for one deploy cycle and then dropped).** The ESTIMATE is the ground truth for "was this
   business" — every metric counts estimates — and what an estimate cannot say is NO. `disposition`

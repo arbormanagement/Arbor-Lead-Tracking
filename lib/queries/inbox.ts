@@ -1,4 +1,6 @@
-import { and, asc, desc, eq, gte, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, getTableColumns, gte, sql, type SQL } from "drizzle-orm";
+import { hcpEstimates } from "@/lib/db/schema";
+import { leadQuoteCentsSql, leadSalesCentsSql, leadStageSql } from "@/lib/leads/stage";
 import { db } from "@/lib/db/client";
 import {
   calls,
@@ -145,7 +147,7 @@ export interface ThreadDetail {
   forms: Array<typeof formSubmissions.$inferSelect>;
   facebookLeads: Array<typeof facebookLeads.$inferSelect>;
   /** Newest first. One thread can hold several enquiries over time. */
-  leads: Array<typeof leads.$inferSelect>;
+  leads: Array<typeof leads.$inferSelect & { status: string; quoteValueCents: number | null; salesValueCents: number | null }>;
 }
 
 /** One person's whole history with us. Null when the thread does not exist. */
@@ -184,7 +186,12 @@ export async function getThreadDetail(id: string): Promise<ThreadDetail | null> 
     db.select().from(messages).where(eq(messages.conversationId, row.thread.id)).orderBy(asc(messages.occurredAt)),
     db.select().from(formSubmissions).where(eq(formSubmissions.conversationId, row.thread.id)),
     db.select().from(facebookLeads).where(eq(facebookLeads.conversationId, row.thread.id)),
-    db.select().from(leads).where(eq(leads.conversationId, row.thread.id)).orderBy(desc(leads.occurredAt)),
+    db
+      .select({ ...getTableColumns(leads), status: leadStageSql, quoteValueCents: leadQuoteCentsSql, salesValueCents: leadSalesCentsSql })
+      .from(leads)
+      .leftJoin(hcpEstimates, eq(hcpEstimates.id, leads.hcpEstimateId))
+      .where(eq(leads.conversationId, row.thread.id))
+      .orderBy(desc(leads.occurredAt)),
   ]);
 
   return {

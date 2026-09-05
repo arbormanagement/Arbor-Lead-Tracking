@@ -34,6 +34,7 @@ import { runLeadCleanup } from "@/lib/leads/cleanup";
 import { setIncludedFormIds } from "@/lib/sync/facebook-leads";
 import { setLeadAttribution } from "@/lib/leads/attribution";
 import { setLeadClassification, setLeadDisposition } from "@/lib/leads/classify-override";
+import { searchLeads } from "@/lib/queries/leads";
 import { campaigns } from "@/lib/db/schema";
 
 let failures = 0;
@@ -77,11 +78,16 @@ async function main() {
   const missed = await setLeadDisposition(dLead.id, "missed", "verify: nobody called back");
   ok(missed?.disposition === "missed" && missed.dispositionManual && missed.dispositionReason === "verify: nobody called back",
     "setLeadDisposition sets the value, the override and the reason");
-  const [dRow] = await db.select().from(leads).where(eq(leads.id, dLead.id));
-  ok(dRow.isLead === false && dRow.isLeadManual === true, "…and dual-writes is_lead for the one cycle it survives");
   const asSpam = await setLeadDisposition(dLead.id, "spam");
   const [spamRow] = await db.select().from(leads).where(eq(leads.id, dLead.id));
-  ok(asSpam?.disposition === "spam" && spamRow.isSpam === true && spamRow.status === "spam", "…spam also flags is_spam and the status");
+  ok(asSpam?.disposition === "spam" && spamRow.isSpam === true, "…spam also flags is_spam");
+  // The stage is DERIVED: no estimate → new; spam wins over everything; no column to drift.
+  const spamSearch = await searchLeads({ q: ATTR_PHONE, limit: 5 });
+  ok(spamSearch.rows.find((r) => r.id === dLead.id)?.status === "spam", "searchLeads reports a derived stage: spam");
+  await db.update(leads).set({ isSpam: false }).where(eq(leads.id, dLead.id));
+  const newSearch = await searchLeads({ q: ATTR_PHONE, limit: 5 });
+  ok(newSearch.rows.find((r) => r.id === dLead.id)?.status === "new", "…and `new` with no estimate linked");
+  ok((await searchLeads({ q: ATTR_PHONE, status: "won", limit: 5 })).rows.every((r) => r.id !== dLead.id), "…and the stage filter reads the same derivation");
   const back = await setLeadClassification(dLead.id, true);
   const [backRow] = await db.select().from(leads).where(eq(leads.id, dLead.id));
   ok(back?.isLead === true && backRow.disposition === "requested_work", "setLeadClassification(true) is requested_work");

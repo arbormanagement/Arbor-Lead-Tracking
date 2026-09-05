@@ -271,8 +271,6 @@ export async function POST(req: Request) {
       .values({
         externalId: dedupeKey,
         type: "web_form",
-        status: "new",
-        isLead: true, // a submitted web form is inherently a lead
         disposition: "requested_work", // you do not fill in the quote form by accident
         name: c.name,
         phoneE164: normalizePhone(c.phone),

@@ -79,17 +79,6 @@ export const leadDispositionEnum = pgEnum("lead_disposition", [
   "missed", // a real request for work and no estimate was written — the one to chase
 ]);
 
-export const leadStatusEnum = pgEnum("lead_status", [
-  "new",
-  "working",
-  "qualified",
-  "quoted",
-  "won",
-  "lost",
-  "cancelled",
-  "spam",
-  "duplicate",
-]);
 // Option-approval outcome of an HCP estimate: won = ≥1 option approved; lost = every
 // decided option declined/expired; open = no decisions yet (or a mix).
 export const estimateOutcomeEnum = pgEnum("estimate_outcome", ["won", "lost", "open"]);
@@ -885,7 +874,6 @@ export const leads = pgTable(
     // The thread this lead came out of. Many leads over time can share one thread.
     conversationId: text("conversation_id").references(() => conversations.id),
     contactId: text("contact_id").references(() => contacts.id),
-    status: leadStatusEnum("status").notNull().default("new"),
     // Contact
     name: text("name"),
     phoneE164: text("phone_e164"),
@@ -923,23 +911,17 @@ export const leads = pgTable(
     webSessionId: text("web_session_id").references(() => webSessions.id),
     hcpCustomerId: text("hcp_customer_id").references(() => hcpCustomers.id),
     hcpEstimateId: text("hcp_estimate_id").references(() => hcpEstimates.id),
-    // Value: quote = estimate total; sales = the WON (approved) estimate amount.
-    quoteValueCents: integer("quote_value_cents"),
-    salesValueCents: integer("sales_value_cents"),
+    // No stage or value columns, deliberately. `status`, `quote_value_cents` and
+    // `sales_value_cents` were the linked estimate's lifecycle copied here by the
+    // attribution sync; they derive from the estimate on read now (lib/leads/stage.ts).
     // Flags
     isSpam: boolean("is_spam").notNull().default(false),
-    // Is this an actual lead? Forms/FB are inherently true; for calls it's set from
-    // the transcript (AI or keyword: did the caller request an estimate?). null =
-    // not yet classified. The Leads inbox shows only leads (or non-call types).
-    isLead: boolean("is_lead"),
-    leadReason: text("lead_reason"), // short why (AI/keyword/manual) for the is_lead call
     // Caller's self-reported source ("how did you hear about us"), extracted from the
     // call transcript — shown alongside the DNI-attributed source as a cross-check.
     selfReportedSource: text("self_reported_source"),
-    isLeadManual: boolean("is_lead_manual").notNull().default(false), // human override — auto-classify won't touch it
     // See leadDispositionEnum. NULL = pending. `disposition_manual` is the human
-    // override, which the classifiers never overwrite. `is_lead` / `is_lead_manual` /
-    // `lead_reason` are dual-written for one deploy cycle and then dropped.
+    // override, which the classifiers never overwrite. Replaced `is_lead` /
+    // `is_lead_manual` / `lead_reason` (dual-written for one cycle, dropped in 0053).
     disposition: leadDispositionEnum("disposition"),
     dispositionManual: boolean("disposition_manual").notNull().default(false),
     dispositionReason: text("disposition_reason"),
@@ -956,7 +938,6 @@ export const leads = pgTable(
     index("leads_phone_idx").on(t.phoneE164),
     index("leads_email_idx").on(t.emailLc),
     index("leads_source_idx").on(t.sourceId),
-    index("leads_status_idx").on(t.status),
     index("leads_hcp_estimate_idx").on(t.hcpEstimateId),
     // Every ROI surface filters through `campaignNotExcluded(leads.campaignId, …)`.
     index("leads_campaign_idx").on(t.campaignId),

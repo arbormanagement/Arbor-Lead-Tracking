@@ -372,6 +372,13 @@
       "when": 1788623973490,
       "tag": "0052_lead_disposition",
       "breakpoints": true
+    },
+    {
+      "idx": 53,
+      "version": "7",
+      "when": 1788624678711,
+      "tag": "0053_derive_lead_stage",
+      "breakpoints": true
     }
   ]
 }

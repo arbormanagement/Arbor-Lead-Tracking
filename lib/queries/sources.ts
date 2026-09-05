@@ -192,10 +192,11 @@ export async function sourceBreakdowns(days: number): Promise<{
         value: sql<string | null>`${groupBy}`,
         contacts: sql<number>`count(*)::int`,
         estimates: sql<number>`count(*) filter (where ${leads.hcpEstimateId} is not null)::int`,
-        won: sql<number>`count(*) filter (where ${leads.status} = 'won')::int`,
-        revenue: sql<number>`coalesce(sum(${leads.salesValueCents}) filter (where ${leads.status} = 'won'), 0)::int`,
+        won: sql<number>`count(*) filter (where ${hcpEstimates.outcome} = 'won')::int`,
+        revenue: sql<number>`coalesce(sum(${hcpEstimates.approvedAmountCents}) filter (where ${hcpEstimates.outcome} = 'won'), 0)::int`,
       })
       .from(leads)
+      .leftJoin(hcpEstimates, eq(hcpEstimates.id, leads.hcpEstimateId))
       .where(and(gte(leads.occurredAt, windowStart), eq(leads.isSpam, false), isNotNull(col), ne(col, ""), notRecruiting))
       .groupBy(sql`${groupBy}`)
       .orderBy(desc(sql`count(*)`))
@@ -352,10 +353,11 @@ export async function landingPagePerformance(
       path: landingPathSql(leadCol),
       contacts: sql<number>`count(*)::int`,
       estimates: sql<number>`count(*) filter (where ${leads.hcpEstimateId} is not null)::int`,
-      won: sql<number>`count(*) filter (where ${leads.status} = 'won')::int`,
-      revenue: sql<number>`coalesce(sum(${leads.salesValueCents}) filter (where ${leads.status} = 'won'), 0)::int`,
+      won: sql<number>`count(*) filter (where ${hcpEstimates.outcome} = 'won')::int`,
+      revenue: sql<number>`coalesce(sum(${hcpEstimates.approvedAmountCents}) filter (where ${hcpEstimates.outcome} = 'won'), 0)::int`,
     })
     .from(leads)
+    .leftJoin(hcpEstimates, eq(hcpEstimates.id, leads.hcpEstimateId))
     .where(
       and(
         gte(leads.occurredAt, since),
