@@ -84,8 +84,7 @@ export async function GET(req: Request) {
     .leftJoin(sources, eq(sources.id, trackingNumbers.staticSourceId))
     .where(and(eq(trackingNumbers.isStatic, true), eq(trackingNumbers.status, "active")))
     .orderBy(trackingNumbers.createdAt);
-  const usable = staticRows.filter((r) => r.sourceKey !== "test");
-  const fallback = usable.find((r) => r.sourceKey === "direct") ?? usable[0] ?? null;
+  const fallback = staticRows.find((r) => r.sourceKey === "direct") ?? staticRows[0] ?? null;
 
   const [{ count: activeLeases } = { count: 0 }] = await db
     .select({ count: sql<number>`count(*)::int` })

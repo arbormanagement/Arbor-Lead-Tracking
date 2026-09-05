@@ -295,10 +295,10 @@ async function leaseOnce(snap: AttributionSnapshot, sid: string, vid: string): P
  * source `test` — losing the real source and click id, and polluting reporting with
  * customer calls. Observed live 2026-08-08.
  *
- * So: never hand out the test line, and prefer the number that is genuinely the
- * site's public default (`direct`) over whatever happens to sort first.
+ * So: prefer the number that is genuinely the site's public default (`direct`) over
+ * whatever happens to sort first. (The test line became `Pool: Website 1` and the
+ * `test` source was retired in 0051, so there is no longer a row to dodge by name.)
  */
-const FALLBACK_EXCLUDED_SOURCES = ["test"];
 const FALLBACK_PREFERRED_SOURCE = "direct";
 
 export async function getFallbackNumber(): Promise<LeaseResult | null> {
@@ -309,9 +309,8 @@ export async function getFallbackNumber(): Promise<LeaseResult | null> {
     .where(and(eq(trackingNumbers.isStatic, true), eq(trackingNumbers.status, "active")))
     .orderBy(trackingNumbers.createdAt);
 
-  const usable = rows.filter((r) => !FALLBACK_EXCLUDED_SOURCES.includes(r.sourceKey ?? ""));
-  if (!usable.length) return null;
+  if (!rows.length) return null;
 
-  const chosen = usable.find((r) => r.sourceKey === FALLBACK_PREFERRED_SOURCE) ?? usable[0];
+  const chosen = rows.find((r) => r.sourceKey === FALLBACK_PREFERRED_SOURCE) ?? rows[0];
   return { phoneNumber: chosen.phone, assignmentId: null, reused: false };
 }

@@ -811,6 +811,16 @@ re-argued rather than assumed.
   backfill, its number backfill, its URL-repair pass (the one that OVERWRITES a set value, so the
   one that would otherwise undo a correction on the next deploy), and reclassify. `manual:false`
   releases the lock. It does not rebuild `roi_daily` — run the `attribution` sync after.
+- **Referring hosts no longer mint a source (2026-09-05).** `classifySource` used to return
+  `<host>/referral` for any unrecognised referrer, so `/sources` grew a row per referring domain
+  (`yelp-com/referral`: one lead, one row) while the seeded `referral` was never written to by
+  anything. Now every such host is `referral`; the full referrer stays on `web_sessions.referrer`
+  for "which site sent them". Migration 0051 folded the minted rows in (leads, conversations,
+  attributions, numbers, campaigns; `roi_daily` rows dropped for the rebuild) and deleted the
+  sources behind a reference guard. The same migration retired the `test` source (the old test
+  line's; its one real lead — a $2,100 won job — was re-pointed to `direct` by hand first) and a
+  runtime-minted bare `email` source, and `facebook/organic` is finally in `SEED_SOURCES`, where
+  it should have been since the referrer rules first emitted it.
 - **A promoted channel does NOT reclassify the leads already in `other`.** `classifySource`
   runs once, at ingest, and the key is frozen onto the lead — so adding a mapping fixes every
   future lead and none of the rows that prompted the mapping. `lib/sources/reclassify.ts`

@@ -88,19 +88,3 @@ export function displayNameFor(key: string): string {
   return tail ? `${title(head!)} (${title(tail)})` : title(head!);
 }
 
-/**
- * Collapse a UTM value to a stable slug so spelling variants cannot become
- * separate sources.
- *
- * `classifySource` already compares a squashed form when matching KNOWN channels,
- * but its fallback used the raw value — so "Home Advisor" and "home_advisor" would
- * still have minted two rows. That is the mechanism that produced the duplicate
- * Google Business Profile; fixing the GBP match alone left it live for every other
- * channel.
- */
-export function slugifySourceValue(v: string): string {
-  return v
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-}
