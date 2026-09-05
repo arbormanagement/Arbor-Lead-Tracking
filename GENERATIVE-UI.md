@@ -4,10 +4,13 @@
 `lib/api-contracts/` exist and every dashboard page reads through them;
 `/api/mcp` serves a 22-tool catalog behind `MCP_API_TOKEN` — 15 reads
 (annotated `readOnlyHint`, incl. `list_campaigns` and the HousecallPro trio
-`list_jobs` / `list_invoices` / `list_customers`, added 2026-08-25) plus seven writes
+`list_jobs` / `list_invoices` / `list_customers`, added 2026-08-25) plus eight writes
 (`reply_to_thread`, `set_thread_state`, `classify_lead`, `trigger_sync`,
 `set_campaign_excluded`, `set_attribution_model`, `reclassify_sources` —
-dry-run by default), each wrapping the same lib function its route uses.
+dry-run by default — and `set_lead_attribution`, added 2026-09-05: the correction
+of one enquiry's source/campaign, validated against existing rows and locked
+against the automatic repair passes), each wrapping the same lib function its
+route uses.
 Deliberately NOT tools: routing changes, number management, credentials,
 `conversions/reset`, lead deletion — rare + risky stays behind the session
 UI (see Phase 3 rationale below).

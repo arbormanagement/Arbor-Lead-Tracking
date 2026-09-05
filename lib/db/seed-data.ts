@@ -211,6 +211,7 @@ export async function seedDefaults(db: Db, onRow?: (label: string) => void) {
         and(
           eq(schema.leads.sourceId, src.id),
           isNull(schema.leads.campaignId),
+          isNull(schema.leads.attributionSetManuallyAt),
           sql`${schema.leads.landingPage} ~ ${`[?&]utm_(campaign|source)=${c.externalCampaignId}(&|$)`}`,
         ),
       );
@@ -297,6 +298,7 @@ export async function seedDefaults(db: Db, onRow?: (label: string) => void) {
       ) sub
      where sub.lead_id = l.id
        and l.campaign_id is null
+       and l.attribution_set_manually_at is null
   `);
   if (fromNumber.rowCount) {
     onRow?.(`attributed ${fromNumber.rowCount} call lead(s) to their number's campaign`);
@@ -334,6 +336,11 @@ export async function seedDefaults(db: Db, onRow?: (label: string) => void) {
   // URL names a different one — and once corrected it matches nothing, so re-running
   // is a no-op. That is also why it is safe on every deploy: the only thing it can
   // ever do is make a lead agree with the URL it arrived on.
+  //
+  // Except a row a human corrected. This is the one pass that can OVERWRITE a set
+  // value, so it is the one that would silently undo a `setLeadAttribution` on the
+  // next deploy — hence `attribution_set_manually_at is null`, here and on the two
+  // fill-only-NULL passes above (where a human may have deliberately cleared it).
   const repaired = await db.execute(sql`
     update ${schema.leads} as l
        set campaign_id = c.id, updated_at = now()
@@ -351,6 +358,7 @@ export async function seedDefaults(db: Db, onRow?: (label: string) => void) {
              )
            )
        and l.campaign_id is distinct from c.id
+       and l.attribution_set_manually_at is null
   `);
   if (repaired.rowCount) onRow?.(`repaired ${repaired.rowCount} lead campaign(s) from the landing page`);
 

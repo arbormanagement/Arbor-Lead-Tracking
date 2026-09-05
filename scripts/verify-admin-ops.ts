@@ -32,6 +32,8 @@ import { setRoutingConfig } from "@/lib/routing";
 import { resetFailedExports } from "@/lib/sync/conversions";
 import { runLeadCleanup } from "@/lib/leads/cleanup";
 import { setIncludedFormIds } from "@/lib/sync/facebook-leads";
+import { setLeadAttribution } from "@/lib/leads/attribution";
+import { campaigns } from "@/lib/db/schema";
 
 let failures = 0;
 const ok = (c: boolean, m: string) => {
@@ -41,6 +43,7 @@ const ok = (c: boolean, m: string) => {
 
 const POOL = "verify-pool";
 const PHONE = "+16185559001";
+const ATTR_PHONE = "+16185559002";
 
 async function main() {
   // Fixtures first, so a re-run is not a different test from the first run.
@@ -50,7 +53,41 @@ async function main() {
     .where(inArray(facebookLeads.fbLeadgenId, ["verify-keep", "verify-drop"]));
   await db.delete(facebookLeads).where(inArray(facebookLeads.fbLeadgenId, ["verify-keep", "verify-drop"]));
   await db.delete(leads).where(inArray(leads.id, staleFb));
+  await db.delete(leads).where(eq(leads.phoneE164, ATTR_PHONE));
   await seedDefaults(db);
+
+  // ── setLeadAttribution — the manual correction, and what it refuses ─────────
+  const [gbpSrc] = await db.select({ id: sources.id }).from(sources).where(eq(sources.key, "gbp")).limit(1);
+  const [ofa] = await db.select({ id: campaigns.id }).from(campaigns).where(eq(campaigns.externalCampaignId, "ofallon")).limit(1);
+  if (!gbpSrc || !ofa) throw new Error("seed did not create gbp / O'Fallon");
+  const [attrLead] = await db.insert(leads).values({ type: "call", occurredAt: new Date(), phoneE164: ATTR_PHONE }).returning();
+
+  const nf = await setLeadAttribution("no-such-lead", { sourceKey: "gbp" });
+  ok(!nf.ok && nf.reason === "not_found", "setLeadAttribution: unknown lead id → not_found, not a throw");
+  const nothing = await setLeadAttribution(attrLead.id, {});
+  ok(!nothing.ok && nothing.reason === "nothing_to_set", "…an empty patch is refused rather than stamping the lock for nothing");
+  const badSrc = await setLeadAttribution(attrLead.id, { sourceKey: "made/up" });
+  ok(!badSrc.ok && badSrc.reason === "unknown_source", "…an unknown source key is refused — it never mints a source");
+  const badCamp = await setLeadAttribution(attrLead.id, { campaignId: "no-such-campaign" });
+  ok(!badCamp.ok && badCamp.reason === "unknown_campaign", "…an unknown campaign id is refused — it never mints a campaign");
+  const mismatch = await setLeadAttribution(attrLead.id, { sourceKey: "direct", campaignId: ofa.id });
+  ok(!mismatch.ok && mismatch.reason === "campaign_source_mismatch", "…an O'Fallon listing on a `direct` lead is refused: a campaign belongs to a source");
+  const [untouched] = await db.select().from(leads).where(eq(leads.id, attrLead.id));
+  ok(untouched.sourceId === null && untouched.campaignId === null && untouched.attributionSetManuallyAt === null,
+    "…and a refused write changes NOTHING, lock included");
+
+  const attrSet = await setLeadAttribution(attrLead.id, { sourceKey: "gbp", campaignId: ofa.id, note: "verify: transposed tag" });
+  ok(attrSet.ok && attrSet.lead.sourceKey === "gbp" && attrSet.lead.campaignName === "O'Fallon" && !!attrSet.lead.attributionSetManuallyAt,
+    "a valid source + campaign lands, with the lock stamped and the campaign name resolved");
+  ok(attrSet.ok && attrSet.lead.attributionManualNote === "verify: transposed tag" && /attribution/.test(attrSet.nextStep),
+    "…the note is stored and the result says roi_daily still needs the attribution sync");
+  const attrCleared = await setLeadAttribution(attrLead.id, { campaignId: null });
+  ok(attrCleared.ok && attrCleared.lead.campaignId === null && attrCleared.lead.sourceKey === "gbp" && !!attrCleared.lead.attributionSetManuallyAt,
+    "campaignId:null clears the campaign, keeps the source, keeps the lock");
+  const attrReleased = await setLeadAttribution(attrLead.id, { manual: false });
+  ok(attrReleased.ok && attrReleased.lead.attributionSetManuallyAt === null && attrReleased.lead.sourceKey === "gbp",
+    "manual:false releases the lock and touches no value");
+  await db.delete(leads).where(eq(leads.id, attrLead.id));
 
   // ── pools ──────────────────────────────────────────────────────────────────
   const created = await createPool({ key: POOL, displayName: "Verify", isDni: false });

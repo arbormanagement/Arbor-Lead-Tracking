@@ -29,6 +29,7 @@ import { campaignIdFromUrl, resolveCampaignId, SPEND_REPULL_DAYS } from "@/lib/c
 import { classifySource } from "@/lib/attribution/classify";
 import { CANARY_SESSION_ID, CANARY_TERM, CANARY_VISITOR_ID } from "@/lib/dni/canary";
 import { reclassifyUnmappedSources } from "@/lib/sources/reclassify";
+import { setLeadAttribution } from "@/lib/leads/attribution";
 import { resolveInboundAttribution } from "@/lib/twilio/inbound";
 import { applyNumberPatch } from "@/lib/twilio/numbers";
 import { listTrackingNumbers } from "@/lib/queries/numbers";
@@ -388,6 +389,35 @@ async function main() {
   await seedDefaults(db);
   const [stillFixed] = await db.select().from(leads).where(eq(leads.id, misrouted.id));
   ok(stillFixed.campaignId === live.id, "the repair is a no-op on re-run, not a flip-flop");
+
+  // ── A human correction outranks every automatic pass ────────────────────────
+  // The repair pass above is the ONE that overwrites a set value. Point a lead at the
+  // dead campaign BY HAND while its URL names the live one: without the lock the next
+  // seed would flip it back, silently, with nothing saying which value was live.
+  const [cpcSrc] = await db.select({ id: sources.id, key: sources.key }).from(sources).where(eq(sources.key, "google/cpc")).limit(1);
+  if (!cpcSrc) throw new Error("seed did not create google/cpc");
+  const [pinned] = await db.insert(leads).values({
+    type: "call", sourceId: cpcSrc.id, occurredAt: new Date(), phoneE164: FIXTURES[3],
+    campaignId: live.id, landingPage: `https://arbor-mgmt.com/?gad_campaignid=${DUP_LIVE}`,
+  }).returning();
+  const pin = await setLeadAttribution(pinned.id, { campaignId: dead.id, note: "verify: pinned by hand" });
+  ok(pin.ok && pin.lead.campaignId === dead.id, "setLeadAttribution points a lead at a campaign its URL disagrees with");
+  await seedDefaults(db);
+  const [pinnedAfter] = await db.select().from(leads).where(eq(leads.id, pinned.id));
+  ok(pinnedAfter.campaignId === dead.id, "…and the URL-repair pass leaves the hand-set campaign alone on the next seed");
+  // The fill-only-NULL listing pass must also respect a deliberately CLEARED campaign.
+  const [clearedGbp] = await db.insert(leads).values({
+    type: "call", sourceId: gbp.id, occurredAt: new Date(), phoneE164: FIXTURES[0],
+    campaignId: ofa.id, landingPage: "https://arbor-mgmt.com/?utm_campaign=ofallon",
+  }).returning();
+  await setLeadAttribution(clearedGbp.id, { campaignId: null, note: "verify: no listing, on purpose" });
+  await seedDefaults(db);
+  const [clearedAfter] = await db.select().from(leads).where(eq(leads.id, clearedGbp.id));
+  ok(clearedAfter.campaignId === null, "…and the listing backfill does not refill a campaign a human cleared");
+  await setLeadAttribution(clearedGbp.id, { manual: false });
+  await seedDefaults(db);
+  const [refilled] = await db.select().from(leads).where(eq(leads.id, clearedGbp.id));
+  ok(refilled.campaignId === ofa.id, "…until the lock is released, when the backfill fills it as usual");
 
   // ── Disambiguating a shared name ───────────────────────────────────────────
   // The rule is "suffix a duplicate-named campaign that has no spend inside the

@@ -351,6 +351,13 @@
       "when": 1788622449201,
       "tag": "0049_cleanup_dead_columns_canary",
       "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "7",
+      "when": 1788623181140,
+      "tag": "0050_lead_attribution_manual_lock",
+      "breakpoints": true
     }
   ]
 }

@@ -1,4 +1,4 @@
-import { and, eq, isNotNull } from "drizzle-orm";
+import { and, eq, isNotNull, isNull } from "drizzle-orm";
 import { classifySource } from "@/lib/attribution/classify";
 import { db } from "@/lib/db/client";
 import { leads, sources, webSessions } from "@/lib/db/schema";
@@ -113,7 +113,8 @@ export async function reclassifyUnmappedSources({
     })
     .from(leads)
     .leftJoin(webSessions, eq(leads.webSessionId, webSessions.id))
-    .where(and(eq(leads.sourceId, unmapped.id), isNotNull(leads.occurredAt)));
+    // A row a human corrected is not the classifier's to move, even off `other`.
+    .where(and(eq(leads.sourceId, unmapped.id), isNotNull(leads.occurredAt), isNull(leads.attributionSetManuallyAt)));
 
   const byKey: Record<string, number> = {};
   const moves: ReclassifyMove[] = [];
