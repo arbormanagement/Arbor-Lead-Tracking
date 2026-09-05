@@ -128,7 +128,7 @@ export async function seedDefaults(db: Db, onRow?: (label: string) => void) {
   //
   // A seed pass rather than a migration statement, deliberately: the `test` row still
   // owns a real lead (a $2,100 won job) until someone re-points it through
-  // arbor_set_lead_attribution, and a one-shot DELETE that ran before that would
+  // arbor_set_inquiry_attribution, and a one-shot DELETE that ran before that would
   // no-op forever. Guarded on every table that can point at a source, so a row that
   // is still referenced — including a lead a human LOCKED, which the fold does not
   // touch — stays, and shows up in reporting until it is dealt with by hand.

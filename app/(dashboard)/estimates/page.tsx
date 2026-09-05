@@ -248,7 +248,7 @@ export default async function EstimatesPage({
         {/* Links to the CONTACT that produced this estimate. An estimate with no
             tracked contact has nothing to open, so it renders plain rather than as
             a dead link. */}
-        <td>{r.leadId ? <Link href={`/leads/${r.leadId}`} className="rowlink">{who}</Link> : who}</td>
+        <td>{r.leadId ? <Link href={`/inquiries/${r.leadId}`} className="rowlink">{who}</Link> : who}</td>
         {/* The whole attribution chain for this estimate, in one cell: source →
             campaign → landing page → keyword, plus what the caller said. It all
             reaches the estimate through ONE join (leads.hcp_estimate_id), so

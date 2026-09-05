@@ -4,7 +4,7 @@ import { campaigns, conversations, leads, sources } from "@/lib/db/schema";
 
 /**
  * Correct ONE lead's source and/or campaign by hand — the enquiry, not the person.
- * Shared by PATCH /api/leads/[id]/attribution and the MCP `arbor_set_lead_attribution`
+ * Shared by PATCH /api/leads/[id]/attribution and the MCP `arbor_set_inquiry_attribution`
  * tool, per the Phase 3 rule that a write tool mirrors a route and both wrap one
  * function.
  *
@@ -88,7 +88,7 @@ export async function setLeadAttribution(id: string, patch: AttributionPatch): P
       ok: false,
       reason: "not_found",
       error: `No lead with id '${id}'.`,
-      nextStep: "Lead ids come from arbor_list_leads, or from arbor_get_thread's `enquiries` array. A lead id is not an estimate id.",
+      nextStep: "Lead ids come from arbor_list_inquiries, or from arbor_get_thread's `enquiries` array. A lead id is not an estimate id.",
     };
   }
 

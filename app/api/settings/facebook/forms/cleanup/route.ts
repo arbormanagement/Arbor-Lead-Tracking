@@ -8,7 +8,7 @@ export const runtime = "nodejs";
  * allowlist (forms you unchecked — recruiting, etc.). Admin-gated + destructive.
  * No-op when the allowlist is empty, since empty means all forms are allowed.
  *
- * The work is lib/leads/cleanup.ts, shared with the MCP `arbor_cleanup_leads` tool.
+ * The work is lib/leads/cleanup.ts, shared with the MCP `arbor_cleanup_inquiries` tool.
  */
 export async function POST() {
   const session = await getSession();

@@ -101,7 +101,7 @@ export default async function ThreadPage({ params }: { params: Promise<{ id: str
         <div className="controls">
           {current && <span className={stageClass(current.status)}>{current.status}</span>}
           {current && <LeadToggle leadId={current.id} disposition={current.disposition} manual={current.dispositionManual} />}
-          {current && <Link href={`/leads/${current.id}`} className="btn">Lead detail</Link>}
+          {current && <Link href={`/inquiries/${current.id}`} className="btn">Inquiry detail</Link>}
           <ThreadStateButton conversationId={thread.id} state={thread.state} />
         </div>
       </div>
@@ -112,7 +112,7 @@ export default async function ThreadPage({ params }: { params: Promise<{ id: str
           {leadRows.map((l, i) => (
             <span key={l.id}>
               {i > 0 && ", "}
-              <Link href={`/leads/${l.id}`} className="link">{dateTime(l.occurredAt)}</Link>
+              <Link href={`/inquiries/${l.id}`} className="link">{dateTime(l.occurredAt)}</Link>
             </span>
           ))}
         </p>
@@ -199,7 +199,7 @@ function CallEntry({
           <Row label="Heard via">
             {call.selfReportedSource ? <span className="badge info">{call.selfReportedSource}</span> : null}
           </Row>
-          <Row label="Lead reason">{leadReason}</Row>
+          <Row label="Disposition reason">{leadReason}</Row>
         </div>
 
         {call.recordingUrl ? (
