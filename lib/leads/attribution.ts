@@ -1,6 +1,6 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { db } from "@/lib/db/client";
-import { campaigns, leads, sources } from "@/lib/db/schema";
+import { campaigns, conversations, leads, sources } from "@/lib/db/schema";
 
 /**
  * Correct ONE lead's source and/or campaign by hand — the enquiry, not the person.
@@ -79,7 +79,7 @@ export async function setLeadAttribution(id: string, patch: AttributionPatch): P
   }
 
   const [lead] = await db
-    .select({ id: leads.id, sourceId: leads.sourceId, campaignId: leads.campaignId })
+    .select({ id: leads.id, sourceId: leads.sourceId, campaignId: leads.campaignId, conversationId: leads.conversationId })
     .from(leads)
     .where(eq(leads.id, id))
     .limit(1);
@@ -154,6 +154,19 @@ export async function setLeadAttribution(id: string, patch: AttributionPatch): P
       attributionSetManuallyAt: leads.attributionSetManuallyAt,
       attributionManualNote: leads.attributionManualNote,
     });
+
+  // The thread's `source_id` is a first-touch SNAPSHOT taken from its first lead and
+  // filled only when NULL, so a correction to that lead leaves the inbox saying the
+  // old channel forever (the Garber thread read "Other / Unmapped" for a day after
+  // its lead was moved to gbp). Follow the correction exactly where the snapshot came
+  // from this lead — matched on the OLD source, so a thread whose snapshot was taken
+  // from a different, earlier enquiry is left alone.
+  if (patch.sourceKey !== undefined && lead.conversationId && sourceId !== lead.sourceId) {
+    await db
+      .update(conversations)
+      .set({ sourceId })
+      .where(and(eq(conversations.id, lead.conversationId), sql`${conversations.sourceId} IS NOT DISTINCT FROM ${lead.sourceId}`));
+  }
 
   const [srcOut] = row.sourceId
     ? await db.select({ key: sources.key }).from(sources).where(eq(sources.id, row.sourceId)).limit(1)

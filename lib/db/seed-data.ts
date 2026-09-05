@@ -1,7 +1,7 @@
 import { and, eq, isNull, sql } from "drizzle-orm";
 import * as schema from "./schema";
 import { SPEND_REPULL_DAYS } from "@/lib/campaigns";
-import { displayNameFor } from "@/lib/sources/naming";
+import { UNMAPPED_SOURCE_KEY as UNMAPPED_KEY, displayNameFor } from "@/lib/sources/naming";
 import { businessDate } from "@/lib/tz";
 import type { Db } from "./client";
 
@@ -144,6 +144,32 @@ export async function seedDefaults(db: Db, onRow?: (label: string) => void) {
        and not exists (select 1 from ${schema.webSessions}       where derived_source_id = s.id)
   `);
   if (retired.rowCount) onRow?.(`retired ${retired.rowCount} unreferenced source row(s)`);
+
+  // Repair a thread whose first-touch snapshot still says `other` after its first
+  // lead was moved off it. The snapshot is filled once from the first lead and never
+  // revisited, so a reclassify or a hand correction before 2026-09-05 left the inbox
+  // naming the old channel (the Garber thread read "Other / Unmapped" for a day after
+  // its lead became gbp). Corrections now carry the snapshot with them; this is the
+  // repair for the ones that predate that. Fill-only-where-still-`other`, so a thread
+  // deliberately left there is the only kind this touches — and once repaired it
+  // matches nothing, so re-running is a no-op.
+  const rethreaded = await db.execute(sql`
+    update ${schema.conversations} c
+       set source_id = first.source_id
+      from (
+        select distinct on (l.conversation_id) l.conversation_id, l.source_id
+          from ${schema.leads} l
+         where l.conversation_id is not null
+         order by l.conversation_id, l.occurred_at asc
+      ) first,
+      ${schema.sources} o
+     where o.key = ${UNMAPPED_KEY}
+       and c.id = first.conversation_id
+       and c.source_id = o.id
+       and first.source_id is not null
+       and first.source_id <> o.id
+  `);
+  if (rethreaded.rowCount) onRow?.(`re-pointed ${rethreaded.rowCount} thread snapshot(s) off \`other\` to their first lead's source`);
 
   // Repair sources created before there was one place that named them: six call
   // sites used `displayName: key`, so anything outside this seed list rendered as a
