@@ -393,11 +393,16 @@ export async function diagnosticsReport(): Promise<{ httpStatus: number; report:
   async function missingFromHcp(table: string, hcpIdColumn: string, labelExpr: string, cutoffIso: string | null) {
     if (!cutoffIso) return { count: 0, sample: [] as unknown[] };
     const cutoff = new Date(cutoffIso);
+    // Rows detected but NOT yet tombstoned. Since 2026-09-05 the sync stamps these
+    // itself when the lap wraps, so anything still here is either in flight (the
+    // lap wrapped and the stamp pass failed) or was REFUSED by the mass-deletion
+    // guard — which is exactly the case a human should look at.
     const res = await db.execute<{ count: number; sample: unknown[] }>(sql`
       with missing as (
         select ${sql.raw(hcpIdColumn)} as hcp_id, ${sql.raw(labelExpr)} as label
         from ${sql.raw(table)}
-        where created_at < ${cutoff}
+        where missing_from_hcp_at is null
+          and created_at < ${cutoff}
           and (crawl_seen_at is null or crawl_seen_at < ${cutoff})
       )
       select (select count(*)::int from missing) as count,
@@ -411,11 +416,15 @@ export async function diagnosticsReport(): Promise<{ httpStatus: number; report:
     // reported — see `reconcilable` below.
   }
 
+  // Live rows and tombstoned rows, separately. Drift compares LIVE against HCP's
+  // own count: a row HCP has merged away is recorded, not counted, so 62 dead
+  // customers no longer keep a warning red for weeks.
+  const liveAndDead = { n: sql<number>`count(*) filter (where missing_from_hcp_at is null)::int`, dead: sql<number>`count(*) filter (where missing_from_hcp_at is not null)::int` };
   const [estCount, jobCount, custCount, invCount] = await Promise.all([
-    db.select({ n: sql<number>`count(*)::int` }).from(hcpEstimates),
-    db.select({ n: sql<number>`count(*)::int` }).from(hcpJobs),
-    db.select({ n: sql<number>`count(*)::int` }).from(hcpCustomers),
-    db.select({ n: sql<number>`count(*)::int` }).from(hcpInvoices),
+    db.select(liveAndDead).from(hcpEstimates),
+    db.select(liveAndDead).from(hcpJobs),
+    db.select(liveAndDead).from(hcpCustomers),
+    db.select(liveAndDead).from(hcpInvoices),
   ]);
 
   const [estCrawl, jobCrawl, custCrawl, invCrawl] = await Promise.all([
@@ -439,6 +448,7 @@ export async function diagnosticsReport(): Promise<{ httpStatus: number; report:
 
   function collectionSync(
     ours: number,
+    tombstoned: number,
     crawl: CrawlStateShape,
     missing: { count: number; sample: unknown[] },
   ) {
@@ -453,6 +463,10 @@ export async function diagnosticsReport(): Promise<{ httpStatus: number; report:
     const drift = backfilling || crawl.totalItems == null ? null : ours - crawl.totalItems;
     return {
       ours,
+      // Rows HCP no longer lists, stamped by the sync when a full lap wrapped without
+      // seeing them. Kept, never deleted; excluded from `ours` and from every reader
+      // that means "customers HCP has".
+      tombstoned,
       housecallPro: crawl.totalItems,
       drift,
       backfilling,
@@ -492,13 +506,17 @@ export async function diagnosticsReport(): Promise<{ httpStatus: number; report:
    * difference between those two is a newsletter going to 51 people who asked never
    * to be contacted.
    */
+  // Live rows only: a customer HCP has merged away will never be re-read with the
+  // expand, so counting it as "unknown" kept that warning red forever over rows no
+  // mailing could reach in the first place.
   const [expandRow] = await db
     .select({
       customers: sql<number>`count(*)::int`,
       doNotServiceKnown: sql<number>`count(*) filter (where ${hcpCustomers.doNotService} is not null)::int`,
       doNotServiceFlagged: sql<number>`count(*) filter (where ${hcpCustomers.doNotService} is true)::int`,
     })
-    .from(hcpCustomers);
+    .from(hcpCustomers)
+    .where(isNull(hcpCustomers.missingFromHcpAt));
   const [apptRow] = await db
     .select({
       jobs: sql<number>`count(*)::int`,
@@ -638,10 +656,10 @@ export async function diagnosticsReport(): Promise<{ httpStatus: number; report:
   };
 
   const hcpSync = {
-    estimates: collectionSync(estCount[0]?.n ?? 0, estCrawl, missingEstimates),
-    jobs: collectionSync(jobCount[0]?.n ?? 0, jobCrawl, missingJobs),
-    customers: collectionSync(custCount[0]?.n ?? 0, custCrawl, missingCustomers),
-    invoices: collectionSync(invCount[0]?.n ?? 0, invCrawl, missingInvoices),
+    estimates: collectionSync(estCount[0]?.n ?? 0, estCount[0]?.dead ?? 0, estCrawl, missingEstimates),
+    jobs: collectionSync(jobCount[0]?.n ?? 0, jobCount[0]?.dead ?? 0, jobCrawl, missingJobs),
+    customers: collectionSync(custCount[0]?.n ?? 0, custCount[0]?.dead ?? 0, custCrawl, missingCustomers),
+    invoices: collectionSync(invCount[0]?.n ?? 0, invCount[0]?.dead ?? 0, invCrawl, missingInvoices),
   };
 
   // Kept as its own key: it is what /api/diagnostics has always exposed and what
@@ -762,6 +780,16 @@ export async function diagnosticsReport(): Promise<{ httpStatus: number; report:
     }
   }
   for (const [name, state] of Object.entries(hcpSync)) {
+    // HCP soft-deletes estimates (see isDeletedEstimate), so one can never
+    // legitimately stop being listed. A tombstoned estimate means the crawl missed
+    // a page and the guard did not catch it — the one collection where this
+    // mechanism must stay silent.
+    if (name === "estimates" && state.tombstoned > 0) {
+      warnings.push(
+        `${state.tombstoned} estimate(s) are tombstoned as missing from HousecallPro — HCP never removes ` +
+          `an estimate from its API, so the crawl skipped rows; clear missing_from_hcp_at on them and find out why`,
+      );
+    }
     if (state.drift != null && state.drift !== 0) {
       // A surplus fully accounted for by rows HCP has dropped is explained, not
       // mysterious — say so, so the warning stays a signal rather than furniture.

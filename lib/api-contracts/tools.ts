@@ -1107,6 +1107,13 @@ export const ListCustomersInput = z.object({
     .boolean()
     .optional()
     .describe("true = linked to a tracked inbox contact; false = never reached us on a tracked channel (referral, walk-in, or predates tracking)"),
+  missingFromHcp: z
+    .boolean()
+    .optional()
+    .describe(
+      "Omit (or false) for customers HousecallPro currently lists — the normal case. " +
+        "true = ONLY the ones HCP has since merged or deleted (tombstoned, kept for their history).",
+    ),
   limit: z.coerce.number().int().min(1).max(500).default(50),
   offset: z.coerce.number().int().min(0).default(0).describe("Row offset for paging; use nextOffset from the previous response"),
 });
@@ -1133,6 +1140,9 @@ export const CustomerRow = z.object({
       "⚠️ THREE-STATE. true = flagged, false = not flagged, null = UNKNOWN (not yet re-read with the expand). " +
         "null is NOT 'safe to contact' — treating absence as false is how 51 flagged customers were mailed.",
     ),
+  missingFromHcpAt: isoDate
+    .nullable()
+    .describe("Set when HousecallPro stopped listing this customer (merged or deleted there). null = live"),
   leadSourceRaw: z.string().nullable().describe("HCP's own lead_source. NOT attribution"),
   city: z.string().nullable(),
   zip: z.string().nullable(),

@@ -168,7 +168,7 @@ export function advanceCrawl(before: CrawlState, page: HcpCrawlPage<unknown> | n
 }
 
 /** What a crawl did this run, for `sync_runs.stats` and /api/diagnostics. */
-function crawlStats(before: CrawlState, after: CrawlState, page: HcpCrawlPage<unknown> | null) {
+function crawlStats(before: CrawlState, after: CrawlState, page: HcpCrawlPage<unknown> | null, tombstoned = 0) {
   return {
     ok: page != null,
     fromPage: before.nextPage,
@@ -179,6 +179,9 @@ function crawlStats(before: CrawlState, after: CrawlState, page: HcpCrawlPage<un
     lastFullLapStartedAt: after.lastFullLapStartedAt,
     coldStart: before.passes === 0,
     totalItems: after.totalItems,
+    // Rows this run marked as no longer listed by HCP (a wrapped full lap only);
+    // NEGATIVE when the guard refused — see tombstoneMissing.
+    tombstoned,
   };
 }
 
@@ -199,11 +202,84 @@ export async function markCrawlSeen(table: string, idColumn: string, hcpIds: str
     // template flattens a JS array into separate parameters, so ANY() receives a
     // parameter list rather than an array and Postgres rejects it ("op ANY/ALL
     // (array) requires array on right side"). Caught by verify:hcp, invisible to tsc.
+    //
+    // Seeing a row again also clears its tombstone: HCP listing it is the one fact
+    // that means it is back (an un-merge, a restored record), and this is the only
+    // place that fact is witnessed.
     await db.execute(sql`
-      UPDATE ${sql.raw(table)} SET crawl_seen_at = now()
+      UPDATE ${sql.raw(table)} SET crawl_seen_at = now(), missing_from_hcp_at = NULL
       WHERE ${sql.raw(idColumn)} IN (${sql.join(batch.map((id) => sql`${id}`), sql`, `)})
     `);
   }
+}
+
+/**
+ * Ceiling on how much of a collection one lap may tombstone on its own. Above it
+ * the rows are left as they are and the diagnostic reports them, because a lap that
+ * "finds" a large share of a table missing is far more likely to be a crawl that
+ * skipped pages than HousecallPro deleting a tenth of its customers — the exact
+ * shape of the 2026-08-26 false alarm (14,000 of 15,464 estimates). Absolute floor
+ * so a small table can still clear a real backlog.
+ */
+export const TOMBSTONE_MAX_SHARE = 0.02;
+export const TOMBSTONE_MAX_FLOOR = 100;
+
+/**
+ * Tombstone every row a provably-full lap did not see.
+ *
+ * Runs once per wrapped lap, with the lap's START as the cutoff: every row HCP still
+ * lists was stamped after that instant, so a row whose stamp predates it — or that
+ * has none — is one HCP no longer returns. `created_at < cutoff` spares rows we
+ * inserted mid-lap, which the cursor may legitimately have walked past.
+ *
+ * Writes `missing_from_hcp_at` rather than deleting: a merged customer's estimates,
+ * jobs, invoices and contacts all still reference the row, and nothing in this app
+ * hard-deletes. The stamp is what lets every "customers HCP has" reader exclude
+ * them and lets the drift figure read 0 while the fact stays on record.
+ *
+ * Returns how many were stamped, or the number it REFUSED to stamp (negative) when
+ * the candidate set exceeds the guard — so the run's stats show a refusal as a
+ * refusal rather than as nothing happening.
+ */
+export async function tombstoneMissing(table: string, cutoff: Date): Promise<number> {
+  const [counts] = (
+    await db.execute<{ total: number; candidates: number }>(sql`
+      SELECT count(*)::int AS total,
+             count(*) FILTER (
+               WHERE missing_from_hcp_at IS NULL
+                 AND created_at < ${cutoff}
+                 AND (crawl_seen_at IS NULL OR crawl_seen_at < ${cutoff})
+             )::int AS candidates
+      FROM ${sql.raw(table)}
+    `)
+  ).rows;
+  const candidates = Number(counts?.candidates ?? 0);
+  if (candidates === 0) return 0;
+  const ceiling = Math.max(TOMBSTONE_MAX_FLOOR, Math.ceil(Number(counts?.total ?? 0) * TOMBSTONE_MAX_SHARE));
+  if (candidates > ceiling) {
+    console.error(
+      `[hcp] ${table}: refusing to tombstone ${candidates} rows (ceiling ${ceiling}) — ` +
+        `a lap that misses this many is more likely a skipped page than a deletion; left for /api/diagnostics`,
+    );
+    return -candidates;
+  }
+  const res = await db.execute(sql`
+    UPDATE ${sql.raw(table)} SET missing_from_hcp_at = now()
+    WHERE missing_from_hcp_at IS NULL
+      AND created_at < ${cutoff}
+      AND (crawl_seen_at IS NULL OR crawl_seen_at < ${cutoff})
+  `);
+  return res.rowCount ?? 0;
+}
+
+/**
+ * Did this run's advance close a lap that started at page 1? Only such a lap can be
+ * a cutoff — see the note on `lastFullLapStartedAt`.
+ */
+export function fullLapJustWrapped(before: CrawlState, after: CrawlState): Date | null {
+  if (after.passes === before.passes) return null;
+  if (!after.lastFullLapStartedAt || after.lastFullLapStartedAt === before.lastFullLapStartedAt) return null;
+  return new Date(after.lastFullLapStartedAt);
 }
 
 /**
@@ -833,6 +909,29 @@ export async function syncHcp(
       crawledInvoices ? setSetting(CRAWL_KEYS.invoices, invCrawlAfter) : null,
     ]);
 
+    // A lap that provably ran page 1 → wrap has seen everything HCP still lists, so
+    // whatever it did not see is tombstoned now, while the cutoff is fresh. After
+    // the cursor is persisted, deliberately: a crash here costs one lap's worth of
+    // tombstoning (the next full lap redoes it), never a re-read of the pages.
+    // Tolerated like the crawls themselves — a failed tombstone pass must not take
+    // the fresh hot-zone data down with it.
+    const tombstone = async (name: CrawlName, table: string, before: CrawlState, after: CrawlState) => {
+      const cutoff = fullLapJustWrapped(before, after);
+      if (!cutoff) return 0;
+      try {
+        return await tombstoneMissing(table, cutoff);
+      } catch (err) {
+        console.error(`[hcp] ${name}: tombstone pass failed`, err);
+        return 0;
+      }
+    };
+    const [estTombstoned, custTombstoned, jobTombstoned, invTombstoned] = await Promise.all([
+      tombstone("estimates", "hcp_estimates", estCrawlBefore, estCrawlAfter),
+      tombstone("customers", "hcp_customers", custCrawlBefore, custCrawlAfter),
+      tombstone("jobs", "hcp_jobs", jobCrawlBefore, jobCrawlAfter),
+      tombstone("invoices", "hcp_invoices", invCrawlBefore, invCrawlAfter),
+    ]);
+
     // Now that customers are fresh, tie inbox threads to them. This is the
     // direction the per-contact lookup can't cover: someone texts as a stranger
     // on Monday and is created in HousecallPro on Tuesday — their thread should
@@ -858,10 +957,10 @@ export async function syncHcp(
       mode: sinceDays == null ? "incremental" : "explicit",
       windowDays: Number(windowDays.toFixed(3)),
       crawl: {
-        estimates: crawlStats(estCrawlBefore, estCrawlAfter, estCrawlPage),
-        customers: crawlStats(custCrawlBefore, custCrawlAfter, crawledCustomers),
-        jobs: crawlStats(jobCrawlBefore, jobCrawlAfter, crawledJobs),
-        invoices: crawlStats(invCrawlBefore, invCrawlAfter, crawledInvoices),
+        estimates: crawlStats(estCrawlBefore, estCrawlAfter, estCrawlPage, estTombstoned),
+        customers: crawlStats(custCrawlBefore, custCrawlAfter, crawledCustomers, custTombstoned),
+        jobs: crawlStats(jobCrawlBefore, jobCrawlAfter, crawledJobs, jobTombstoned),
+        invoices: crawlStats(invCrawlBefore, invCrawlAfter, crawledInvoices, invTombstoned),
       },
     };
   });

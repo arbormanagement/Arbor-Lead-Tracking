@@ -260,8 +260,8 @@ async function main() {
   const [transposedHeld] = await db.select().from(leads).where(eq(leads.id, transposed.id));
   ok(transposedHeld.campaignId === edw.id, "…and a campaign already set is never overwritten by either slot");
 
-  // ── reclassify reads the RAW tag from the entry URL, never web_sessions.source ──
-  // `web_sessions.source` holds the CLASSIFIED key. For a lead on `other` that is
+  // ── reclassify reads the RAW tag from the entry URL, never web_sessions.source_key ──
+  // `web_sessions.source_key` holds the CLASSIFIED key. For a lead on `other` that is
   // the string "other", and feeding it back in as utm_source returns "other" forever
   // — so until 2026-09-05 a session-backed lead could only be rescued through
   // `medium` or `utm_campaign`, and a mapping keyed on the source slot alone reached
@@ -271,14 +271,14 @@ async function main() {
   if (!otherSrc) throw new Error("seedDefaults did not create the other source");
   const [rcVisitor] = await db.insert(visitors).values({}).returning();
   const [rcSession] = await db.insert(webSessions).values({
-    visitorId: rcVisitor.id, source: "other", medium: "referral", landingPage: "https://arbor-mgmt.com/?utm_source=gmb",
+    visitorId: rcVisitor.id, sourceKey: "other", medium: "referral", landingPage: "https://arbor-mgmt.com/?utm_source=gmb",
   }).returning();
   const [rcLead] = await db.insert(leads).values({
     type: "web_form", sourceId: otherSrc.id, occurredAt: new Date(), phoneE164: FIXTURES[3],
     landingPage: "https://arbor-mgmt.com/get-a-quote", webSessionId: rcSession.id,
   }).returning();
   const [ctrlSession] = await db.insert(webSessions).values({
-    visitorId: rcVisitor.id, source: "other", medium: "referral", landingPage: "https://arbor-mgmt.com/?utm_source=mystery",
+    visitorId: rcVisitor.id, sourceKey: "other", medium: "referral", landingPage: "https://arbor-mgmt.com/?utm_source=mystery",
   }).returning();
   const [ctrlLead] = await db.insert(leads).values({
     type: "web_form", sourceId: otherSrc.id, occurredAt: new Date(), phoneE164: FIXTURES[0],

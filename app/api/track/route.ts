@@ -153,7 +153,7 @@ export async function POST(req: Request) {
       id: sid,
       visitorId: vid,
       userAgent,
-      source: cls.sourceKey,
+      sourceKey: cls.sourceKey,
       medium,
       campaign: utm.campaign,
       content: utm.content,

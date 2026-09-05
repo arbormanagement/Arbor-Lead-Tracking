@@ -368,6 +368,38 @@ inbound calls fall back to Twilio's forwarding, not lost data.
     is wrong, put `DATABASE_URL` back. Delete the Neon project only once you're satisfied —
     and take a final dump before you do.
 
+## Renaming a column or table in a migration
+
+`drizzle-kit generate` cannot tell a rename from a drop-and-add, so it asks — and a
+migration generated non-interactively silently gets the destructive answer. The prompt
+is answerable from a script (this is how `0056_tombstones_and_source_key` was made):
+
+```bash
+DATABASE_URL=postgres://postgres@127.0.0.1:55432/arbor_scratch python3 - <<'PY'
+import os, pty, select, time
+pid, fd = pty.fork()
+if pid == 0:
+    os.execvp("npx", ["npx", "drizzle-kit", "generate", "--name", "<migration_name>"])
+out, answered = b"", False
+while True:
+    r, _, _ = select.select([fd], [], [], 1)
+    if r:
+        try: chunk = os.read(fd, 4096)
+        except OSError: break
+        if not chunk: break
+        out += chunk
+        if not answered and b"rename" in out and b"<new_name>" in out:
+            time.sleep(0.5); os.write(fd, b"\x1b[B"); time.sleep(0.3); os.write(fd, b"\r")  # arrow down = "rename"
+            answered = True
+    elif answered and b"Your SQL migration file" in out: break
+print(out.decode("utf8", "replace")[-1500:])
+PY
+```
+
+Read the generated SQL and confirm it says `RENAME COLUMN` (or `RENAME TO`), never
+`DROP COLUMN` + `ADD COLUMN`. Then prove it from an empty database:
+`DATABASE_URL=<fresh scratch db> npm run db:deploy`.
+
 ## Backups
 
 **Yes — but they are not on by default, and they are not the same thing Neon gave you.**
