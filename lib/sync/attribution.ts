@@ -15,6 +15,7 @@ import {
 import { countableEstimateDate, isCountableEstimate, isLiveEstimate } from "@/lib/estimates/countable";
 import { PRE_TRACKING_SOURCE_KEY } from "@/lib/sources/naming";
 import { TRACKING_STARTED_AT } from "@/lib/tracking-coverage";
+import { DEFAULT_LINK_WINDOW_DAYS } from "@/lib/attribution/model";
 import { getSetting } from "@/lib/settings";
 import { businessDate } from "@/lib/tz";
 import { withSyncRun } from "./run";
@@ -75,18 +76,29 @@ export async function runAttribution({
   });
 }
 
-// ── 1. Lead → HCP estimate matching (qualification + revenue) ─────────────────
-// A lead is a QUALIFIED lead once an estimate is created for its contact, and WON
-// once that estimate is approved — both derived from the same match, off the
-// contact embedded on the estimate (no dependency on a separate customer sync).
+// ── 1. Estimate → inquiry matching (qualification + revenue) ─────────────────
+// An inquiry is QUALIFIED once the office writes an estimate for its contact, and
+// WON once one of those estimates is approved — both derived from the link written
+// here, off the contact the estimate resolves to.
 //
-// Two settings shape the match:
-//  · customer_window_days — repeat business: a won estimate whose contact has NO
-//    unclaimed lead of its own inherits the contact's already-matched lead when it
-//    falls within this many days of it (ServiceTitan "Smart Attribution" style),
-//    so paid channels get credit for the follow-up work they generated. 0 disables.
+// The link is `hcp_estimates.lead_id`, MANY estimates to one inquiry (migration
+// 0057). Each estimate points at the latest non-spam inquiry by the same contact
+// that preceded it inside `customer_window_days`. Nothing is "claimed": two jobs
+// written off one form both point at that form, and their revenue sums onto it —
+// which is exactly what the old one-estimate-per-lead link could not say (observed:
+// a Google Ads form at 15:03 producing estimates at 15:03 and 22:22, only the first
+// credited, the second reading as untracked business).
+//
+// One setting shapes the match:
+//  · customer_window_days — how long after an inquiry an estimate by the same
+//    contact still counts as its result. Default 30 (Justin, 2026-09-05). Outside
+//    it the estimate is new business with no tracked inquiry, which is the honest
+//    answer for a repeat customer whose new job arrives months later.
 async function matchLeadsToEstimates(windowDays: number): Promise<{ qualified: number; won: number }> {
-  const customerWindowDays = await getSetting<number>("customer_window_days", 90);
+  const configured = await getSetting<number>("customer_window_days", DEFAULT_LINK_WINDOW_DAYS);
+  // 0 used to mean "no repeat-business inheritance"; with the link itself windowed
+  // it would mean "link nothing", which no one wants. Fall back rather than obey.
+  const linkWindowDays = configured > 0 ? configured : DEFAULT_LINK_WINDOW_DAYS;
   const lookback = new Date(Date.now() - (windowDays + 30) * 86_400_000);
 
   // Estimates worth (re)deriving from: recently created, OR changed in HCP
@@ -97,57 +109,17 @@ async function matchLeadsToEstimates(windowDays: number): Promise<{ qualified: n
     gte(hcpEstimates.updatedAtHcp, lookback),
   );
 
-  // Clean rebuild — but only what the estimate scan below can re-derive:
-  // recent leads, plus older leads whose linked estimate just changed. Anything
-  // else keeps its last matched stage/value as frozen history rather than being
-  // wiped and never re-matched.
-  const resettable = and(
-    eq(leads.isSpam, false),
-    or(
-      gte(leads.occurredAt, lookback),
-      inArray(
-        leads.hcpEstimateId,
-        db.select({ id: hcpEstimates.id }).from(hcpEstimates).where(scannedEstimates),
-      ),
-    ),
-  );
-  // Unlink, then re-derive below. Stage and value are no longer stored on the lead —
-  // they derive from the linked estimate (lib/leads/stage.ts) — so the link is the
-  // only thing to reset.
-  await db.update(leads).set({ hcpEstimateId: null }).where(resettable);
+  // Clean rebuild of the link on every scanned estimate. The link depends only on
+  // the estimate and the contact's inquiries, so re-deriving it is idempotent;
+  // estimates outside the scan keep theirs as frozen history.
+  await db.update(hcpEstimates).set({ leadId: null }).where(scannedEstimates);
 
-  // Every estimate (created), ordered so the RIGHT estimate claims the lead. A lead
-  // can be claimed only once (`claimedLeads` below), so when one customer has
-  // several estimates this ordering alone decides which of them carries the
-  // attribution — and which are left reading as untracked business.
-  //
-  // The office's practice is the thing to encode: a customer who submits several
-  // estimate requests gets ONE kept — the first — and the rest cancelled as
-  // duplicates. So:
-  //
-  //  1. won first     — a won estimate claims its lead ahead of a merely-created
-  //                     one; that is where the revenue is.
-  //  2. live first    — a cancelled or deleted duplicate must never claim a lead
-  //                     ahead of the estimate that survived it.
-  //  3. oldest first  — of two live estimates competing for one lead, the earlier
-  //                     is the real request; the later is the duplicate.
-  //
-  // Measured 2026-08-28, both caused by the previous `desc(created_at)` ordering:
-  //  · Patrick Shansey — his CANCELLED duplicate (15466) claimed the 8/19 web-form
-  //    lead, so the surviving estimate 15350 read as unattributed AND the live lead
-  //    was stamped `cancelled`, since the stage set below is derived from whichever
-  //    estimate claims it. 177 leads sat at `cancelled` against 94 at `quoted`.
-  //  · Pamela Norton — her Google LSA call was credited to a $4,550 second estimate
-  //    while the $7,000 one written four minutes after that call read as
-  //    unattributed.
   const estRows = await db
     .select({
       estId: hcpEstimates.id,
       won: hcpEstimates.won,
       outcome: hcpEstimates.outcome,
       estStatus: hcpEstimates.status,
-      approved: hcpEstimates.approvedAmountCents,
-      total: hcpEstimates.totalAmountCents,
       createdAtHcp: hcpEstimates.createdAtHcp,
       custId: hcpEstimates.hcpCustomerId,
       custPhone: hcpEstimates.customerPhoneE164,
@@ -155,13 +127,12 @@ async function matchLeadsToEstimates(windowDays: number): Promise<{ qualified: n
     })
     .from(hcpEstimates)
     .where(scannedEstimates)
-    .orderBy(desc(hcpEstimates.won), desc(isLiveEstimate), asc(hcpEstimates.createdAtHcp));
+    .orderBy(asc(hcpEstimates.createdAtHcp));
 
   // The identity spine, indexed by HCP customer. `contacts` + `contact_identifiers`
   // already unify every number and address a person has ever used, and
   // `contacts.hcp_customer_id` ties that person to their HCP record — so this is
-  // the app's own answer to "who is this", and the estimate match had not been
-  // using it.
+  // the app's own answer to "who is this".
   //
   // Matching purely on `hcp_estimates.customer_phone_e164` meant matching on ONE
   // number (mobile ?? home ?? work) by exact equality. Measured against production:
@@ -176,10 +147,6 @@ async function matchLeadsToEstimates(windowDays: number): Promise<{ qualified: n
     if (c.hcpCustomerId) contactByHcpCustomerForMatch.set(c.hcpCustomerId, c.id);
   }
 
-  const claimedLeads = new Set<string>();
-  // Contact key → the first claimed lead for that contact, for the repeat-business
-  // inheritance pass (customer_window_days).
-  const claimedByContact = new Map<string, { leadId: string; leadAt: Date }>();
   let qualified = 0;
   let won = 0;
 
@@ -187,18 +154,14 @@ async function matchLeadsToEstimates(windowDays: number): Promise<{ qualified: n
     // A contact-linked estimate is matchable even with no phone or email of its
     // own, so this can no longer skip on those two alone.
     if (!est.custPhone && !est.custEmail && !est.custId) continue;
-    // The lead must precede the estimate being WRITTEN, so the window is anchored
+    // The inquiry must precede the estimate being WRITTEN, so the window is anchored
     // to created_at_hcp even for won estimates — approved_at_hcp can derive from
     // HCP's updated_at, which drifts on ANY edit, and anchoring there would let a
     // later unrelated inquiry steal credit for an old job.
     const estDate = est.createdAtHcp;
     if (!estDate) continue;
 
-    const contactKeys = [est.custPhone && `p:${est.custPhone}`, est.custEmail && `e:${est.custEmail}`].filter(
-      Boolean,
-    ) as string[];
-
-    const windowStart = new Date(estDate.getTime() - windowDays * 86_400_000);
+    const windowStart = new Date(estDate.getTime() - linkWindowDays * 86_400_000);
     const estUpperBound = new Date(estDate.getTime() + HCP_CREATED_AT_GRANULARITY_MS);
     // Identity, widest first: the contact this estimate's customer resolves to,
     // then the estimate's own phone/email as the fallback for a customer the
@@ -212,8 +175,8 @@ async function matchLeadsToEstimates(windowDays: number): Promise<{ qualified: n
     ].filter(Boolean) as SQL[];
     const contactMatch = identityArms.length === 1 ? identityArms[0] : or(...identityArms)!;
 
-    const candidates = await db
-      .select({ id: leads.id, occurredAt: leads.occurredAt })
+    const [pick] = await db
+      .select({ id: leads.id })
       .from(leads)
       .where(
         and(
@@ -224,65 +187,36 @@ async function matchLeadsToEstimates(windowDays: number): Promise<{ qualified: n
           // stamped it in, not to the truncated stamp itself. See
           // HCP_CREATED_AT_GRANULARITY_MS. The widening is under one second, so it
           // cannot let an unrelated later enquiry steal an old job; what it buys is
-          // that a lead which genuinely caused the estimate stops reading as later
-          // than it.
+          // that an inquiry which genuinely caused the estimate stops reading as
+          // later than it.
           lt(leads.occurredAt, estUpperBound),
-          // Never steal a lead that is already linked to an estimate this run did
-          // not scan. Those leads are outside the reset above, so their stage and
-          // value are frozen history — letting a newer estimate claim one would
-          // OVERWRITE salesValueCents and hcp_estimate_id, and the older won
-          // estimate's revenue would silently vanish from ROI with nothing to
-          // restore it. Leads linked to an estimate we DID scan are fair game:
-          // they were just reset and are being re-derived.
-          or(
-            isNull(leads.hcpEstimateId),
-            inArray(
-              leads.hcpEstimateId,
-              db.select({ id: hcpEstimates.id }).from(hcpEstimates).where(scannedEstimates),
-            ),
-          ),
         ),
       )
-      // Last-touch credits the latest lead before the estimate; first-touch the earliest.
-      // ALWAYS the latest qualifying lead. This link IS the last-touch answer, and
-      // first-touch is now computed properly in the rollup from the contact's own
-      // history — so the old `attribution_model` setting no longer changes what is
-      // derived here. It selects which model the dashboard DISPLAYS
-      // (lib/attribution/model.ts), and both are always available.
+      // ALWAYS the latest qualifying inquiry. This link IS the last-touch answer;
+      // first-touch is computed in the rollup from the contact's own history, so the
+      // `attribution_model` setting only selects which model the dashboard DISPLAYS
+      // (lib/attribution/model.ts) — both are always available.
       .orderBy(desc(leads.occurredAt))
-      .limit(5);
+      .limit(1);
+    if (!pick) continue;
 
-    const pick = candidates.find((c) => !claimedLeads.has(c.id));
-    if (!pick) {
-      // Repeat business: a WON estimate with no lead of its own inherits the
-      // contact's already-matched lead when it falls inside the customer window —
-      // the revenue accrues to the source that originally acquired the customer.
-      if (est.won && customerWindowDays > 0) {
-        const prior = contactKeys.map((k) => claimedByContact.get(k)).find(Boolean);
-        const age = prior ? estDate.getTime() - prior.leadAt.getTime() : -1;
-        // Same second-truncation allowance as the candidate window above, so a
-        // repeat customer whose enquiry landed inside the estimate's own second is
-        // not read as having contacted us afterwards.
-        if (prior && age > -HCP_CREATED_AT_GRANULARITY_MS && age <= customerWindowDays * 86_400_000) {
-          // Nothing to write: the rollup below credits this estimate's revenue to the
-          // customer's first touch by CONTACT, so the prior lead needs no copy of it.
-          won++;
-        }
-      }
-      continue;
+    // Only the LINK is written. Stage and value derive from the estimates on read
+    // (lib/leads/stage.ts), so there is no copy to keep in step. The inquiry learns
+    // its HCP customer if it did not know it yet.
+    await db.update(hcpEstimates).set({ leadId: pick.id }).where(eq(hcpEstimates.id, est.estId));
+    if (est.custId) {
+      await db
+        .update(leads)
+        .set({ hcpCustomerId: est.custId })
+        .where(and(eq(leads.id, pick.id), isNull(leads.hcpCustomerId)));
     }
-
-    claimedLeads.add(pick.id);
-    for (const k of contactKeys) if (!claimedByContact.has(k)) claimedByContact.set(k, { leadId: pick.id, leadAt: pick.occurredAt });
-    // Only the LINK is written. Stage and value derive from the estimate on read
-    // (lib/leads/stage.ts), so there is no copy to keep in step.
-    await db.update(leads).set({ hcpCustomerId: est.custId, hcpEstimateId: est.estId }).where(eq(leads.id, pick.id));
     const s = (est.estStatus ?? "").toLowerCase();
     if (est.won) won++;
     else if (est.outcome !== "lost" && !/cancel/.test(s)) qualified++;
   }
 
-  // "qualified" total includes won leads (a won lead is also a qualified lead).
+  // Counted per ESTIMATE linked, and "qualified" includes won (a won estimate is
+  // also a qualified one) — the run stats are a pull-health signal, not a funnel.
   return { qualified: qualified + won, won };
 }
 
@@ -528,9 +462,10 @@ async function rebuildRoiDaily(windowDays: number): Promise<number> {
       hcpCustomerId: hcpEstimates.hcpCustomerId,
     })
     .from(hcpEstimates)
-    // At most one lead per estimate — `matchLeadsToEstimates` claims each lead once,
-    // so this cannot fan out and double-count revenue.
-    .leftJoin(leads, and(eq(leads.hcpEstimateId, hcpEstimates.id), eq(leads.isSpam, false)))
+    // Each estimate points at ONE inquiry (`hcp_estimates.lead_id`), so this cannot
+    // fan out and double-count revenue — while one inquiry may carry several
+    // estimates, each of which lands here on its own.
+    .leftJoin(leads, and(eq(leads.id, hcpEstimates.leadId), eq(leads.isSpam, false)))
     // Windowed on `countableEstimateDate`, NOT on `scheduled_start` directly. A won
     // estimate that was never scheduled has no appointment, so a bare
     // `scheduled_start >= from` would re-drop exactly the rows `isCountableEstimate`

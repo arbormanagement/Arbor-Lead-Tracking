@@ -7,6 +7,7 @@ import { syncRuns, trackingNumbers } from "@/lib/db/schema";
 import { credentialStatus, CREDENTIAL_SPECS } from "@/lib/credentials";
 import { getDefaultForwardNumber } from "@/lib/routing";
 import { formatPhoneDisplay } from "@/lib/phone";
+import { DEFAULT_LINK_WINDOW_DAYS } from "@/lib/attribution/model";
 import { getSetting } from "@/lib/settings";
 import { dateTime } from "@/lib/format";
 import { TRACKING_ORIGINS_KEY, DEFAULT_ALLOWED_ORIGINS } from "@/lib/origin";
@@ -19,7 +20,7 @@ export default async function SettingsPage() {
   const session = await getSession();
   const defaultForward = await getDefaultForwardNumber();
   const attributionModel = await getSetting<string>("attribution_model", "last_touch");
-  const customerWindowDays = await getSetting<number>("customer_window_days", 90);
+  const customerWindowDays = await getSetting<number>("customer_window_days", DEFAULT_LINK_WINDOW_DAYS);
   const storedOrigins = await getSetting<string[] | null>(TRACKING_ORIGINS_KEY, null);
 
   // Summary lines for the section cards.

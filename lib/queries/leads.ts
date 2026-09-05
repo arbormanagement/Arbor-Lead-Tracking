@@ -1,7 +1,7 @@
 import { and, desc, eq, ilike, isNotNull, not, or, sql, type SQL } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { campaigns, hcpEstimates, leads, sources } from "@/lib/db/schema";
-import { leadStageSql } from "@/lib/leads/stage";
+import { leadEstimateRollup, leadStageSql } from "@/lib/leads/stage";
 
 /**
  * Lead search — shared by GET /api/leads and the MCP `list_leads` tool.
@@ -51,7 +51,8 @@ export interface LeadRow {
   landingPage: string | null;
   isSpam: boolean;
   isFirstTime: boolean | null;
-  hcpEstimateId: string | null;
+  /** This app's ids for every estimate the inquiry produced, oldest first. */
+  estimateIds: string[];
   occurredAt: Date;
 }
 
@@ -60,7 +61,8 @@ export async function searchLeads(
 ): Promise<{ rows: LeadRow[]; total: number; hasMore: boolean; nextOffset: number | null }> {
   const where: SQL[] = [];
   if (p.type) where.push(eq(leads.type, p.type));
-  if (p.status) where.push(eq(leadStageSql, p.status));
+  const est = leadEstimateRollup();
+  if (p.status) where.push(eq(leadStageSql(est), p.status));
   if (p.isSpam !== undefined) where.push(eq(leads.isSpam, p.isSpam));
   if (p.q) {
     // Escape LIKE metacharacters so a search for "50%" or "a_b" is a literal
@@ -97,7 +99,7 @@ export async function searchLeads(
   const [counted] = await db
     .select({ n: sql<number>`count(*)::int` })
     .from(leads)
-    .leftJoin(hcpEstimates, eq(hcpEstimates.id, leads.hcpEstimateId))
+    .leftJoin(est, eq(est.leadId, leads.id))
     .where(where_);
   const total = counted?.n ?? 0;
 
@@ -105,7 +107,7 @@ export async function searchLeads(
     .select({
       id: leads.id,
       type: leads.type,
-      status: leadStageSql,
+      status: leadStageSql(est),
       name: leads.name,
       phoneE164: leads.phoneE164,
       emailLc: leads.emailLc,
@@ -124,11 +126,11 @@ export async function searchLeads(
       disposition: leads.disposition,
       dispositionManual: leads.dispositionManual,
       isFirstTime: leads.isFirstTime,
-      hcpEstimateId: leads.hcpEstimateId,
+      estimateIds: sql<string[]>`coalesce(${est.ids}, '{}')`,
       occurredAt: leads.occurredAt,
     })
     .from(leads)
-    .leftJoin(hcpEstimates, eq(hcpEstimates.id, leads.hcpEstimateId))
+    .leftJoin(est, eq(est.leadId, leads.id))
     .leftJoin(sources, eq(sources.id, leads.sourceId))
     .leftJoin(campaigns, eq(campaigns.id, leads.campaignId))
     .where(where_)

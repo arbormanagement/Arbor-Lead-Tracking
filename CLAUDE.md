@@ -320,7 +320,7 @@ two windows differ: channel/campaign use `roi_daily`'s BUSINESS date, the page v
 raw session/lead timestamps, so totals won't reconcile at a window edge. Views live in
 `app/(dashboard)/sources/{channel,campaign,page}-view.tsx` with the shell in `page.tsx`.
 
-**The two pages are two DIRECTIONS through one join** (`leads.hcp_estimate_id` →
+**The two pages are two DIRECTIONS through one join** (`hcp_estimates.lead_id` →
 `leads.source_id`), and both are now navigable. Every `/sources` row links to the
 estimates behind it (`sources/drilldown.ts`), and `/estimates` accepts
 `?source=&campaign=&page=&type=&arborist=&city=` (`estimates/filters.ts`), rendering active
@@ -716,13 +716,21 @@ re-argued rather than assumed.
     `attribution` tick, and two were customers who generated more estimates than tracked
     enquiries — see the `matchLeadsToEstimates` note below. Expect a couple of in-flight rows
     in this bucket at any moment; it is a rolling window, not a leak.
-- **One enquiry can only ever credit ONE estimate**, because `matchLeadsToEstimates` claims each
-  lead exactly once. A customer who submits one form and gets two estimates from it leaves the
-  second unattributed by construction (observed: a Google Ads form lead at 15:03 producing
-  estimates at 15:03 and 22:22, only the first credited). This systematically understates paid
-  channels wherever one visit produces several estimates. Not fixed — relaxing it risks
-  double-counting revenue against a single click, so it needs a deliberate decision rather than
-  a quiet change.
+- **One inquiry can credit SEVERAL estimates (2026-09-05, migration 0057, Justin's decision).**
+  The link is `hcp_estimates.lead_id`, many-to-one: each estimate points at the latest non-spam
+  inquiry by the same contact inside `customer_window_days` (now 30) before it was written, and
+  nothing is "claimed". Until then `leads.hcp_estimate_id` held ONE estimate and
+  `matchLeadsToEstimates` claimed each lead once, so a form that produced two jobs left the
+  second reading as untracked business (observed: a Google Ads form at 15:03 producing
+  estimates at 15:03 and 22:22, only the first credited) — and once a repeat call started
+  joining the inquiry in flight (#162) there was no spare inquiry left for a second estimate to
+  claim at all. The double-counting worry that deferred this was smaller than it looked:
+  cancelled estimates never count and only WON ones carry revenue, so two won estimates on one
+  click are two sales that click produced. The window is what bounds the real risk — a repeat
+  customer's unrelated job months later credited to an old inquiry. `customer_window_days`
+  changed meaning with it (it used to bound only the repeat-WON inheritance) and was reset to 30
+  in the migration; Settings → Attribution and `arbor_set_attribution_model` still set it.
+  `list_inquiries` rows carry `estimateIds`; `/estimates` rows still carry ONE `leadId`.
 - Repeat customers are the other half of the unattributed tail and are genuinely unreachable by
   tracking: one customer in the sample had **20 estimates going back to 2018**. `self_reported_source`
   is the only instrument that does; it is now captured from web and Meta forms as well as call
@@ -847,8 +855,12 @@ re-argued rather than assumed.
   exactly the second-copy shape `location` was retired for. `lib/leads/stage.ts` now holds
   `leadStageSql` (the old vocabulary: new · qualified · quoted · won · lost · cancelled · spam,
   from `hcp_estimates.outcome` / `status` / amounts), `leadQuoteCentsSql`, `leadSalesCentsSql`
-  and `isOpenLead`, each composing only into a query that left-joins `hcp_estimates` on
-  `leads.hcp_estimate_id` — same rule as `lib/estimates/countable.ts`. Readers moved: the
+  and `isOpenLead`. **Since 0057 they are functions of `leadEstimateRollup()`** — a grouped
+  subquery over every estimate pointing at the inquiry (counts by state, summed values, first
+  created/scheduled/approved dates, ids) — and compose only into a query that left-joins that
+  rollup on `leads.id`; same rule as `lib/estimates/countable.ts`. Precedence across several
+  estimates: a win anywhere wins; a LIVE open estimate outranks a cancelled or lost duplicate;
+  then lost; then all-cancelled. Values SUM over won estimates. Readers moved: the
   conversion exporter (its `won` value is the estimate's approved amount, read directly), the
   SMS in-flight join (`findOpenLead`, now the one implementation), `/sources` breakdowns,
   `list_leads` / `get_thread`, and both detail pages. `roi_daily` never read the columns. The

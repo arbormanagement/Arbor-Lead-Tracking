@@ -29,7 +29,7 @@ export const LEAD_TYPES = ["call", "web_form", "facebook_leadgen", "sms", "email
 /** Mirrors selfReportedChannelEnum / lib/leads/self-reported.ts. */
 export const SELF_REPORTED_CHANNELS = ["referral", "google_search", "social", "sign_or_truck", "repeat_customer", "other"] as const;
 export const LEAD_DISPOSITIONS = ["requested_work", "spam", "not_business", "existing_customer", "missed", "test"] as const;
-/** An enquiry's STAGE — derived from its linked estimate on read (lib/leads/stage.ts), never
+/** An enquiry's STAGE — derived from its linked estimates on read (lib/leads/stage.ts), never
  *  stored. new = no estimate yet · qualified = estimate written, unpriced · quoted = priced ·
  *  won / lost / cancelled = the estimate's outcome · spam. */
 export const LEAD_STATUSES = [
@@ -692,7 +692,7 @@ export const SetAttributionModelInput = z.object({
     .max(365)
     .optional()
     .describe(
-      "How many days a repeat won estimate inherits the customer's original source. OMIT to leave unchanged; applies on the next attribution rebuild.",
+      "How many days after an inquiry an estimate by the same contact still counts as its result (every estimate, not just repeat wins; several can link to one inquiry). Default 30. OMIT to leave unchanged; applies on the next attribution rebuild.",
     ),
 });
 
@@ -827,7 +827,9 @@ export const LeadRowSchema = z.object({
   disposition: z.enum(LEAD_DISPOSITIONS).nullable().describe("null = pending; see ListLeadsInput.disposition"),
   dispositionManual: z.boolean().describe("true = a human set it; the classifiers will not overwrite"),
   isFirstTime: z.boolean().nullable(),
-  hcpEstimateId: z.string().nullable(),
+  estimateIds: z
+    .array(z.string())
+    .describe("This app's ids of every estimate the inquiry produced, oldest first — look them up with arbor_estimate_detail. Empty = none yet"),
   occurredAt: isoDate,
 });
 

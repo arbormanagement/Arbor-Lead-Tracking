@@ -19,7 +19,7 @@ import { dateTime, dollars, durationLabel } from "@/lib/format";
 import { formatPhoneDisplay } from "@/lib/phone";
 import { LeadToggle } from "../../lead-toggle";
 import { stageClass, TYPE_META } from "../../stage";
-import { leadStageSql } from "@/lib/leads/stage";
+import { leadEstimateRollup, leadQuoteCentsSql, leadSalesCentsSql, leadStageSql } from "@/lib/leads/stage";
 
 export const dynamic = "force-dynamic";
 
@@ -53,17 +53,20 @@ function FieldRows({ fields }: { fields: unknown }) {
 export default async function LeadDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
 
+  const est = leadEstimateRollup();
   const [row] = await db
     .select({
       lead: leads,
-      stage: leadStageSql,
+      stage: leadStageSql(est),
+      quoteCents: leadQuoteCentsSql(est),
+      salesCents: leadSalesCentsSql(est),
       sourceName: sources.displayName,
       sourceKey: sources.key,
       campaignName: campaigns.name,
       campaignPlatform: campaigns.platform,
     })
     .from(leads)
-    .leftJoin(hcpEstimates, eq(hcpEstimates.id, leads.hcpEstimateId))
+    .leftJoin(est, eq(est.leadId, leads.id))
     .leftJoin(sources, eq(leads.sourceId, sources.id))
     .leftJoin(campaigns, eq(leads.campaignId, campaigns.id))
     .where(eq(leads.id, id))
@@ -72,7 +75,7 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
   const lead = row.lead;
   const stage = row.stage;
 
-  const [callRows, forms, fbRows, messageRows, touches, session, estimate] = await Promise.all([
+  const [callRows, forms, fbRows, messageRows, touches, session, estimates] = await Promise.all([
     db
       .select({ call: calls, dialedNumber: trackingNumbers.phoneNumber, dialedName: trackingNumbers.friendlyName })
       .from(calls)
@@ -85,9 +88,8 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
     lead.webSessionId
       ? db.select().from(webSessions).where(eq(webSessions.id, lead.webSessionId)).limit(1).then((r) => r[0] ?? null)
       : Promise.resolve(null),
-    lead.hcpEstimateId
-      ? db.select().from(hcpEstimates).where(eq(hcpEstimates.id, lead.hcpEstimateId)).limit(1).then((r) => r[0] ?? null)
-      : Promise.resolve(null),
+    // Every estimate this inquiry produced — one inquiry can carry several.
+    db.select().from(hcpEstimates).where(eq(hcpEstimates.leadId, lead.id)).orderBy(asc(hcpEstimates.createdAtHcp)),
   ]);
 
   const t = TYPE_META[lead.type] ?? { ic: "•", label: lead.type };
@@ -285,27 +287,25 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
             <div className="card-head"><h3>Value</h3></div>
             <div className="card-body">
               <div className="def-list">
-                <Def label="Quoted">
-                  {estimate && !estimate.won && estimate.totalAmountCents ? dollars(estimate.totalAmountCents) : null}
-                </Def>
+                <Def label="Quoted">{row.salesCents == null && row.quoteCents ? dollars(row.quoteCents) : null}</Def>
                 <Def label="Won">
-                  {estimate?.won ? (
-                    <span style={{ color: "var(--accent)", fontWeight: 700 }}>
-                      {dollars(estimate.approvedAmountCents || estimate.totalAmountCents || 0)}
-                    </span>
+                  {row.salesCents != null ? (
+                    <span style={{ color: "var(--accent)", fontWeight: 700 }}>{dollars(row.salesCents)}</span>
                   ) : null}
                 </Def>
-                {estimate && (
-                  <Def label="HCP estimate">
-                    {estimate.won ? "won" : estimate.status || "open"}
-                    <span className="muted"> · {dollars(estimate.won ? estimate.approvedAmountCents : estimate.totalAmountCents)}</span>
-                    {estimate.approvedAtHcp ? <span className="muted"> · approved {dateTime(estimate.approvedAtHcp)}</span> : null}
+                {/* One inquiry can produce several estimates; the figures above sum them. */}
+                {estimates.map((e) => (
+                  <Def key={e.id} label={estimates.length > 1 ? "HCP estimate" : "HCP estimate"}>
+                    <Link href={`/estimates?q=${encodeURIComponent(e.hcpEstimateId)}`}>{e.hcpEstimateId}</Link>
+                    <span className="muted"> · {e.won ? "won" : e.status || "open"}</span>
+                    <span className="muted"> · {dollars(e.won ? e.approvedAmountCents : e.totalAmountCents)}</span>
+                    {e.approvedAtHcp ? <span className="muted"> · approved {dateTime(e.approvedAtHcp)}</span> : null}
                   </Def>
-                )}
+                ))}
               </div>
-              {!estimate && (
+              {estimates.length === 0 && (
                 <p className="muted" style={{ fontSize: 12, margin: 0 }}>
-                  Not matched to a HousecallPro estimate yet. Matching runs on phone/email during the HCP sync.
+                  Not matched to a HousecallPro estimate yet. Matching runs on the contact during the HCP sync.
                 </p>
               )}
             </div>

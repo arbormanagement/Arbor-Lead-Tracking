@@ -271,7 +271,7 @@ export async function listEstimates(opts: WindowInput & {
       ...hcpFieldColumns,
     })
     .from(hcpEstimates)
-    .leftJoin(leads, and(eq(leads.hcpEstimateId, hcpEstimates.id), eq(leads.isSpam, false)))
+    .leftJoin(leads, and(eq(leads.id, hcpEstimates.leadId), eq(leads.isSpam, false)))
     .leftJoin(sources, eq(leads.sourceId, sources.id))
     .leftJoin(campaigns, eq(leads.campaignId, campaigns.id))
     .leftJoin(hcpCustomers, eq(hcpEstimates.hcpCustomerId, hcpCustomers.id))
@@ -320,7 +320,7 @@ export async function listEstimates(opts: WindowInput & {
       wonCents: sql<number>`coalesce(sum(coalesce(nullif(${hcpEstimates.approvedAmountCents},0), ${hcpEstimates.totalAmountCents})) filter (where ${hcpEstimates.outcome} = 'won'), 0)::int`,
     })
     .from(hcpEstimates)
-    .leftJoin(leads, and(eq(leads.hcpEstimateId, hcpEstimates.id), eq(leads.isSpam, false)))
+    .leftJoin(leads, and(eq(leads.id, hcpEstimates.leadId), eq(leads.isSpam, false)))
     .leftJoin(sources, eq(leads.sourceId, sources.id))
     .leftJoin(campaigns, eq(leads.campaignId, campaigns.id))
     .where(scope);
@@ -389,7 +389,7 @@ export async function getEstimateDetail(id: string): Promise<EstimateDetail | nu
       selfReportedSource: leads.selfReportedSource,
     })
     .from(hcpEstimates)
-    .leftJoin(leads, and(eq(leads.hcpEstimateId, hcpEstimates.id), eq(leads.isSpam, false)))
+    .leftJoin(leads, and(eq(leads.id, hcpEstimates.leadId), eq(leads.isSpam, false)))
     .leftJoin(conversations, eq(leads.conversationId, conversations.id))
     .leftJoin(sources, eq(leads.sourceId, sources.id))
     .leftJoin(campaigns, eq(leads.campaignId, campaigns.id))
