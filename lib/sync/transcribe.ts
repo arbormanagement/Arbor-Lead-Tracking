@@ -4,6 +4,7 @@ import { calls, leads, trackingNumbers } from "@/lib/db/schema";
 import { transcribeRecording } from "@/lib/transcription/deepgram";
 import { getTwilioClient } from "@/lib/twilio/client";
 import { classifyCallLead } from "@/lib/transcription/classify-lead";
+import { notManuallyDispositioned } from "@/lib/leads/classify-override";
 import { preview, recordThreadActivity } from "@/lib/messaging/thread";
 import { withSyncRun } from "./run";
 
@@ -75,15 +76,17 @@ async function runTranscription(call: PendingCall): Promise<"transcribed" | "spa
     if (cls.selfReportedSource) {
       await db.update(leads).set({ selfReportedSource: cls.selfReportedSource }).where(eq(leads.id, call.leadId));
     }
-    // Skip if a human manually set is_lead — their decision wins over auto-classify.
+    // Skip if a human set the disposition — their decision wins over auto-classify.
     await db
       .update(leads)
       .set({
+        disposition: spam ? "spam" : cls.isLead ? "requested_work" : "not_business",
+        dispositionReason: cls.reason,
         isLead: spam ? false : cls.isLead,
         leadReason: cls.reason,
         ...(spam ? { isSpam: true, status: "spam" as const } : {}),
       })
-      .where(and(eq(leads.id, call.leadId), eq(leads.isLeadManual, false)));
+      .where(and(eq(leads.id, call.leadId), notManuallyDispositioned));
     if (spam) return "spam";
   }
   return "transcribed";

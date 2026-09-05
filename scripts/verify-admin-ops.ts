@@ -33,6 +33,7 @@ import { resetFailedExports } from "@/lib/sync/conversions";
 import { runLeadCleanup } from "@/lib/leads/cleanup";
 import { setIncludedFormIds } from "@/lib/sync/facebook-leads";
 import { setLeadAttribution } from "@/lib/leads/attribution";
+import { setLeadClassification, setLeadDisposition } from "@/lib/leads/classify-override";
 import { campaigns } from "@/lib/db/schema";
 
 let failures = 0;
@@ -69,6 +70,28 @@ async function main() {
     "…and retires it on the next run once the last reference is gone");
   ok((await db.select().from(sources).where(eq(sources.key, "referral"))).length === 1,
     "…while the seeded `referral` itself is never touched by the `%/referral` rule");
+
+  // ── setLeadDisposition — the human verdict, and the boolean slice of it ──────
+  const [dLead] = await db.insert(leads).values({ type: "call", occurredAt: new Date(), phoneE164: ATTR_PHONE }).returning();
+  ok(dLead.disposition === null && dLead.dispositionManual === false, "a new call is PENDING: no disposition, no override");
+  const missed = await setLeadDisposition(dLead.id, "missed", "verify: nobody called back");
+  ok(missed?.disposition === "missed" && missed.dispositionManual && missed.dispositionReason === "verify: nobody called back",
+    "setLeadDisposition sets the value, the override and the reason");
+  const [dRow] = await db.select().from(leads).where(eq(leads.id, dLead.id));
+  ok(dRow.isLead === false && dRow.isLeadManual === true, "…and dual-writes is_lead for the one cycle it survives");
+  const asSpam = await setLeadDisposition(dLead.id, "spam");
+  const [spamRow] = await db.select().from(leads).where(eq(leads.id, dLead.id));
+  ok(asSpam?.disposition === "spam" && spamRow.isSpam === true && spamRow.status === "spam", "…spam also flags is_spam and the status");
+  const back = await setLeadClassification(dLead.id, true);
+  const [backRow] = await db.select().from(leads).where(eq(leads.id, dLead.id));
+  ok(back?.isLead === true && backRow.disposition === "requested_work", "setLeadClassification(true) is requested_work");
+  const no = await setLeadClassification(dLead.id, false);
+  const [noRow] = await db.select().from(leads).where(eq(leads.id, dLead.id));
+  ok(no?.isLead === false && noRow.disposition === "not_business", "…and (false) is not_business");
+  const dCleared = await setLeadDisposition(dLead.id, null);
+  ok(dCleared?.disposition === null && dCleared.dispositionManual === false, "null clears the override; with no transcript the row returns to pending");
+  ok((await setLeadDisposition("no-such-lead", "missed")) === null, "…and an unknown id returns null, not a throw");
+  await db.delete(leads).where(eq(leads.id, dLead.id));
 
   // ── setLeadAttribution — the manual correction, and what it refuses ─────────
   const [gbpSrc] = await db.select({ id: sources.id }).from(sources).where(eq(sources.key, "gbp")).limit(1);

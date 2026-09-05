@@ -237,6 +237,8 @@ async function recordCall(args: {
     .values({
       type: "call",
       status: status === "rejected_spam" ? "spam" : "new",
+      // Pending until the transcript is classified — a call is NOT presumed to be a lead.
+      disposition: status === "rejected_spam" ? "spam" : null,
       phoneE164: fromE164,
       conversationId: thread?.conversationId ?? null,
       contactId: thread?.contactId ?? null,

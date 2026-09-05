@@ -63,6 +63,7 @@ export async function ingestFacebookLead(detail: FbLeadDetail): Promise<IngestRe
         type: "facebook_leadgen",
         status: "new",
         isLead: true, // a submitted lead-gen form is inherently a lead
+        disposition: "requested_work",
         name: c.name,
         phoneE164: normalizePhone(c.phone),
         emailLc: normalizeEmail(c.email),

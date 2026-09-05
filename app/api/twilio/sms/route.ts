@@ -197,6 +197,8 @@ async function attachToOpenLeadOrCreate(args: {
     .values({
       type: "sms",
       status: spam ? "spam" : "new",
+      // Pending until the body is classified — a text is NOT presumed to be a lead.
+      disposition: spam ? "spam" : null,
       phoneE164: fromE164,
       message: body || null,
       conversationId: thread.conversationId,

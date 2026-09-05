@@ -25,6 +25,8 @@ import { LOCATIONS } from "@/lib/locations";
  *  that isn't in the pg enum fails the query rather than matching nothing.
  *  Defined HERE (db-free) so both the query layer and client code can import. */
 export const LEAD_TYPES = ["call", "web_form", "facebook_leadgen", "sms", "email"] as const;
+/** Mirrors leadDispositionEnum. NULL (absent) means pending — see the enum's comment. */
+export const LEAD_DISPOSITIONS = ["requested_work", "spam", "not_business", "existing_customer", "missed"] as const;
 export const LEAD_STATUSES = [
   "new",
   "working",
@@ -357,6 +359,12 @@ export const ListLeadsInput = z.object({
   q: z.string().max(200).optional().describe("Free text over name/email/phone/message"),
   type: z.enum(LEAD_TYPES).optional(),
   status: z.enum(LEAD_STATUSES).optional(),
+  disposition: z
+    .enum([...LEAD_DISPOSITIONS, "none"])
+    .optional()
+    .describe(
+      "Why nothing came of it. requested_work = asked for work (classifier or human); spam; not_business (vendor, wrong number); existing_customer (service/billing on work already sold); missed (a real request with no estimate written — the ones to chase). `none` = still pending, nobody has decided",
+    ),
   isSpam: z.boolean().optional(),
   hasClickId: z.boolean().optional().describe("true = carries gclid/gbraid/wbraid/fbclid; false = carries none"),
   limit: z.coerce.number().int().min(1).max(200).default(50),
@@ -418,6 +426,17 @@ export const SetLeadAttributionInput = z.object({
     .boolean()
     .optional()
     .describe("Default true: lock the row so seed backfills and reclassify never overwrite it. false: release the lock, values untouched"),
+});
+
+export const SetLeadDispositionInput = z.object({
+  id: z.string().max(64).describe("Lead id, from arbor_list_leads or arbor_get_thread's enquiries — one ENQUIRY, not a person"),
+  disposition: z
+    .enum(LEAD_DISPOSITIONS)
+    .nullable()
+    .describe(
+      "requested_work | spam | not_business | existing_customer | missed. Sets a MANUAL verdict the classifiers never overwrite. null clears the override: the transcript is re-classified, or the row returns to pending",
+    ),
+  reason: z.string().max(300).nullable().optional().describe("Why — stored on the lead"),
 });
 
 export const ClassifyLeadInput = z.object({
@@ -798,6 +817,8 @@ export const LeadRowSchema = z.object({
   fbclid: z.string().nullable(),
   landingPage: z.string().nullable(),
   isSpam: z.boolean(),
+  disposition: z.enum(LEAD_DISPOSITIONS).nullable().describe("null = pending; see ListLeadsInput.disposition"),
+  dispositionManual: z.boolean().describe("true = a human set it; the classifiers will not overwrite"),
   isFirstTime: z.boolean().nullable(),
   hcpEstimateId: z.string().nullable(),
   occurredAt: isoDate,

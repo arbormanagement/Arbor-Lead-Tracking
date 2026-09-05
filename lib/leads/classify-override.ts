@@ -1,56 +1,98 @@
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { calls, leads } from "@/lib/db/schema";
 import { classifyCallLead } from "@/lib/transcription/classify-lead";
 
+export type LeadDisposition = (typeof leads.$inferSelect)["disposition"];
+
 /**
- * Manual lead override — the Lead/Not toggle, shared by POST
- * /api/leads/[id]/classify and the MCP `classify_lead` tool.
+ * Set an enquiry's DISPOSITION by hand — why nothing (or something) came of it.
+ * Shared by POST /api/leads/[id]/disposition and the MCP `arbor_set_lead_disposition`
+ * tool. See `leadDispositionEnum` in lib/db/schema.ts for what each value means and
+ * why `requested_work` exists at all.
  *
- * Setting a boolean marks the lead and sets `is_lead_manual`, so
- * auto-classification (AI/keyword) won't overwrite the human decision.
- * `isLead: null` clears the override back to auto — re-running the classifier
- * on the call transcript so the stale manual verdict doesn't linger, or
- * leaving is_lead null (unclassified) when there's no transcript to classify.
+ * A value sets `disposition_manual`, so the transcript / text classifiers never
+ * overwrite the human decision. `null` clears the override back to automatic: the
+ * classifier is re-run on the call transcript so a stale manual verdict does not
+ * linger, or the row goes back to pending when there is nothing to classify.
+ *
+ * `is_lead` is dual-written for one deploy cycle (true ⇔ requested_work,
+ * false ⇔ any negative value) so nothing reading the old column changes behaviour
+ * before it is dropped.
  *
  * Returns null when the lead does not exist.
+ */
+export async function setLeadDisposition(
+  id: string,
+  disposition: LeadDisposition,
+  reason?: string | null,
+): Promise<{ id: string; disposition: LeadDisposition; dispositionManual: boolean; dispositionReason: string | null } | null> {
+  if (disposition !== null) {
+    const [row] = await db
+      .update(leads)
+      .set({
+        disposition,
+        dispositionManual: true,
+        dispositionReason: reason ?? `manual: ${disposition.replace("_", " ")}`,
+        isLead: disposition === "requested_work",
+        isLeadManual: true,
+        leadReason: reason ?? `manual: ${disposition.replace("_", " ")}`,
+        ...(disposition === "spam" ? { isSpam: true, status: "spam" as const } : {}),
+      })
+      .where(eq(leads.id, id))
+      .returning({
+        id: leads.id,
+        disposition: leads.disposition,
+        dispositionManual: leads.dispositionManual,
+        dispositionReason: leads.dispositionReason,
+      });
+    return row ?? null;
+  }
+
+  // Clearing: re-run the automatic verdict rather than keeping the manual one.
+  // Same call pattern as lib/sync/transcribe.ts (spam floors the verdict).
+  const [call] = await db.select({ transcript: calls.transcript }).from(calls).where(eq(calls.leadId, id)).limit(1);
+
+  let auto: { disposition: LeadDisposition; dispositionReason: string; isLead: boolean | null; leadReason: string };
+  if (call?.transcript) {
+    const cls = await classifyCallLead(call.transcript);
+    const spam = cls.spamScore >= 0.5; // mirrors SPAM_THRESHOLD in lib/sync/transcribe.ts
+    const d: LeadDisposition = spam ? "spam" : cls.isLead ? "requested_work" : "not_business";
+    auto = { disposition: d, dispositionReason: cls.reason, isLead: spam ? false : cls.isLead, leadReason: cls.reason };
+  } else {
+    auto = { disposition: null, dispositionReason: "auto (override cleared)", isLead: null, leadReason: "auto (override cleared)" };
+  }
+
+  const [row] = await db
+    .update(leads)
+    .set({ dispositionManual: false, isLeadManual: false, ...auto })
+    .where(eq(leads.id, id))
+    .returning({
+      id: leads.id,
+      disposition: leads.disposition,
+      dispositionManual: leads.dispositionManual,
+      dispositionReason: leads.dispositionReason,
+    });
+  return row ?? null;
+}
+
+/**
+ * The Lead/Not toggle, kept for the existing route and MCP tool: a boolean is the
+ * two-valued slice of the disposition (true = requested_work, false = not_business),
+ * and null clears the override exactly as before.
  */
 export async function setLeadClassification(
   id: string,
   isLead: boolean | null,
 ): Promise<{ id: string; isLead: boolean | null; isLeadManual: boolean } | null> {
-  if (isLead !== null) {
-    const [row] = await db
-      .update(leads)
-      .set({ isLead, isLeadManual: true, leadReason: isLead ? "manual: marked lead" : "manual: not a lead" })
-      .where(eq(leads.id, id))
-      .returning({ id: leads.id, isLead: leads.isLead, isLeadManual: leads.isLeadManual });
-    return row ?? null;
-  }
-
-  // Clearing: re-run the automatic verdict rather than keeping the manual one in
-  // is_lead. Same call pattern as lib/sync/transcribe.ts (spam floors is_lead to false).
-  const [call] = await db
-    .select({ transcript: calls.transcript })
-    .from(calls)
-    .where(eq(calls.leadId, id))
-    .limit(1);
-
-  let auto: { isLead: boolean | null; leadReason: string };
-  if (call?.transcript) {
-    const cls = await classifyCallLead(call.transcript);
-    const spam = cls.spamScore >= 0.5; // mirrors SPAM_THRESHOLD in lib/sync/transcribe.ts
-    auto = { isLead: spam ? false : cls.isLead, leadReason: cls.reason };
-  } else {
-    // No transcript to classify — back to unclassified.
-    auto = { isLead: null, leadReason: "auto (override cleared)" };
-  }
-
-  const [row] = await db
-    .update(leads)
-    .set({ isLeadManual: false, ...auto })
-    .where(eq(leads.id, id))
-    .returning({ id: leads.id, isLead: leads.isLead, isLeadManual: leads.isLeadManual });
-
-  return row ?? null;
+  const row = await setLeadDisposition(id, isLead === null ? null : isLead ? "requested_work" : "not_business");
+  if (!row) return null;
+  return {
+    id: row.id,
+    isLead: row.disposition === null ? null : row.disposition === "requested_work",
+    isLeadManual: row.dispositionManual,
+  };
 }
+
+/** The guard every automatic classifier applies: a human decision is never overwritten. */
+export const notManuallyDispositioned = and(eq(leads.isLeadManual, false), eq(leads.dispositionManual, false));

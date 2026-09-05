@@ -100,7 +100,7 @@ export default async function ThreadPage({ params }: { params: Promise<{ id: str
         </div>
         <div className="controls">
           {current && <span className={stageClass(current.status)}>{current.status}</span>}
-          {current && <LeadToggle leadId={current.id} isLead={current.isLead} manual={current.isLeadManual} />}
+          {current && <LeadToggle leadId={current.id} disposition={current.disposition} manual={current.dispositionManual} />}
           {current && <Link href={`/leads/${current.id}`} className="btn">Lead detail</Link>}
           <ThreadStateButton conversationId={thread.id} state={thread.state} />
         </div>

@@ -2,6 +2,7 @@ import { and, asc, desc, eq, isNull } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { leads, messages } from "@/lib/db/schema";
 import { classifyCallLead } from "@/lib/transcription/classify-lead";
+import { notManuallyDispositioned } from "@/lib/leads/classify-override";
 import { withSyncRun } from "./run";
 
 /** Mirrors SPAM_THRESHOLD in lib/sync/transcribe.ts. */
@@ -62,13 +63,15 @@ export async function syncMessageClassification({ limit = 25 }: { limit?: number
         await db
           .update(leads)
           .set({
+            disposition: isSpam ? "spam" : cls.isLead ? "requested_work" : "not_business",
+            dispositionReason: cls.reason,
             isLead: isSpam ? false : cls.isLead,
             leadReason: cls.reason,
             ...(cls.selfReportedSource ? { selfReportedSource: cls.selfReportedSource } : {}),
             ...(isSpam ? { isSpam: true, status: "spam" as const } : {}),
           })
           // Re-check the override: a human may have decided while this ran.
-          .where(and(eq(leads.id, lead.id), eq(leads.isLeadManual, false)));
+          .where(and(eq(leads.id, lead.id), notManuallyDispositioned));
 
         classified++;
         if (isSpam) spam++;

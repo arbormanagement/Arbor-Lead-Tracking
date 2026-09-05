@@ -5,6 +5,7 @@ import { env } from "@/lib/env";
 import {
   AttributionHealthInput,
   ClassifyLeadInput,
+  SetLeadDispositionInput,
   SetLeadAttributionInput,
   DiagnosticsInput,
   EstimateDetailInput,
@@ -71,7 +72,7 @@ import {
 } from "@/lib/api-contracts/tools";
 import { selectedTouchModel, setAttributionOptions } from "@/lib/attribution/model";
 import { setCampaignExcluded } from "@/lib/campaigns";
-import { setLeadClassification } from "@/lib/leads/classify-override";
+import { setLeadClassification, setLeadDisposition } from "@/lib/leads/classify-override";
 import { setLeadAttribution } from "@/lib/leads/attribution";
 import { listCampaignsWithVolume } from "@/lib/queries/campaigns";
 import { listTrackingNumbers } from "@/lib/queries/numbers";
@@ -458,6 +459,9 @@ const handler = createMcpHandler(
             at: l.occurredAt,
             type: l.type,
             status: l.status,
+            disposition: l.disposition,
+            dispositionManual: l.dispositionManual,
+            dispositionReason: l.dispositionReason,
             isLead: l.isLead,
             leadReason: l.leadReason,
             quoteValueCents: l.quoteValueCents,
@@ -583,11 +587,36 @@ const handler = createMcpHandler(
     );
 
     server.registerTool(
+      "arbor_set_lead_disposition",
+      {
+        title: "Set why nothing came of an enquiry",
+        description:
+          "Set ONE enquiry's disposition by hand: requested_work (asked for tree work), spam, not_business (vendor, recruiter, wrong number), existing_customer (service/billing on work already sold), or missed (a real request nobody wrote an estimate for — the ones to chase). " +
+          "The ESTIMATE is the ground truth for 'was this business' and every metric counts estimates; the disposition is the answer an estimate cannot give, which is NO and why. So it cannot move ROI numbers. " +
+          "requested_work is the one positive value and exists because the inbox and the Lead Created export need a verdict before an estimate exists. " +
+          "Sets a manual override the transcript/text classifiers never overwrite; null clears it (the transcript is re-classified, or the row returns to pending). spam also flags is_spam.",
+        inputSchema: SetLeadDispositionInput.shape,
+        annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
+      },
+      async ({ id, disposition, reason }) => {
+        const row = await setLeadDisposition(id, disposition, reason);
+        if (!row) {
+          return fail(
+            `No lead with id '${id}'.`,
+            "Lead ids come from arbor_list_leads, or from arbor_get_thread's `enquiries` array. A lead id is not an estimate id.",
+          );
+        }
+        return json({ ok: true, ...row });
+      },
+    );
+
+    server.registerTool(
       "arbor_classify_lead",
       {
         title: "Mark a lead as lead / not a lead",
         description:
-          "The Lead/Not toggle, for inbox triage only — NO metric reads is_lead any more (estimates are counted from HousecallPro), so this cannot move ROI numbers. " +
+          "The two-valued slice of arbor_set_lead_disposition (true = requested_work, false = not_business), kept for the inbox toggle. Prefer arbor_set_lead_disposition, which can also say existing_customer, missed or spam. " +
+          "For inbox triage only — NO metric reads this (estimates are counted from HousecallPro), so it cannot move ROI numbers. " +
           "A boolean sets a manual verdict the auto-classifier will not overwrite; null clears the override and re-runs the classifier on the call transcript.",
         inputSchema: ClassifyLeadInput.shape,
         annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
