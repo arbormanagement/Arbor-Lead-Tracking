@@ -592,6 +592,21 @@ export const hcpEstimates = pgTable(
     id: id(),
     hcpEstimateId: text("hcp_estimate_id").notNull(),
     hcpCustomerId: text("hcp_customer_id").references(() => hcpCustomers.id),
+    /**
+     * The INQUIRY this estimate came from — the latest non-spam inquiry by the same
+     * contact inside `customer_window_days` before the estimate was written. Set by
+     * `matchLeadsToEstimates`; null = no tracked contact preceded it (repeat business,
+     * referral, an estimate written in the field).
+     *
+     * On the estimate, not the inquiry, since 2026-09-05 (migration 0057). The old
+     * `leads.hcp_estimate_id` could hold ONE estimate, so a form that produced two
+     * jobs left the second reading as untracked business — and once a repeat call
+     * started joining the inquiry in flight (#162) there was no spare inquiry left
+     * for a second estimate to claim at all. Many estimates → one inquiry is the shape
+     * of the fact; an inquiry's stage and value roll up over all of them
+     * (lib/leads/stage.ts).
+     */
+    leadId: text("lead_id").references(() => leads.id),
     status: text("status"),
     won: boolean("won").notNull().default(false),
     outcome: estimateOutcomeEnum("outcome").notNull().default("open"),
@@ -684,6 +699,7 @@ export const hcpEstimates = pgTable(
     index("hcp_estimates_crawl_seen_idx").on(t.crawlSeenAt),
     index("hcp_estimates_line_items_synced_idx").on(t.lineItemsSyncedAt),
     index("hcp_estimates_customer_idx").on(t.hcpCustomerId),
+    index("hcp_estimates_lead_idx").on(t.leadId),
     index("hcp_estimates_won_idx").on(t.won),
     index("hcp_estimates_phone_idx").on(t.customerPhoneE164),
     index("hcp_estimates_email_idx").on(t.customerEmailLc),
@@ -949,7 +965,9 @@ export const leads = pgTable(
     visitorId: text("visitor_id").references(() => visitors.id),
     webSessionId: text("web_session_id").references(() => webSessions.id),
     hcpCustomerId: text("hcp_customer_id").references(() => hcpCustomers.id),
-    hcpEstimateId: text("hcp_estimate_id").references(() => hcpEstimates.id),
+    // The estimate link lives on the ESTIMATE (`hcp_estimates.lead_id`) since
+    // migration 0057: one inquiry can produce several estimates, and a pointer here
+    // could only ever hold one of them.
     // No stage or value columns, deliberately. `status`, `quote_value_cents` and
     // `sales_value_cents` were the linked estimate's lifecycle copied here by the
     // attribution sync; they derive from the estimate on read now (lib/leads/stage.ts).
@@ -981,7 +999,6 @@ export const leads = pgTable(
     index("leads_phone_idx").on(t.phoneE164),
     index("leads_email_idx").on(t.emailLc),
     index("leads_source_idx").on(t.sourceId),
-    index("leads_hcp_estimate_idx").on(t.hcpEstimateId),
     // Every ROI surface filters through `campaignNotExcluded(leads.campaignId, …)`.
     index("leads_campaign_idx").on(t.campaignId),
     uniqueIndex("leads_type_external_id_uq")

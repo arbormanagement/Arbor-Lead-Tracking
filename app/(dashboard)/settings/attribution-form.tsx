@@ -60,7 +60,7 @@ export function AttributionForm({ initialModel, initialWindowDays }: { initialMo
         Which lead gets credit when a contact has several. Retroactive — the hourly rebuild reclassifies history.
       </div>
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 12 }}>
-        <span className="muted" style={{ fontSize: 12.5 }}>Repeat-customer window</span>
+        <span className="muted" style={{ fontSize: 12.5 }}>Estimate link window</span>
         <input
           type="number"
           min={0}
@@ -77,7 +77,9 @@ export function AttributionForm({ initialModel, initialWindowDays }: { initialMo
             color: "var(--text)",
           }}
         />
-        <span className="muted" style={{ fontSize: 12.5 }}>days</span>
+        <span className="muted" style={{ fontSize: 12.5 }}>
+          days — an estimate written this long after an inquiry by the same person counts as its result
+        </span>
       </div>
       <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>
         Repeat jobs within this window credit the source that originally won the customer. 0 disables.

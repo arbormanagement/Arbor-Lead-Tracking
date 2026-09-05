@@ -1,6 +1,6 @@
 import { and, desc, eq, gte, inArray, isNull, ne, or, sql } from "drizzle-orm";
 import { db } from "@/lib/db/client";
-import { estimateCancelledSql } from "@/lib/leads/stage";
+import { leadEstimateRollup } from "@/lib/leads/stage";
 import { calls, conversionExports, facebookLeads, hcpEstimates, leads, numberAssignments, sources } from "@/lib/db/schema";
 import { getPlatformCreds } from "@/lib/credentials";
 import { ingestEvents, type EventSource, type IngestEvent } from "@/lib/integrations/data-manager";
@@ -132,6 +132,7 @@ export async function syncConversions({ sinceDays = 90, limit = 500 }: { sinceDa
 
     // ── Candidate leads: qualified or won, not spam, recent ───────────────────
     const cutoff = new Date(Date.now() - sinceDays * 86_400_000);
+    const est = leadEstimateRollup();
     const rows = await db
       .select({
         id: leads.id,
@@ -151,27 +152,30 @@ export async function syncConversions({ sinceDays = 90, limit = 500 }: { sinceDa
         // Gates the no-click-id fallback: only genuinely-paid sources qualify.
         sourceKey: sources.key,
         occurredAt: leads.occurredAt,
-        // The linked estimate is the stage AND the money: only `won` reports a value,
-        // and it is the approved amount, read here rather than from a copy on the lead.
-        estimateWon: hcpEstimates.won,
-        estimateApprovedCents: hcpEstimates.approvedAmountCents,
-        estimateCreatedAt: hcpEstimates.createdAtHcp,
-        estimateScheduledAt: hcpEstimates.scheduledStartHcp,
-        estimateApprovedAt: hcpEstimates.approvedAtHcp,
+        // The linked estimates are the stage AND the money: only `won` reports a
+        // value, and it is the approved amount summed over every won estimate this
+        // inquiry produced, read here rather than from a copy on the lead. Each
+        // stage fires ONCE per inquiry (an export row reaches `sent` once), dated
+        // from the FIRST estimate to reach it.
+        estimateWon: sql<boolean>`coalesce(${est.won}, 0) > 0`,
+        estimateApprovedCents: est.salesCents,
+        estimateCreatedAt: est.firstCreatedAt,
+        estimateScheduledAt: est.firstScheduledAt,
+        estimateApprovedAt: est.firstApprovedAt,
       })
       .from(leads)
       .leftJoin(facebookLeads, eq(facebookLeads.leadId, leads.id))
-      .leftJoin(hcpEstimates, eq(hcpEstimates.id, leads.hcpEstimateId))
+      .leftJoin(est, eq(est.leadId, leads.id))
       .leftJoin(calls, eq(calls.leadId, leads.id))
       .leftJoin(numberAssignments, eq(numberAssignments.id, calls.numberAssignmentId))
       .leftJoin(sources, eq(sources.id, leads.sourceId))
       .where(
         and(
           // No estimate yet is in scope, so the lead-stage event can fire on the
-          // form submission or call itself. Terminal non-outcomes stay out: a lost or
-          // cancelled estimate has nothing useful to teach bidding. Derived from the
-          // estimate, never from a stored stage.
-          or(isNull(hcpEstimates.id), and(ne(hcpEstimates.outcome, "lost"), sql`not (${estimateCancelledSql})`)),
+          // form submission or call itself. Terminal non-outcomes stay out: an
+          // inquiry whose every estimate is lost or cancelled has nothing useful to
+          // teach bidding. Derived from the estimates, never from a stored stage.
+          or(isNull(est.leadId), sql`(${est.won} > 0 or ${est.open} > 0)`),
           eq(leads.isSpam, false),
           gte(leads.occurredAt, cutoff),
           // A call lead is only a lead once transcription has classified it as a

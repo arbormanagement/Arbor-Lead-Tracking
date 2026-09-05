@@ -1,5 +1,13 @@
 import { getSetting, setSetting } from "@/lib/settings";
 
+/**
+ * How many days after an inquiry an estimate by the same contact still counts as its
+ * result (`customer_window_days`). 30 by Justin's decision (2026-09-05): two jobs
+ * written inside a month of one enquiry are two sales that enquiry produced; a repeat
+ * customer's unrelated job months later is not. The matcher treats 0 as this default.
+ */
+export const DEFAULT_LINK_WINDOW_DAYS = 30;
+
 export type TouchModel = "first" | "last";
 
 /**

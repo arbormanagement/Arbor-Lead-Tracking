@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { authorizeAdmin, unauthorized, forbidden } from "@/lib/admin-auth";
 import { db } from "@/lib/db/client";
 import {
@@ -7,6 +7,7 @@ import {
   conversionExports,
   facebookLeads,
   formSubmissions,
+  hcpEstimates,
   leads,
 } from "@/lib/db/schema";
 
@@ -44,7 +45,7 @@ export async function DELETE(req: Request, { params }: { params: Promise<{ id: s
       type: leads.type,
       name: leads.name,
       hcpCustomerId: leads.hcpCustomerId,
-      hcpEstimateId: leads.hcpEstimateId,
+      estimates: sql<number>`(select count(*)::int from ${hcpEstimates} e where e.lead_id = ${leads.id})`,
     })
     .from(leads)
     .where(eq(leads.id, id))
@@ -59,7 +60,7 @@ export async function DELETE(req: Request, { params }: { params: Promise<{ id: s
     );
   }
 
-  const linkedToHcp = !!(lead.hcpCustomerId || lead.hcpEstimateId);
+  const linkedToHcp = !!(lead.hcpCustomerId || lead.estimates > 0);
   if (linkedToHcp && !force) {
     return forbidden(
       "this lead is linked to HousecallPro (customer/job/estimate) — it has been matched to real work. Re-send with ?force=true from an admin session to override.",

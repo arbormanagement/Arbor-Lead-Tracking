@@ -1,7 +1,7 @@
 import { and, desc, eq } from "drizzle-orm";
 import { db } from "@/lib/db/client";
-import { hcpEstimates, leads } from "@/lib/db/schema";
-import { isOpenLead } from "@/lib/leads/stage";
+import { leads } from "@/lib/db/schema";
+import { isOpenLead, leadEstimateRollup } from "@/lib/leads/stage";
 
 /**
  * The still-open lead on this conversation, if there is one.
@@ -28,11 +28,12 @@ import { isOpenLead } from "@/lib/leads/stage";
  */
 export async function findOpenLead(conversationId: string | null | undefined): Promise<string | null> {
   if (!conversationId) return null;
+  const est = leadEstimateRollup();
   const [open] = await db
     .select({ id: leads.id })
     .from(leads)
-    .leftJoin(hcpEstimates, eq(hcpEstimates.id, leads.hcpEstimateId))
-    .where(and(eq(leads.conversationId, conversationId), isOpenLead))
+    .leftJoin(est, eq(est.leadId, leads.id))
+    .where(and(eq(leads.conversationId, conversationId), isOpenLead(est)))
     .orderBy(desc(leads.occurredAt))
     .limit(1);
   return open?.id ?? null;

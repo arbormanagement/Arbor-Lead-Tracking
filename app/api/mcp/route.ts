@@ -1052,7 +1052,7 @@ const handler = createMcpHandler(
         description:
           "Sets which single-touch model every surface reports under: last_touch (which channel produced this estimate — repeat customers show unattributed, by design) or " +
           "first_touch (which channel acquired the customer). Both models are always stored side by side, so switching is an instant display filter — nothing is recomputed and switching back loses nothing. " +
-          "customerWindowDays (optional) changes how long a repeat won estimate inherits the original source, applied on the next attribution rebuild.",
+          "customerWindowDays (optional) changes how long after an inquiry an estimate by the same contact still links to it (default 30), applied on the next attribution rebuild.",
         inputSchema: SetAttributionModelInput.shape,
         annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
       },

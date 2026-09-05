@@ -122,8 +122,8 @@ async function linkEstimateToLead(
     }
 
     // The estimate row itself won't exist in the mirror until the next sync;
-    // leads.hcp_estimate_id references hcp_estimates.id, so the claim can only
-    // be written once the sync has ingested it — UNLESS it's already there.
+    // the link is `hcp_estimates.lead_id`, so the claim can only be written once
+    // the sync has ingested it — UNLESS it's already there.
     const [estimateRow] = await db
       .select({ id: hcpEstimates.id })
       .from(hcpEstimates)
@@ -143,10 +143,11 @@ async function linkEstimateToLead(
       .where(
         and(
           eq(leads.conversationId, thread.id),
-          isNull(leads.hcpEstimateId),
-          // Bound the claim to a recent enquiry: this webhook fires minutes
-          // after the lead, and claiming a weeks-old open lead would steal the
-          // slot matchLeadsToEstimates might assign more carefully.
+          eq(leads.isSpam, false),
+          // Bound the claim to a recent enquiry: this webhook fires minutes after
+          // the inquiry, and a weeks-old one is matchLeadsToEstimates' call to make.
+          // An inquiry that already has an estimate still qualifies — one inquiry
+          // can produce several.
           gte(leads.occurredAt, new Date(Date.now() - 24 * 60 * 60 * 1000)),
         ),
       )
@@ -156,9 +157,9 @@ async function linkEstimateToLead(
 
     if (estimateRow) {
       await db
-        .update(leads)
-        .set({ hcpEstimateId: estimateRow.id, updatedAt: new Date() })
-        .where(and(eq(leads.id, openLead.id), isNull(leads.hcpEstimateId)));
+        .update(hcpEstimates)
+        .set({ leadId: openLead.id, updatedAt: new Date() })
+        .where(and(eq(hcpEstimates.id, estimateRow.id), isNull(hcpEstimates.leadId)));
       return openLead.id;
     }
 

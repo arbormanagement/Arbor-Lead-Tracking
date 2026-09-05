@@ -5,6 +5,7 @@ import { isLikelyBot } from "@/lib/bot";
 import { campaignNotExcluded, excludedCampaignIds } from "@/lib/campaigns";
 import { db } from "@/lib/db/client";
 import { campaigns, hcpEstimates, leads, roiDaily, sources, webSessions } from "@/lib/db/schema";
+import { leadEstimateRollup } from "@/lib/leads/stage";
 import { isCancelledEstimate } from "@/lib/estimates/countable";
 import { landingPathSql } from "@/lib/landing-page";
 import { businessDate } from "@/lib/tz";
@@ -135,12 +136,12 @@ export async function sourcePerformance(
       .orderBy(desc(sql`coalesce(sum(${roiDaily.revenueCents}),0)`)),
     // Cancelled per source, bucketed exactly as the rollup buckets estimates: the
     // contact's day when we can attribute one, the appointment's day when we cannot.
-    // The join mirrors the rollup's opportunity pass — one lead per estimate
-    // (matchLeadsToEstimates claims each lead once), so this cannot fan out.
+    // The join mirrors the rollup's opportunity pass — each estimate points at ONE
+    // inquiry (`hcp_estimates.lead_id`), so this cannot fan out.
     db
       .select({ key: sources.key, n: sql<number>`count(*)::int` })
       .from(hcpEstimates)
-      .leftJoin(leads, and(eq(leads.hcpEstimateId, hcpEstimates.id), eq(leads.isSpam, false)))
+      .leftJoin(leads, and(eq(leads.id, hcpEstimates.leadId), eq(leads.isSpam, false)))
       .leftJoin(sources, eq(leads.sourceId, sources.id))
       .where(
         and(
@@ -188,17 +189,20 @@ export async function sourceBreakdowns(days: number): Promise<{
   const excluded = await excludedCampaignIds();
   const notRecruiting = campaignNotExcluded(leads.campaignId, excluded);
 
+  // Counted per INQUIRY: `estimates` is inquiries that produced at least one, `won`
+  // is inquiries that won at least one, `revenue` sums every won estimate.
+  const est = leadEstimateRollup();
   const breakdownOf = (col: AnyPgColumn, groupBy: SQL | AnyPgColumn = col) =>
     db
       .select({
         value: sql<string | null>`${groupBy}`,
         contacts: sql<number>`count(*)::int`,
-        estimates: sql<number>`count(*) filter (where ${leads.hcpEstimateId} is not null)::int`,
-        won: sql<number>`count(*) filter (where ${hcpEstimates.outcome} = 'won')::int`,
-        revenue: sql<number>`coalesce(sum(${hcpEstimates.approvedAmountCents}) filter (where ${hcpEstimates.outcome} = 'won'), 0)::int`,
+        estimates: sql<number>`count(*) filter (where ${est.leadId} is not null)::int`,
+        won: sql<number>`count(*) filter (where ${est.won} > 0)::int`,
+        revenue: sql<number>`coalesce(sum(${est.salesCents}), 0)::int`,
       })
       .from(leads)
-      .leftJoin(hcpEstimates, eq(hcpEstimates.id, leads.hcpEstimateId))
+      .leftJoin(est, eq(est.leadId, leads.id))
       // The empty-string guard casts to text on purpose: `self_reported_channel` is an
       // ENUM, and Postgres rejects comparing one against '' outright ("invalid input
       // value for enum"), which took `roi_summary` down as a whole rather than one row.
@@ -362,16 +366,17 @@ export async function landingPagePerformance(
 
   // Contacts and what they became. Counted from `leads` — every non-spam contact,
   // not a "qualified lead" — so this agrees with the demand figure everywhere else.
+  const est = leadEstimateRollup();
   const outcomeRows = await db
     .select({
       path: landingPathSql(leadCol),
       contacts: sql<number>`count(*)::int`,
-      estimates: sql<number>`count(*) filter (where ${leads.hcpEstimateId} is not null)::int`,
-      won: sql<number>`count(*) filter (where ${hcpEstimates.outcome} = 'won')::int`,
-      revenue: sql<number>`coalesce(sum(${hcpEstimates.approvedAmountCents}) filter (where ${hcpEstimates.outcome} = 'won'), 0)::int`,
+      estimates: sql<number>`count(*) filter (where ${est.leadId} is not null)::int`,
+      won: sql<number>`count(*) filter (where ${est.won} > 0)::int`,
+      revenue: sql<number>`coalesce(sum(${est.salesCents}), 0)::int`,
     })
     .from(leads)
-    .leftJoin(hcpEstimates, eq(hcpEstimates.id, leads.hcpEstimateId))
+    .leftJoin(est, eq(est.leadId, leads.id))
     .where(
       and(
         gte(leads.occurredAt, since),

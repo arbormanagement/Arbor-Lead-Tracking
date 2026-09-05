@@ -42,6 +42,7 @@ export async function attributionBreakdown(rawDays = 90) {
       SELECT
         e.id,
         e.hcp_estimate_id,
+        e.lead_id,
         e.created_at_hcp,
         e.hcp_customer_id,
         -- Every identifier this customer is known by, deduped and null-stripped.
@@ -82,11 +83,7 @@ export async function attributionBreakdown(rawDays = 90) {
             )
         ) AS reached_us
       FROM est
-      LEFT JOIN LATERAL (
-        SELECT id, source_id FROM leads
-        WHERE leads.hcp_estimate_id = est.id AND leads.is_spam = false
-        LIMIT 1
-      ) l ON true
+      LEFT JOIN leads l ON l.id = est.lead_id AND l.is_spam = false
     )
     SELECT
       count(*)::int AS total,
@@ -115,7 +112,7 @@ export async function attributionBreakdown(rawDays = 90) {
   const bySource = await db.execute(sql`
     SELECT coalesce(s.key, '(none)') AS source_key, count(*)::int AS n
     FROM hcp_estimates e
-    JOIN leads l ON l.hcp_estimate_id = e.id AND l.is_spam = false
+    JOIN leads l ON l.id = e.lead_id AND l.is_spam = false
     LEFT JOIN sources s ON s.id = l.source_id
     WHERE e.created_at_hcp >= ${since}
       AND (e.status IS NULL OR e.status NOT IN ('pro canceled', 'user canceled'))
