@@ -817,6 +817,19 @@ re-argued rather than assumed.
   accumulation of a repeat estimate's revenue onto the prior lead — never reached Google (an
   export row reaches `sent` once) and the rollup already credits it by contact.
   `npm run verify:lead-stage` proves the derivation for every estimate state.
+- **A call now JOINS the inquiry already in flight, like a text (2026-09-05).** `/voice` asks
+  `findOpenLead` before inserting; a caller ringing back about an open estimate attaches to the
+  same lead, and attribution is written only on a NEW lead so a follow-up cannot rewrite the
+  source that earned the first. A call rejected as spam never joins a real inquiry. Effect on
+  numbers: `contacts` in `roi_daily` and the observation-only `Lead Created` export both drop a
+  little, because a repeat call about the same estimate stops counting twice — one customer had
+  four rows for one enquiry before this. This is what makes "inquiry" the exact name for the row.
+- **`db:deploy` commits one transaction per migration FILE** (`lib/db/migrate-per-file.ts`,
+  2026-09-05), with Drizzle's own bookkeeping table, because the full history could not apply to
+  an empty database through Drizzle's single-transaction migrator (0011's `ADD VALUE` is used by
+  0035). Proven by running `db:deploy` from an empty scratch Postgres, then `drizzle-kit migrate`
+  reporting nothing pending. `drizzle-kit migrate` itself is still fine for a deploy's own files;
+  it just cannot be the from-scratch path.
 - **`disposition` replaced `is_lead` (2026-09-05, migration 0052; the old columns are dual-written
   for one deploy cycle and then dropped).** The ESTIMATE is the ground truth for "was this
   business" — every metric counts estimates — and what an estimate cannot say is NO. `disposition`

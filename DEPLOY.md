@@ -502,25 +502,17 @@ or use the secret-gated route:
 curl -H "Authorization: Bearer $CRON_SECRET" https://<domain>/api/admin/migrate
 ```
 
-**⚠️ The full history does NOT apply to an EMPTY database in one go** (found 2026-09-05 while
-verifying 0049). Drizzle's migrator runs every pending file in a single transaction, and
-0011 does `ALTER TYPE lead_status ADD VALUE 'cancelled'` while 0035/0036 use that value —
-Postgres refuses to use an enum value added in the same transaction (`unsafe use of new
-value`, `check_safe_enum_use`), so the whole batch rolls back. Production never saw this
-because each deploy applied only its own new files. It bites exactly the "starting fresh"
-path above and `/api/admin/migrate` on a blank database. Until the migrator can commit per
-file, apply the history one file per transaction and let the journal catch up:
-
-```bash
-for tag in $(jq -r '.entries[].tag' lib/db/migrations/meta/_journal.json); do
-  psql "$DATABASE_URL" -1 -v ON_ERROR_STOP=1 -f "lib/db/migrations/$tag.sql"
-done
-npm run db:deploy   # records the journal (no-op on the SQL) and seeds
-```
-
-Per FILE, not per statement: 0027 creates an `ON COMMIT DROP` temp table it reads later in
-the same file. This is how `scripts/verify-gbp-campaigns.ts` is run against a scratch
-database, and how 0049 was proven.
+**The full history applies to an EMPTY database — since 2026-09-05, because the runner commits
+one transaction per FILE** (`lib/db/migrate-per-file.ts`, used by `db:deploy` and
+`/api/admin/migrate` on the `pg` driver). Drizzle's own migrator applies every pending file in
+a single transaction, and 0011 does `ALTER TYPE lead_status ADD VALUE 'cancelled'` while
+0035/0036 use that value — Postgres refuses to use an enum value added in the same transaction
+(`unsafe use of new value`), so a from-scratch `drizzle-kit migrate` rolls the whole batch back.
+Production never saw it because each deploy applied only its own files. Per FILE, not per
+statement: 0027 creates an `ON COMMIT DROP` temp table it reads later in the same file. The
+runner keeps Drizzle's bookkeeping table byte-for-byte, so `drizzle-kit migrate` and
+`db:deploy` can still be used interchangeably; just don't use `drizzle-kit migrate` on a blank
+database.
 
 ## If you leave Neon
 Beyond backups (above), two Neon behaviours don't carry over:

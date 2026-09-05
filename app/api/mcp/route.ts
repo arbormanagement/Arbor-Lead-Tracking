@@ -589,7 +589,7 @@ const handler = createMcpHandler(
       {
         title: "Set why nothing came of an enquiry",
         description:
-          "Set ONE enquiry's disposition by hand: requested_work (asked for tree work), spam, not_business (vendor, recruiter, wrong number), existing_customer (service/billing on work already sold), or missed (a real request nobody wrote an estimate for — the ones to chase). " +
+          "Set ONE enquiry's disposition by hand: requested_work (asked for tree work), spam, not_business (vendor, recruiter, wrong number), existing_customer (service/billing on work already sold), missed (a real request nobody wrote an estimate for — the ones to chase), or test (our own synthetic traffic). " +
           "The ESTIMATE is the ground truth for 'was this business' and every metric counts estimates; the disposition is the answer an estimate cannot give, which is NO and why. So it cannot move ROI numbers. " +
           "requested_work is the one positive value and exists because the inbox and the Lead Created export need a verdict before an estimate exists. " +
           "Sets a manual override the transcript/text classifiers never overwrite; null clears it (the transcript is re-classified, or the row returns to pending). spam also flags is_spam.",

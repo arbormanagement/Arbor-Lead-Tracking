@@ -88,6 +88,9 @@ async function main() {
   const newSearch = await searchLeads({ q: ATTR_PHONE, limit: 5 });
   ok(newSearch.rows.find((r) => r.id === dLead.id)?.status === "new", "…and `new` with no estimate linked");
   ok((await searchLeads({ q: ATTR_PHONE, status: "won", limit: 5 })).rows.every((r) => r.id !== dLead.id), "…and the stage filter reads the same derivation");
+  const asTest = await setLeadDisposition(dLead.id, "test");
+  const [testRow] = await db.select().from(leads).where(eq(leads.id, dLead.id));
+  ok(asTest?.disposition === "test" && testRow.isSpam === true, "…test flags is_spam too, so synthetic rows leave every count");
   const back = await setLeadClassification(dLead.id, true);
   const [backRow] = await db.select().from(leads).where(eq(leads.id, dLead.id));
   ok(back?.isLead === true && backRow.disposition === "requested_work", "setLeadClassification(true) is requested_work");

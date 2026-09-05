@@ -1,0 +1,1 @@
+ALTER TYPE "public"."lead_disposition" ADD VALUE 'test';

@@ -16,6 +16,7 @@ const OPTIONS: Array<{ value: string; label: string; title: string }> = [
   { value: "existing_customer", label: "Existing customer", title: "Service, scheduling or billing on work already sold" },
   { value: "missed", label: "Missed", title: "A real request nobody wrote an estimate for" },
   { value: "spam", label: "Spam", title: "Robocall, scam, junk form" },
+  { value: "test", label: "Test", title: "Our own synthetic traffic — excluded from every count, like spam" },
 ];
 
 export function LeadToggle({

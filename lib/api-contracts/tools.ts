@@ -26,7 +26,7 @@ import { LOCATIONS } from "@/lib/locations";
  *  Defined HERE (db-free) so both the query layer and client code can import. */
 export const LEAD_TYPES = ["call", "web_form", "facebook_leadgen", "sms", "email"] as const;
 /** Mirrors leadDispositionEnum. NULL (absent) means pending — see the enum's comment. */
-export const LEAD_DISPOSITIONS = ["requested_work", "spam", "not_business", "existing_customer", "missed"] as const;
+export const LEAD_DISPOSITIONS = ["requested_work", "spam", "not_business", "existing_customer", "missed", "test"] as const;
 /** An enquiry's STAGE — derived from its linked estimate on read (lib/leads/stage.ts), never
  *  stored. new = no estimate yet · qualified = estimate written, unpriced · quoted = priced ·
  *  won / lost / cancelled = the estimate's outcome · spam. */
@@ -364,7 +364,7 @@ export const ListLeadsInput = z.object({
     .enum([...LEAD_DISPOSITIONS, "none"])
     .optional()
     .describe(
-      "Why nothing came of it. requested_work = asked for work (classifier or human); spam; not_business (vendor, wrong number); existing_customer (service/billing on work already sold); missed (a real request with no estimate written — the ones to chase). `none` = still pending, nobody has decided",
+      "Why nothing came of it. requested_work = asked for work (classifier or human); spam; not_business (vendor, wrong number); existing_customer (service/billing on work already sold); missed (a real request with no estimate written — the ones to chase); test (our own synthetic traffic). `none` = still pending, nobody has decided",
     ),
   isSpam: z.boolean().optional(),
   hasClickId: z.boolean().optional().describe("true = carries gclid/gbraid/wbraid/fbclid; false = carries none"),
@@ -435,7 +435,7 @@ export const SetLeadDispositionInput = z.object({
     .enum(LEAD_DISPOSITIONS)
     .nullable()
     .describe(
-      "requested_work | spam | not_business | existing_customer | missed. Sets a MANUAL verdict the classifiers never overwrite. null clears the override: the transcript is re-classified, or the row returns to pending",
+      "requested_work | spam | not_business | existing_customer | missed | test. Sets a MANUAL verdict the classifiers never overwrite; spam and test also flag is_spam so the row leaves every count. null clears the override: the transcript is re-classified, or the row returns to pending",
     ),
   reason: z.string().max(300).nullable().optional().describe("Why — stored on the lead"),
 });
