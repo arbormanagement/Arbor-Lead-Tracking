@@ -10,6 +10,12 @@ export interface CredField {
   secret?: boolean;
   envKey?: string;
   placeholder?: string;
+  /**
+   * Genuinely optional: the integration works without it, so an unset value is
+   * configuration, not a gap. Only `missing` in /api/diagnostics reads this — the
+   * Settings page still shows the field so it can be found.
+   */
+  optional?: boolean;
 }
 
 export interface CredSpec {
@@ -38,9 +44,13 @@ export const CREDENTIAL_SPECS: CredSpec[] = [
       { key: "refresh_token", label: "Refresh Token", secret: true, envKey: "GOOGLE_ADS_REFRESH_TOKEN" },
       { key: "login_customer_id", label: "Login (MCC) Customer ID", envKey: "GOOGLE_ADS_LOGIN_CUSTOMER_ID" },
       { key: "customer_id", label: "Customer ID", envKey: "GOOGLE_ADS_CUSTOMER_ID" },
-      // LSA lives in its own customer account under the MCC. When set, spend sync
-      // reads it too (cost lands under google/lsa) and LSA leads query it directly.
-      { key: "lsa_customer_id", label: "LSA Customer ID (Local Services account)", envKey: "GOOGLE_ADS_LSA_CUSTOMER_ID", placeholder: "e.g. 123-456-7890" },
+      // Only for an account whose Local Services campaign lives in a SEPARATE customer
+      // under the MCC: when set, spend sync reads that account too. Arbor's LSA campaign
+      // (21142513191) is in the main customer, so this is unset and stays unset — the
+      // LSA cost still lands under google/lsa via `advertising_channel_type`. Optional,
+      // so diagnostics does not list it as missing forever. (The LSA leads pull that
+      // also read it was removed 2026-08-14.)
+      { key: "lsa_customer_id", label: "LSA Customer ID (only if LSA is a separate account)", envKey: "GOOGLE_ADS_LSA_CUSTOMER_ID", placeholder: "e.g. 123-456-7890", optional: true },
       // Offline conversion import targets (leave blank to disable that event).
       { key: "conversion_action_lead", label: "Conv. action — Lead (form or call)", envKey: "GOOGLE_ADS_CONV_LEAD", placeholder: "e.g. 7259060772" },
       { key: "conversion_action_qualified", label: "Conv. action — Qualified Lead (ID or resource name)", envKey: "GOOGLE_ADS_CONV_QUALIFIED", placeholder: "e.g. 7259060772" },

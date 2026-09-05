@@ -55,6 +55,8 @@ export interface FieldStatus {
   /** Which env var supplies this field — shown so an operator knows what to edit in Railway. */
   envKey: string | null;
   last4: string | null;
+  /** See CredField.optional — unset is configuration, not a gap. */
+  optional: boolean;
 }
 
 /**
@@ -76,6 +78,7 @@ export async function credentialStatus(platform: string): Promise<FieldStatus[]>
       set: !!val,
       envKey: f.envKey ?? null,
       last4: val && f.secret ? val.slice(-4) : val && !f.secret ? val : null,
+      optional: !!f.optional,
     };
   });
 }

@@ -16,6 +16,7 @@ import {
   leads,
   numberAssignments,
   pools,
+  sources,
   syncRuns,
   trackingNumbers,
   webSessions,
@@ -52,6 +53,13 @@ import { businessDate, BUSINESS_TZ } from "@/lib/tz";
  * `attributionBreakdown`) so the route and the MCP `diagnostics` tool run one
  * implementation.
  */
+/**
+ * When Other / Unmapped is worth a warning: at least this many inquiries AND this
+ * share of the week's total. Below either it is noise from a one-off link.
+ */
+const UNMAPPED_WARN_MIN_ROWS = 3;
+const UNMAPPED_WARN_MIN_PCT = 5;
+
 export async function diagnosticsReport(): Promise<{ httpStatus: number; report: Record<string, unknown> }> {
   const now = new Date();
   const dayAgo = new Date(now.getTime() - 86_400_000);
@@ -277,6 +285,58 @@ export async function diagnosticsReport(): Promise<{ httpStatus: number; report:
       recordedCalls7d: sql<number>`count(*) filter (where ${calls.createdAt} >= ${weekAgo} and ${calls.recordingUrl} is not null)::int`,
     })
     .from(calls);
+
+  // ── Is the classifier still recognising what arrives? ──────────────────────
+  // Two buckets that nothing used to watch. `other` is where an inquiry lands when
+  // its tag or link matches no rule — the GBP quote button was tagged backwards for
+  // five months and only surfaced when a $7,705 estimate read as "Other / Unmapped"
+  // by eye. A NULL source is rarer and worse: it means the ingest path found no
+  // attribution at all (a pool-number call that matched no lease is the known
+  // cause), and there has been exactly one in the app's history. Both are counted
+  // over a week and sampled, so the row to inspect is on the report rather than
+  // hunted for.
+  const [srcHealth] = await db
+    .select({
+      inquiries: sql<number>`count(*)::int`,
+      unmapped: sql<number>`count(*) filter (where ${sources.key} = 'other')::int`,
+      noSource: sql<number>`count(*) filter (where ${leads.sourceId} is null)::int`,
+    })
+    .from(leads)
+    .leftJoin(sources, eq(sources.id, leads.sourceId))
+    .where(and(gte(leads.occurredAt, weekAgo), eq(leads.isSpam, false)));
+  const srcSample = await db
+    .select({
+      id: leads.id,
+      type: leads.type,
+      occurredAt: leads.occurredAt,
+      source: sources.key,
+      landingPage: leads.landingPage,
+    })
+    .from(leads)
+    .leftJoin(sources, eq(sources.id, leads.sourceId))
+    .where(
+      and(
+        gte(leads.occurredAt, weekAgo),
+        eq(leads.isSpam, false),
+        sql`(${leads.sourceId} is null or ${sources.key} = 'other')`,
+      ),
+    )
+    .orderBy(desc(leads.occurredAt))
+    .limit(5);
+  const sourceHealth = {
+    windowDays: 7,
+    inquiries: srcHealth?.inquiries ?? 0,
+    unmapped: srcHealth?.unmapped ?? 0,
+    noSource: srcHealth?.noSource ?? 0,
+    unmappedPct: srcHealth?.inquiries
+      ? Math.round(((srcHealth.unmapped ?? 0) / srcHealth.inquiries) * 1000) / 10
+      : null,
+    sample: srcSample,
+    note:
+      "unmapped = inquiries on the `other` source: a tag or link the classifier does not recognise. " +
+      "Add the mapping, then run arbor_reclassify_sources. noSource = no attribution at all; " +
+      "correct the row with arbor_set_inquiry_attribution and find the ingest path that skipped it.",
+  };
 
   // ── Estimate sync coverage: is HousecallPro actually reconciled? ─────────────
   //
@@ -600,7 +660,10 @@ export async function diagnosticsReport(): Promise<{ httpStatus: number; report:
     const status = await credentialStatus(platform);
     creds[platform] = {
       configured: status.filter((f) => f.set).map((f) => f.key),
-      missing: status.filter((f) => !f.set).map((f) => f.envKey ?? f.key),
+      // An unset OPTIONAL field is configuration, not a gap — listing it here kept
+      // GOOGLE_ADS_LSA_CUSTOMER_ID in `missing` for a month after the only reader
+      // that needed it was removed.
+      missing: status.filter((f) => !f.set && !f.optional).map((f) => f.envKey ?? f.key),
     };
   }
 
@@ -736,8 +799,29 @@ export async function diagnosticsReport(): Promise<{ httpStatus: number; report:
   // below that it swings on single requests and would cry wolf every quiet night.
   if (swapCoverage.visitors >= 100 && swapCoverage.coveredPct !== null && swapCoverage.coveredPct < 80) {
     warnings.push(
-      `only ${swapCoverage.coveredPct}% of DNI requests got a pool number over the last ` +
-        `${swapCoverage.windowDays}d — the rest of those visitors keep the published number and read as 'direct'`,
+      `only ${swapCoverage.coveredPct}% of real visitors' DNI requests (crawlers excluded) got a pool number ` +
+        `over the last ${swapCoverage.windowDays}d — the rest keep the published number and read as 'direct'; ` +
+        `see swapCoverage.byOutcome for which exit took them`,
+    );
+  }
+  // Thresholds, not zero: a single unmapped inquiry a week is a hand-built link or a
+  // one-off referrer, and a warning that fires on it gets ignored by the third week.
+  // A NULL source has no innocent explanation, so one is enough.
+  if (sourceHealth.noSource > 0) {
+    warnings.push(
+      `${sourceHealth.noSource} inquiry(ies) in the last ${sourceHealth.windowDays}d have NO source at all — ` +
+        `an ingest path found no attribution (a pool-number call matching no lease is the known cause). ` +
+        `See sourceHealth.sample; correct with arbor_set_inquiry_attribution`,
+    );
+  }
+  if (
+    sourceHealth.unmapped >= UNMAPPED_WARN_MIN_ROWS &&
+    (sourceHealth.unmappedPct ?? 0) >= UNMAPPED_WARN_MIN_PCT
+  ) {
+    warnings.push(
+      `${sourceHealth.unmapped} of ${sourceHealth.inquiries} inquiries (${sourceHealth.unmappedPct}%) in the last ` +
+        `${sourceHealth.windowDays}d landed in Other / Unmapped — a tag or link the classifier does not ` +
+        `recognise. Inspect sourceHealth.sample, add the mapping, then run arbor_reclassify_sources`,
     );
   }
   if ((swapCoverage.byOutcome.static_fallback ?? 0) > 0) {
@@ -797,6 +881,7 @@ export async function diagnosticsReport(): Promise<{ httpStatus: number; report:
       failingExports,
       traffic,
       swapCoverage,
+      sourceHealth,
       volume: { ...vol, ...callVol },
       estimateSync,
       hcpSync,

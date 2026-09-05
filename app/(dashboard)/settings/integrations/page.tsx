@@ -13,7 +13,7 @@ export default async function IntegrationsPage() {
         total: status.length,
         set: status.filter((f) => f.set).length,
         // Name the env var, not the internal key — it is the thing you go and change.
-        missing: status.filter((f) => !f.set).map((f) => f.envKey ?? f.key),
+        missing: status.filter((f) => !f.set && !f.optional).map((f) => f.envKey ?? f.key),
       };
     }),
   );

@@ -279,9 +279,10 @@ const SNIPPET = String.raw`(function () {
         .catch(function () {});
     })();
 
-    // Keep the lease alive while the tab is open. The lease runs 30 minutes and is
-    // only renewed by a call to /api/dni/assign, which the snippet otherwise makes
-    // once per hard page load — so a visitor who reads for 40 minutes before
+    // Keep the lease alive while the tab is open. The lease is short (LEASE_MINUTES
+    // in lib/dni/assign.ts) and is only renewed by a call to /api/dni/assign, which
+    // the snippet otherwise makes once per hard page load — so a visitor who reads
+    // for 40 minutes before
     // dialing (entirely normal when deciding on tree work) can be looking at a
     // number whose lease expired and was recycled to someone else, and their call
     // then freezes the NEW lease's source onto the wrong lead. Re-asserting the
@@ -289,10 +290,18 @@ const SNIPPET = String.raw`(function () {
     // renewal, not a second number.
     function startHeartbeat(url, payload) {
       var EVERY_MS = 10 * 60 * 1000;
+      // The server budgets ten assign calls a minute per visitor, and a refused call
+      // leaves the page on its published number. A renewal within a minute of the
+      // last one buys nothing — the lease is already fresh — so it is skipped rather
+      // than spent: someone flicking between tabs (comparing quotes is exactly that)
+      // must not be able to rate-limit themselves out of attribution.
+      var MIN_GAP_MS = 60 * 1000;
+      var lastRenewAt = Date.now();
       setInterval(function () {
         // Don't renew for a backgrounded tab — if they come back, visibilitychange
         // renews immediately.
         if (document.hidden) return;
+        lastRenewAt = Date.now();
         fetch(url, { method: 'POST', body: payload, headers: { 'Content-Type': 'text/plain' } })
           .then(function (r) { return r.json(); })
           .then(function (d) {
@@ -306,10 +315,10 @@ const SNIPPET = String.raw`(function () {
           .catch(function () {});
       }, EVERY_MS);
       document.addEventListener('visibilitychange', function () {
-        if (!document.hidden) {
-          fetch(url, { method: 'POST', body: payload, headers: { 'Content-Type': 'text/plain' } })
-            .catch(function () {});
-        }
+        if (document.hidden || Date.now() - lastRenewAt < MIN_GAP_MS) return;
+        lastRenewAt = Date.now();
+        fetch(url, { method: 'POST', body: payload, headers: { 'Content-Type': 'text/plain' } })
+          .catch(function () {});
       });
     }
 
