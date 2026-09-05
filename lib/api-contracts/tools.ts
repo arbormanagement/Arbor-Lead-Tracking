@@ -400,6 +400,26 @@ export const SetThreadStateInput = z.object({
   state: z.enum(["open", "closed"]),
 });
 
+export const SetLeadAttributionInput = z.object({
+  id: z.string().max(64).describe("Lead id, from arbor_list_leads or arbor_get_thread's enquiries — one ENQUIRY, not a person"),
+  sourceKey: z
+    .string()
+    .max(100)
+    .optional()
+    .describe("sources.key to set (google/cpc, gbp, google/lsa, facebook/paid, organic/seo, direct, email/newsletter, …). Must already exist — never mints"),
+  campaignId: z
+    .string()
+    .max(64)
+    .nullable()
+    .optional()
+    .describe("campaigns.id to set (the `id` from arbor_list_campaigns, not external_campaign_id). null clears the campaign. Must belong to the resulting source"),
+  note: z.string().max(500).nullable().optional().describe("Why — stored on the lead so the next reader knows a human decided this"),
+  manual: z
+    .boolean()
+    .optional()
+    .describe("Default true: lock the row so seed backfills and reclassify never overwrite it. false: release the lock, values untouched"),
+});
+
 export const ClassifyLeadInput = z.object({
   id: z.string().max(64).describe("Lead id, from list_leads or get_thread's enquiries"),
   isLead: z

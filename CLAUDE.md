@@ -801,6 +801,16 @@ re-argued rather than assumed.
   - **Do NOT delete the `campaigns` row.** `ad_spend` (its $4,663.50 of real historical spend),
     `roi_daily` and `attributions` all reference it, and `runAttribution` rebuilds 365 days of
     those. Same rule as everywhere else here: tombstone, never hard delete.
+- **A lead's source/campaign can be corrected by hand — `arbor_set_lead_attribution` /
+  `PATCH /api/leads/[id]/attribution` (2026-09-05), and the correction is LOCKED.** Until then
+  there was no write path at all: the Garber estimate needed a classifier change and a deploy to
+  leave `other`, and a second deploy for its listing. The function (`lib/leads/attribution.ts`)
+  never mints — source key and campaign id must exist — and refuses a campaign that belongs to a
+  different source than the lead would end up with. It stamps `attribution_set_manually_at`, and
+  **every automated writer of those two columns skips stamped rows**: the seed's listing
+  backfill, its number backfill, its URL-repair pass (the one that OVERWRITES a set value, so the
+  one that would otherwise undo a correction on the next deploy), and reclassify. `manual:false`
+  releases the lock. It does not rebuild `roi_daily` — run the `attribution` sync after.
 - **A promoted channel does NOT reclassify the leads already in `other`.** `classifySource`
   runs once, at ingest, and the key is frozen onto the lead — so adding a mapping fixes every
   future lead and none of the rows that prompted the mapping. `lib/sources/reclassify.ts`

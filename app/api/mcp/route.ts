@@ -5,6 +5,7 @@ import { env } from "@/lib/env";
 import {
   AttributionHealthInput,
   ClassifyLeadInput,
+  SetLeadAttributionInput,
   DiagnosticsInput,
   EstimateDetailInput,
   EstimateDetailOutput,
@@ -71,6 +72,7 @@ import {
 import { selectedTouchModel, setAttributionOptions } from "@/lib/attribution/model";
 import { setCampaignExcluded } from "@/lib/campaigns";
 import { setLeadClassification } from "@/lib/leads/classify-override";
+import { setLeadAttribution } from "@/lib/leads/attribution";
 import { listCampaignsWithVolume } from "@/lib/queries/campaigns";
 import { listTrackingNumbers } from "@/lib/queries/numbers";
 import { createPool, deletePool, listPools, updatePool } from "@/lib/pools";
@@ -599,6 +601,26 @@ const handler = createMcpHandler(
           );
         }
         return json({ ok: true, ...row });
+      },
+    );
+
+    server.registerTool(
+      "arbor_set_lead_attribution",
+      {
+        title: "Correct a lead's source and/or campaign",
+        description:
+          "Set the source (sources.key) and/or campaign (campaigns.id) on ONE lead — the enquiry, not the person — when attribution was recorded wrong: a transposed tag, a monitor's lease shadowing a real one, a call to a mis-labelled number. " +
+          "Validates against EXISTING sources and campaigns and never mints either; a campaign must belong to the lead's resulting source or the write is refused. " +
+          "Stamps attribution_set_manually_at so the automatic repair passes (seed backfills, reclassify) leave the row alone from then on; manual:false releases that lock without changing values; campaignId:null clears the campaign. " +
+          "Then run arbor_trigger_sync { job: 'attribution' } — roi_daily is rebuilt from leads and /sources does not move until it runs. " +
+          "Source keys come from arbor_roi_summary rows; campaign ids from arbor_list_campaigns; lead ids from arbor_list_leads or arbor_get_thread.",
+        inputSchema: SetLeadAttributionInput.shape,
+        annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
+      },
+      async ({ id, ...patch }) => {
+        const result = await setLeadAttribution(id, patch);
+        if (!result.ok) return fail(result.error, result.nextStep);
+        return json(result);
       },
     );
 

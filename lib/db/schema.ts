@@ -873,6 +873,13 @@ export const leads = pgTable(
     sourceId: text("source_id").references(() => sources.id),
     medium: text("medium"),
     campaignId: text("campaign_id").references(() => campaigns.id),
+    // Set when a human corrected source/campaign by hand (lib/leads/attribution.ts).
+    // Every AUTOMATED writer of those two columns — the seed's backfill and repair
+    // passes, reclassify — skips a row carrying this, so a correction cannot be
+    // silently undone on the next deploy. Same precedence lesson as the credential
+    // store: two writers and nothing saying which is live is the bug.
+    attributionSetManuallyAt: timestamp("attribution_set_manually_at", { withTimezone: true }),
+    attributionManualNote: text("attribution_manual_note"),
     keyword: text("keyword"),
     gclid: text("gclid"),
     // iOS/Safari Google clicks return gbraid/wbraid instead of a gclid — carried
