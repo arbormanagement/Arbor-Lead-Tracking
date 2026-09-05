@@ -2,6 +2,7 @@ import { and, eq } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { pools, trackingNumbers } from "@/lib/db/schema";
 import { releaseSessionLeases } from "@/lib/dni/assign";
+import { CANARY_SESSION_ID, CANARY_TERM, CANARY_VISITOR_ID } from "@/lib/dni/canary";
 import { findSwapTargets } from "@/lib/dni/swap-targets";
 import { env } from "@/lib/env";
 import { trackingOrigins } from "@/lib/origin";
@@ -41,17 +42,8 @@ import { withSyncRun } from "./run";
  * (see the note at the bottom). It catches total breakage, not partial.
  */
 
-/** Fixed ids, so the canary owns exactly one visitor row and one session row forever. */
-const CANARY_VISITOR_ID = "arbor-dni-canary-visitor";
-const CANARY_SESSION_ID = "arbor-dni-canary-session";
-
-/**
- * A keyword no real visitor carries, so `findShareableLease` can never match the
- * canary to a live visitor's lease. Without it the canary would usually be handed a
- * shared `direct` number: it would pass without ever exercising `leaseNumber`, which
- * is the half most likely to be broken.
- */
-const CANARY_TERM = "arbor-dni-canary";
+// The canary's fixed visitor / session ids and keyword live in `lib/dni/canary.ts`,
+// because `/voice` has to recognise them too — see the note there.
 
 /** Honest about what it is. `lib/bot.ts` is bypassed via the canary header, not by spoofing. */
 const CANARY_UA = "ArborDNICanary/1.0 (+https://app.arbor-mgmt.com)";

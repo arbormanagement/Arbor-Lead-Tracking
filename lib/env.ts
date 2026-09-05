@@ -50,8 +50,6 @@ export const env = createEnv({
     BLOB_READ_WRITE_TOKEN: z.string().optional(),
 
     // MCP server — retained as an optional per-platform fallback for the read path.
-    ARBOR_MCP_URL: z.string().url().default("https://arbor-mcp.up.railway.app/mcp"),
-    ARBOR_MCP_TOKEN: z.string().optional(),
 
     // ── Direct API credentials (primary read path) ──
     // HousecallPro (revenue source of truth) — simple API-key REST.
@@ -171,8 +169,6 @@ export const env = createEnv({
     TWILIO_SMS_FORWARD_TO: process.env.TWILIO_SMS_FORWARD_TO,
     DEEPGRAM_API_KEY: process.env.DEEPGRAM_API_KEY,
     BLOB_READ_WRITE_TOKEN: process.env.BLOB_READ_WRITE_TOKEN,
-    ARBOR_MCP_URL: process.env.ARBOR_MCP_URL,
-    ARBOR_MCP_TOKEN: process.env.ARBOR_MCP_TOKEN,
     HCP_API_BASE: process.env.HCP_API_BASE,
     HCP_API_KEY: process.env.HCP_API_KEY,
     GOOGLE_ADS_DEVELOPER_TOKEN: process.env.GOOGLE_ADS_DEVELOPER_TOKEN,

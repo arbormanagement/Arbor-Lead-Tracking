@@ -130,23 +130,15 @@ export async function POST(req: Request) {
   const userAgent = req.headers.get("user-agent");
   const now = new Date();
 
-  // 1) Visitor — first-touch frozen on insert; only last_seen/ga bump on conflict.
+  // 1) Visitor — identity only; last_seen/ga bump on conflict. First touch is NOT
+  //    snapshotted here: it derives from the contact's earliest lead in
+  //    `runAttribution` (the `ft_*` columns that used to live here were never read).
   await db
     .insert(visitors)
     .values({
       id: vid,
       gaClientId: ga,
       userAgent,
-      ftSource: cls.sourceKey,
-      ftMedium: medium,
-      ftCampaign: utm.campaign,
-      ftContent: utm.content,
-      ftTerm: utm.term,
-      ftGclid: click.gclid,
-      ftFbclid: click.fbclid,
-      ftReferrer: referrer,
-      ftLandingPage: url,
-      ftAt: now,
     })
     .onConflictDoUpdate({
       target: visitors.id,

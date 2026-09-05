@@ -20,9 +20,9 @@ import { UNMAPPED_SOURCE_KEY, displayNameFor } from "@/lib/sources/naming";
  * call — the property `lib/messaging/thread.ts` is careful about for the same
  * reason. Re-running once the rows have moved is a no-op.
  *
- * Raw UTM values come from `web_sessions` where the lead has one. A call attributed
- * through a DNI lease has no session of its own, so its `landing_page` query string
- * is the fallback — for those leads that is where the tags survive.
+ * Raw UTM values are re-read from the URLs — the session's entry page first, then
+ * the lead's own landing page — never from `web_sessions.source`, which holds the
+ * already-classified key. See the note in the loop for the bug that rule closes.
  */
 
 export interface ReclassifyMove {
@@ -106,7 +106,6 @@ export async function reclassifyUnmappedSources({
       occurredAt: leads.occurredAt,
       type: leads.type,
       landingPage: leads.landingPage,
-      sessionSource: webSessions.source,
       sessionMedium: webSessions.medium,
       sessionCampaign: webSessions.campaign,
       sessionReferrer: webSessions.referrer,
@@ -123,15 +122,22 @@ export async function reclassifyUnmappedSources({
   const idCache = new Map<string, string>();
 
   for (const r of rows) {
-    const fallback = utmFromUrl(r.landingPage ?? r.sessionLanding);
+    // The RAW tags come from the URLs, never from `web_sessions.source`. That column
+    // holds the CLASSIFIED key — the output of `classifySource` at ingest — so for a
+    // lead sitting on `other` it reads "other", and feeding "other" back in as
+    // `utm_source` returns "other" forever. That was the state until 2026-09-05: any
+    // session-backed lead could only ever be rescued through `medium` (stored raw)
+    // or `utm_campaign`, and a mapping keyed on the source slot alone reached only
+    // the leads that had no session. The session's landing page is the ENTRY url
+    // and carries the tags even for a form lead, whose own `landing_page` is the
+    // page the form was on; the lead's url is the fallback for a lease-attributed
+    // call that never produced a session row.
+    const fromSession = utmFromUrl(r.sessionLanding);
+    const fromLead = utmFromUrl(r.landingPage);
     const cls = classifySource({
-      utmSource: r.sessionSource ?? fallback.source,
-      utmMedium: r.sessionMedium ?? fallback.medium,
-      // `web_sessions.campaign` is the RAW `utm_campaign`, unlike `.source`, which
-      // holds an already-classified key — so this one field reads the same whether
-      // the lead has a session or only a stored landing page, and a lead whose tag
-      // is legible only from the campaign slot is reachable either way.
-      utmCampaign: r.sessionCampaign ?? fallback.campaign,
+      utmSource: fromSession.source ?? fromLead.source,
+      utmMedium: fromSession.medium ?? fromLead.medium ?? r.sessionMedium,
+      utmCampaign: r.sessionCampaign ?? fromSession.campaign ?? fromLead.campaign,
       referrer: r.sessionReferrer,
       currentUrl: r.sessionLanding ?? r.landingPage,
     });

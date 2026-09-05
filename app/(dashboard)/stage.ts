@@ -14,6 +14,4 @@ export const TYPE_META: Record<string, { ic: string; label: string }> = {
   email: { ic: "✉", label: "Email" },
   web_form: { ic: "▤", label: "Form" },
   facebook_leadgen: { ic: "ⓕ", label: "Facebook" },
-  lsa: { ic: "◎", label: "LSA" },
-  manual: { ic: "✎", label: "Manual" },
 };

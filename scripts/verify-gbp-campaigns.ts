@@ -23,10 +23,12 @@
  */
 import { eq, inArray } from "drizzle-orm";
 import { db } from "@/lib/db/client";
-import { adSpend, attributions, calls, campaigns, leads, roiDaily, sources, trackingNumbers, visitors, webSessions } from "@/lib/db/schema";
+import { adSpend, attributions, calls, campaigns, leads, numberAssignments, roiDaily, sources, trackingNumbers, visitors, webSessions } from "@/lib/db/schema";
 import { seedDefaults } from "@/lib/db/seed-data";
 import { campaignIdFromUrl, resolveCampaignId, SPEND_REPULL_DAYS } from "@/lib/campaigns";
 import { classifySource } from "@/lib/attribution/classify";
+import { CANARY_SESSION_ID, CANARY_TERM, CANARY_VISITOR_ID } from "@/lib/dni/canary";
+import { reclassifyUnmappedSources } from "@/lib/sources/reclassify";
 import { resolveInboundAttribution } from "@/lib/twilio/inbound";
 import { applyNumberPatch } from "@/lib/twilio/numbers";
 import { listTrackingNumbers } from "@/lib/queries/numbers";
@@ -69,6 +71,8 @@ async function main() {
     const sessionIds = db.select({ id: leads.webSessionId }).from(leads).where(eq(leads.phoneE164, phone));
     await db.delete(leads).where(eq(leads.phoneE164, phone));
     await db.delete(webSessions).where(inArray(webSessions.id, sessionIds));
+    const numberIds = db.select({ id: trackingNumbers.id }).from(trackingNumbers).where(eq(trackingNumbers.phoneNumber, phone));
+    await db.delete(numberAssignments).where(inArray(numberAssignments.trackingNumberId, numberIds));
     await db.delete(trackingNumbers).where(eq(trackingNumbers.phoneNumber, phone));
   }
 
@@ -98,7 +102,7 @@ async function main() {
   });
   // A POOLED number that happens to name a location — must NOT be touched.
   const [pooled] = await db.insert(trackingNumbers).values({
-    phoneNumber: FIXTURES[2], twilioSid: "PNverifyPool", pool: "direct", isStatic: false, location: "edwardsville",
+    phoneNumber: FIXTURES[2], twilioSid: "PNverifyPool", pool: "website", isStatic: false, location: "edwardsville",
   }).returning();
 
   // A GBP lead with nothing at all identifying the listing — must stay unassigned
@@ -157,6 +161,34 @@ async function main() {
   ok(att.lease === null && att.sourceKey === "gbp", "…alongside the source, with no lease");
   const pooledAtt = await resolveInboundAttribution(pooledAfter);
   ok(pooledAtt.staticCampaignId === null, "…and null for a pooled number");
+
+  // ── The canary's lease must never be the answer for a caller ─────────────────
+  // The 2026-09-05 shape: a customer leased this number from a Google ad an hour
+  // ago, the canary took it ten minutes ago and released it. Release leaves
+  // `expires_at` in the future and the lookup ranks by newest, so without the
+  // exclusion the monitor's `direct` snapshot won and the paid click was lost.
+  await db.insert(visitors).values({ id: CANARY_VISITOR_ID }).onConflictDoNothing();
+  await db
+    .insert(webSessions)
+    .values({ id: CANARY_SESSION_ID, visitorId: CANARY_VISITOR_ID, landingPage: "https://arbor-mgmt.com" })
+    .onConflictDoNothing();
+  const min = 60_000;
+  const [customerLease] = await db.insert(numberAssignments).values({
+    trackingNumberId: pooled.id, webSessionId: null, source: "google/cpc", medium: "cpc", gclid: "verify-gclid",
+    assignedAt: new Date(Date.now() - 60 * min), expiresAt: new Date(Date.now() - 45 * min), releasedAt: new Date(Date.now() - 45 * min),
+  }).returning();
+  await db.insert(numberAssignments).values({
+    trackingNumberId: pooled.id, webSessionId: CANARY_SESSION_ID, visitorId: CANARY_VISITOR_ID, source: "direct", keyword: CANARY_TERM,
+    assignedAt: new Date(Date.now() - 10 * min), expiresAt: new Date(Date.now() + 5 * min), releasedAt: new Date(Date.now() - 10 * min + 5_000),
+    landingPage: "https://arbor-mgmt.com",
+  });
+  const shadowed = await resolveInboundAttribution(pooledAfter);
+  ok(shadowed.sourceKey === "google/cpc" && shadowed.lease?.keyword !== CANARY_TERM,
+    "a caller resolves to the customer's lease, not the canary's newer one");
+  await db.delete(numberAssignments).where(eq(numberAssignments.id, customerLease.id));
+  const alone = await resolveInboundAttribution(pooledAfter);
+  ok(alone.lease === null && alone.sourceKey === null,
+    "…and with only the canary's lease on the number the answer is NO lease, not the monitor's snapshot");
 
   // Backfill.
   const [unknownAfter] = await db.select().from(leads).where(eq(leads.id, unknownLead.id));
@@ -219,6 +251,36 @@ async function main() {
   await seedDefaults(db);
   const [transposedHeld] = await db.select().from(leads).where(eq(leads.id, transposed.id));
   ok(transposedHeld.campaignId === edw.id, "…and a campaign already set is never overwritten by either slot");
+
+  // ── reclassify reads the RAW tag from the entry URL, never web_sessions.source ──
+  // `web_sessions.source` holds the CLASSIFIED key. For a lead on `other` that is
+  // the string "other", and feeding it back in as utm_source returns "other" forever
+  // — so until 2026-09-05 a session-backed lead could only be rescued through
+  // `medium` or `utm_campaign`, and a mapping keyed on the source slot alone reached
+  // only leads with no session. The form shape is the hard one: the lead's own
+  // landing page is the FORM page and carries no tag; the session's entry url does.
+  const [otherSrc] = await db.select({ id: sources.id }).from(sources).where(eq(sources.key, "other")).limit(1);
+  if (!otherSrc) throw new Error("seedDefaults did not create the other source");
+  const [rcVisitor] = await db.insert(visitors).values({}).returning();
+  const [rcSession] = await db.insert(webSessions).values({
+    visitorId: rcVisitor.id, source: "other", medium: "referral", landingPage: "https://arbor-mgmt.com/?utm_source=gmb",
+  }).returning();
+  const [rcLead] = await db.insert(leads).values({
+    type: "web_form", sourceId: otherSrc.id, occurredAt: new Date(), phoneE164: FIXTURES[3],
+    landingPage: "https://arbor-mgmt.com/get-a-quote", webSessionId: rcSession.id,
+  }).returning();
+  const [ctrlSession] = await db.insert(webSessions).values({
+    visitorId: rcVisitor.id, source: "other", medium: "referral", landingPage: "https://arbor-mgmt.com/?utm_source=mystery",
+  }).returning();
+  const [ctrlLead] = await db.insert(leads).values({
+    type: "web_form", sourceId: otherSrc.id, occurredAt: new Date(), phoneE164: FIXTURES[0],
+    landingPage: "https://arbor-mgmt.com/get-a-quote", webSessionId: ctrlSession.id,
+  }).returning();
+  const dry = await reclassifyUnmappedSources({ apply: false });
+  ok(dry.moves.some((m) => m.leadId === rcLead.id && m.to === "gbp"),
+    "reclassify rescues a session-backed `other` lead from its ENTRY url's raw utm_source");
+  ok(!dry.moves.some((m) => m.leadId === ctrlLead.id),
+    "…and leaves one whose entry url names a source it does not know");
 
   // Does the backfill actually REACH the dashboards? /sources reads roi_daily, not
   // leads, so a backfilled lead is invisible until the rollup is rebuilt over its

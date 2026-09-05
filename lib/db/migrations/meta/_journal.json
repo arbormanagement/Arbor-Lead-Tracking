@@ -344,6 +344,13 @@
       "when": 1788210904659,
       "tag": "0048_hcp_line_items",
       "breakpoints": true
+    },
+    {
+      "idx": 49,
+      "version": "7",
+      "when": 1788622449201,
+      "tag": "0049_cleanup_dead_columns_canary",
+      "breakpoints": true
     }
   ]
 }

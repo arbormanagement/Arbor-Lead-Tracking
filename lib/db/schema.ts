@@ -44,9 +44,8 @@ export const leadTypeEnum = pgEnum("lead_type", [
   "call",
   "web_form",
   "facebook_leadgen",
-  "lsa",
-  "manual",
   "sms",
+  // Planned channel: `messages` already stores email, no lead of this type exists yet.
   "email",
 ]);
 // Inbox channels. `call` is stored in `calls` (recordings/duration have no message
@@ -83,17 +82,11 @@ export const visitors = pgTable("visitors", {
   gaClientId: text("ga_client_id"),
   userAgent: text("user_agent"),
   ipHash: text("ip_hash"),
-  // First-touch snapshot (never overwritten after first pageview)
-  ftSource: text("ft_source"),
-  ftMedium: text("ft_medium"),
-  ftCampaign: text("ft_campaign"),
-  ftContent: text("ft_content"),
-  ftTerm: text("ft_term"),
-  ftGclid: text("ft_gclid"),
-  ftFbclid: text("ft_fbclid"),
-  ftReferrer: text("ft_referrer"),
-  ftLandingPage: text("ft_landing_page"),
-  ftAt: timestamp("ft_at", { withTimezone: true }),
+  // No first-touch snapshot here, deliberately. Ten `ft_*` columns lived on this
+  // table until 0049 and were written on every pageview and read by nothing: the
+  // first touch that reports actually derives from `leads` (earliest per contact)
+  // inside `runAttribution`, into `roi_daily`. A second copy nothing reads is a
+  // column that drifts — see the `location` retirement in 0046 for the same shape.
   createdAt: createdAt(),
   updatedAt: updatedAt(),
 });
@@ -900,7 +893,6 @@ export const leads = pgTable(
     visitorId: text("visitor_id").references(() => visitors.id),
     webSessionId: text("web_session_id").references(() => webSessions.id),
     hcpCustomerId: text("hcp_customer_id").references(() => hcpCustomers.id),
-    hcpJobId: text("hcp_job_id").references(() => hcpJobs.id),
     hcpEstimateId: text("hcp_estimate_id").references(() => hcpEstimates.id),
     // Value: quote = estimate total; sales = the WON (approved) estimate amount.
     quoteValueCents: integer("quote_value_cents"),
@@ -920,8 +912,6 @@ export const leads = pgTable(
     // The upstream platform's own id for this lead (LSA lead id, …) — the real
     // idempotency key for synced lead types that have one.
     externalId: text("external_id"),
-    isDuplicate: boolean("is_duplicate").notNull().default(false),
-    duplicateOfLeadId: text("duplicate_of_lead_id"),
     occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull().defaultNow(),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
@@ -1318,21 +1308,6 @@ export const mcpOauthGrants = pgTable(
   (t) => [uniqueIndex("mcp_oauth_grants_secret_hash_uq").on(t.secretHash)],
 );
 
-// ── Integration credentials (envelope-encrypted; tenant_id reserved for MT) ───
-export const integrationCredentials = pgTable(
-  "integration_credentials",
-  {
-    id: id(),
-    tenantId: text("tenant_id").notNull().default("default"),
-    platform: text("platform").notNull(), // housecallpro | google_ads | facebook | deepgram
-    key: text("key").notNull(), // api_key | refresh_token | ...
-    valueEncrypted: text("value_encrypted").notNull(), // base64(iv|tag|ciphertext)
-    createdAt: createdAt(),
-    updatedAt: updatedAt(),
-  },
-  (t) => [uniqueIndex("integration_credentials_uq").on(t.tenantId, t.platform, t.key)],
-);
-
 // ── Relations ────────────────────────────────────────────────────────────────
 export const visitorsRelations = relations(visitors, ({ many }) => ({
   sessions: many(webSessions),
@@ -1374,7 +1349,6 @@ export const leadsRelations = relations(leads, ({ one, many }) => ({
   source: one(sources, { fields: [leads.sourceId], references: [sources.id] }),
   campaign: one(campaigns, { fields: [leads.campaignId], references: [campaigns.id] }),
   visitor: one(visitors, { fields: [leads.visitorId], references: [visitors.id] }),
-  hcpJob: one(hcpJobs, { fields: [leads.hcpJobId], references: [hcpJobs.id] }),
   call: one(calls, { fields: [leads.id], references: [calls.leadId] }),
   formSubmission: one(formSubmissions, {
     fields: [leads.id],

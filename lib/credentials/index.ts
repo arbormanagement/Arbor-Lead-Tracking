@@ -23,8 +23,9 @@ export * from "./spec";
  *   • Nothing here touches the database, so credential resolution cannot fail on a DB blip.
  *     That matters — `/api/twilio/voice` must answer in under 3s, and `/status` + `/sms` fail
  *     CLOSED on an unresolvable auth token, so a stalled query used to mean rejected callbacks.
- *   • The `integration_credentials` table still exists and is empty. Nothing reads it. Writing
- *     a row does nothing at all now, rather than silently winning.
+ *   • The `integration_credentials` table is gone too (migration 0049, 2026-09-05). It sat
+ *     empty and unread for three weeks after the store was removed; a table nothing reads is
+ *     where the next person puts a value that then silently does nothing.
  */
 type Creds = Record<string, string | null>;
 

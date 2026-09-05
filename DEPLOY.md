@@ -201,11 +201,11 @@ backfills. **Rebuilds:** sources/pools (seeded), Facebook leads (30d poll, dedup
 `fb_leadgen_id`), HCP (30d only — `MAX_LOOKBACK_DAYS`), ad spend (back to that platform's
 earliest lead), attributions and `roi_daily` (recomputed).
 
-**Doesn't:** `tracking_numbers` (re-register each via **/numbers → Add number → import an
-owned number**), `settings`, `spam_rules`, `manual_spend`, call/web history, and
+**Doesn't:** `tracking_numbers` (re-register each via **Settings → Numbers → Add number →
+import an owned number**), `settings`, `spam_rules`, `manual_spend`, call/web history, and
 `conversion_exports` — which is the record of what was already uploaded to Google Ads, so
-losing it risks double-counting conversions. `integration_credentials` is empty and read by
-nothing (the store was removed 2026-08-12) — credentials live only in Railway env vars.
+losing it risks double-counting conversions. Credentials live only in Railway env vars (the
+in-app store was removed 2026-08-12 and its table dropped in 0049).
 
 Don't try to hand-pick a few tables to carry: seeded `sources`/`pools` get **new ULIDs** in
 a fresh database, so every row referencing them by id fails its foreign key, and
@@ -501,6 +501,26 @@ or use the secret-gated route:
 ```bash
 curl -H "Authorization: Bearer $CRON_SECRET" https://<domain>/api/admin/migrate
 ```
+
+**⚠️ The full history does NOT apply to an EMPTY database in one go** (found 2026-09-05 while
+verifying 0049). Drizzle's migrator runs every pending file in a single transaction, and
+0011 does `ALTER TYPE lead_status ADD VALUE 'cancelled'` while 0035/0036 use that value —
+Postgres refuses to use an enum value added in the same transaction (`unsafe use of new
+value`, `check_safe_enum_use`), so the whole batch rolls back. Production never saw this
+because each deploy applied only its own new files. It bites exactly the "starting fresh"
+path above and `/api/admin/migrate` on a blank database. Until the migrator can commit per
+file, apply the history one file per transaction and let the journal catch up:
+
+```bash
+for tag in $(jq -r '.entries[].tag' lib/db/migrations/meta/_journal.json); do
+  psql "$DATABASE_URL" -1 -v ON_ERROR_STOP=1 -f "lib/db/migrations/$tag.sql"
+done
+npm run db:deploy   # records the journal (no-op on the SQL) and seeds
+```
+
+Per FILE, not per statement: 0027 creates an `ON COMMIT DROP` temp table it reads later in
+the same file. This is how `scripts/verify-gbp-campaigns.ts` is run against a scratch
+database, and how 0049 was proven.
 
 ## If you leave Neon
 Beyond backups (above), two Neon behaviours don't carry over:

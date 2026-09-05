@@ -9,7 +9,6 @@ import {
   facebookLeads,
   formSubmissions,
   hcpEstimates,
-  hcpJobs,
   leads,
   messages,
   sources,
@@ -69,7 +68,7 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
   if (!row) notFound();
   const lead = row.lead;
 
-  const [callRows, forms, fbRows, messageRows, touches, session, estimate, job] = await Promise.all([
+  const [callRows, forms, fbRows, messageRows, touches, session, estimate] = await Promise.all([
     db
       .select({ call: calls, dialedNumber: trackingNumbers.phoneNumber, dialedName: trackingNumbers.friendlyName })
       .from(calls)
@@ -85,9 +84,6 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
     lead.hcpEstimateId
       ? db.select().from(hcpEstimates).where(eq(hcpEstimates.id, lead.hcpEstimateId)).limit(1).then((r) => r[0] ?? null)
       : Promise.resolve(null),
-    lead.hcpJobId
-      ? db.select().from(hcpJobs).where(eq(hcpJobs.id, lead.hcpJobId)).limit(1).then((r) => r[0] ?? null)
-      : Promise.resolve(null),
   ]);
 
   const t = TYPE_META[lead.type] ?? { ic: "•", label: lead.type };
@@ -101,7 +97,7 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
 
   return (
     <>
-      <Link href="/leads" className="backlink">← Leads</Link>
+      <Link href="/estimates" className="backlink">← Estimates</Link>
       {lead.conversationId && (
         <Link href={`/inbox/${lead.conversationId}`} className="backlink" style={{ marginLeft: 14 }}>
           Full conversation →
@@ -117,7 +113,6 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
         </div>
         <div className="controls">
           {lead.isSpam && <span className="badge bad">spam</span>}
-          {lead.isDuplicate && <span className="badge muted-strike">duplicate</span>}
           <span className={stageClass(lead.status)}>{lead.status}</span>
           {/* Available on every type, not just calls: a junk form submission has to
               be ejectable from the Leads list too, and this is the only control that
@@ -299,14 +294,8 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
                     {estimate.approvedAtHcp ? <span className="muted"> · approved {dateTime(estimate.approvedAtHcp)}</span> : null}
                   </Def>
                 )}
-                {job && (
-                  <Def label="HCP job">
-                    {job.workStatus || "—"}
-                    <span className="muted"> · {dollars(job.totalAmountCents)}</span>
-                  </Def>
-                )}
               </div>
-              {!lead.quoteValueCents && !lead.salesValueCents && !estimate && !job && (
+              {!lead.quoteValueCents && !lead.salesValueCents && !estimate && (
                 <p className="muted" style={{ fontSize: 12, margin: 0 }}>
                   Not matched to a HousecallPro estimate yet. Matching runs on phone/email during the HCP sync.
                 </p>
