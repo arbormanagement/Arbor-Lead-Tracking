@@ -1,4 +1,4 @@
-import { UNMAPPED_SOURCE_KEY, slugifySourceValue } from "@/lib/sources/naming";
+import { UNMAPPED_SOURCE_KEY } from "@/lib/sources/naming";
 
 export interface TouchParams {
   gclid?: string | null;
@@ -152,11 +152,14 @@ export function classifySource(p: TouchParams): Classification {
     if (host && self && host === self) return { sourceKey: "direct", medium: "none" };
     if (host && isFacebookHost(p.referrer)) return { sourceKey: "facebook/organic", medium: "social" };
     if (host && isSearchHost(host)) return { sourceKey: "organic/seo", medium: "organic" };
-    // A referring HOST is evidence of a real, identifiable place — unlike a UTM
-    // value, nobody can forge where the browser actually came from — so these keep
-    // minting their own source. Slugified so nextdoor.com and Nextdoor.com cannot
-    // become two rows.
-    if (host) return { sourceKey: `${slugifySourceValue(host)}/referral`, medium: "referral" };
+    // Any other referring host is a REFERRAL — one seeded source, not a source per
+    // host. This used to mint `<host>/referral` on the argument that a host is real
+    // evidence nobody can forge; true, but it grew /sources a row per referring
+    // domain forever (`yelp-com/referral`, one lead, one row) while the seeded
+    // `referral` was never written to by anything. The host is not lost: the full
+    // referrer is on `web_sessions.referrer`, which is where "which site sent them"
+    // is answered. Changed 2026-09-05; migration 0051 folded the minted rows in.
+    if (host) return { sourceKey: "referral", medium: "referral" };
   }
 
   return { sourceKey: "direct", medium: "none" };

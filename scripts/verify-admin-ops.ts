@@ -56,6 +56,20 @@ async function main() {
   await db.delete(leads).where(eq(leads.phoneE164, ATTR_PHONE));
   await seedDefaults(db);
 
+  // ── the seed retires stray source rows only once nothing points at them ──────
+  await db.delete(sources).where(eq(sources.key, "test"));
+  const [testSrc] = await db.insert(sources).values({ key: "test", displayName: "Test", platform: "other" }).returning();
+  const [testLead] = await db.insert(leads).values({ type: "call", occurredAt: new Date(), phoneE164: ATTR_PHONE, sourceId: testSrc.id }).returning();
+  await seedDefaults(db);
+  ok((await db.select().from(sources).where(eq(sources.key, "test"))).length === 1,
+    "seed KEEPS the `test` source while a lead still points at it");
+  await db.delete(leads).where(eq(leads.id, testLead.id));
+  await seedDefaults(db);
+  ok((await db.select().from(sources).where(eq(sources.key, "test"))).length === 0,
+    "…and retires it on the next run once the last reference is gone");
+  ok((await db.select().from(sources).where(eq(sources.key, "referral"))).length === 1,
+    "…while the seeded `referral` itself is never touched by the `%/referral` rule");
+
   // ── setLeadAttribution — the manual correction, and what it refuses ─────────
   const [gbpSrc] = await db.select({ id: sources.id }).from(sources).where(eq(sources.key, "gbp")).limit(1);
   const [ofa] = await db.select({ id: campaigns.id }).from(campaigns).where(eq(campaigns.externalCampaignId, "ofallon")).limit(1);

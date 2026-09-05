@@ -26,6 +26,11 @@ export const SEED_SOURCES: Array<{
   { key: "google/lsa", displayName: "Google Local Services", platform: "google_lsa", costModel: "cpl" },
   { key: "facebook/paid", displayName: "Meta Ads", platform: "facebook", costModel: "cpc" },
   { key: "organic/seo", displayName: "Organic Search", platform: "other", costModel: "none" },
+  // A facebook.com / instagram.com REFERRER with no fbclid: shares, page links, the
+  // profile link. classifySource has emitted this key since the referrer rules landed,
+  // so it was being minted at runtime on first use — the one thing this list exists to
+  // prevent. Two real leads carried it before it was seeded (2026-09-05).
+  { key: "facebook/organic", displayName: "Meta (Organic)", platform: "other", costModel: "none" },
   { key: "gbp", displayName: "Google Business Profile", platform: "other", costModel: "none" },
   { key: "direct", displayName: "Direct", platform: "other", costModel: "none" },
   { key: "referral", displayName: "Referral", platform: "other", costModel: "none" },
@@ -113,6 +118,33 @@ export async function seedDefaults(db: Db, onRow?: (label: string) => void) {
       .onConflictDoNothing({ target: schema.sources.key });
     onRow?.(`source ${s.key}`);
   }
+  // Retire source rows that should not exist, once nothing references them.
+  //
+  // `test` was the old test line's static source; `email` (bare — not
+  // email/newsletter) was minted at runtime by the retired Arbor-Automations number;
+  // and `<host>/referral` rows were minted per referring domain until the classifier
+  // started returning the seeded `referral` (2026-09-05, migration 0051 folded them).
+  //
+  // A seed pass rather than a migration statement, deliberately: the `test` row still
+  // owns a real lead (a $2,100 won job) until someone re-points it through
+  // arbor_set_lead_attribution, and a one-shot DELETE that ran before that would
+  // no-op forever. Guarded on every table that can point at a source, so a row that
+  // is still referenced — including a lead a human LOCKED, which the fold does not
+  // touch — stays, and shows up in reporting until it is dealt with by hand.
+  const retired = await db.execute(sql`
+    delete from ${schema.sources} s
+     where (s.key in ('test', 'email') or (s.key like '%/referral' and s.key <> 'referral'))
+       and not exists (select 1 from ${schema.leads}             where source_id         = s.id)
+       and not exists (select 1 from ${schema.conversations}     where source_id         = s.id)
+       and not exists (select 1 from ${schema.attributions}      where source_id         = s.id)
+       and not exists (select 1 from ${schema.roiDaily}          where source_id         = s.id)
+       and not exists (select 1 from ${schema.trackingNumbers}   where static_source_id  = s.id)
+       and not exists (select 1 from ${schema.campaigns}         where source_id         = s.id)
+       and not exists (select 1 from ${schema.manualSpend}       where source_id         = s.id)
+       and not exists (select 1 from ${schema.webSessions}       where derived_source_id = s.id)
+  `);
+  if (retired.rowCount) onRow?.(`retired ${retired.rowCount} unreferenced source row(s)`);
+
   // Repair sources created before there was one place that named them: six call
   // sites used `displayName: key`, so anything outside this seed list rendered as a
   // raw slug on /sources. Idempotent, and only touches rows still carrying the

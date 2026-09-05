@@ -232,6 +232,13 @@ async function main() {
     "an unrecognised campaign alone falls through to the referrer, not into other");
   ok(classifySource({ utmSource: "mystery" }).sourceKey === "other",
     "…while a source we do not know is still unmapped");
+  // Referrer rules: one seeded `referral`, never a source per host.
+  ok(classifySource({ referrer: "https://www.yelp.com/biz/arbor", currentUrl: "https://arbor-mgmt.com/" }).sourceKey === "referral",
+    "a referring host classifies as the seeded `referral`, not `<host>/referral`");
+  ok(classifySource({ referrer: "https://m.facebook.com/", currentUrl: "https://arbor-mgmt.com/" }).sourceKey === "facebook/organic",
+    "…facebook/organic for a Meta referrer without a click id (now seeded)");
+  ok(classifySource({ referrer: "https://arbor-mgmt.com/services", currentUrl: "https://arbor-mgmt.com/contact" }).sourceKey === "direct",
+    "…and an internal navigation is not a referral");
 
   const [transposed] = await db.insert(leads).values({
     type: "call", sourceId: gbp.id, occurredAt: new Date(), phoneE164: FIXTURES[3],

@@ -358,6 +358,13 @@
       "when": 1788623181140,
       "tag": "0050_lead_attribution_manual_lock",
       "breakpoints": true
+    },
+    {
+      "idx": 51,
+      "version": "7",
+      "when": 1788623482097,
+      "tag": "0051_fold_referral_retire_stray_sources",
+      "breakpoints": true
     }
   ]
 }
