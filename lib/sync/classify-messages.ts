@@ -65,7 +65,7 @@ export async function syncMessageClassification({ limit = 25 }: { limit?: number
           .set({
             disposition: isSpam ? "spam" : cls.isLead ? "requested_work" : "not_business",
             dispositionReason: cls.reason,
-            ...(cls.selfReportedSource ? { selfReportedSource: cls.selfReportedSource } : {}),
+            ...(cls.selfReportedSource ? { selfReportedSource: cls.selfReportedSource, selfReportedChannel: cls.selfReportedChannel } : {}),
             ...(isSpam ? { isSpam: true } : {}),
           })
           // Re-check the override: a human may have decided while this ran.

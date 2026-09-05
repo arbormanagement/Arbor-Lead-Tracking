@@ -43,6 +43,7 @@ export interface LeadRow {
   /** The caller's own answer to "how did you hear about us" — the only field that
    *  can say what is inside the `direct` bucket. */
   selfReportedSource: string | null;
+  selfReportedChannel: string | null;
   gclid: string | null;
   gbraid: string | null;
   wbraid: string | null;
@@ -113,6 +114,7 @@ export async function searchLeads(
       medium: leads.medium,
       keyword: leads.keyword,
       selfReportedSource: leads.selfReportedSource,
+      selfReportedChannel: leads.selfReportedChannel,
       gclid: leads.gclid,
       gbraid: leads.gbraid,
       wbraid: leads.wbraid,

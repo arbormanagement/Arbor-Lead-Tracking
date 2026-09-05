@@ -73,6 +73,16 @@ export const conversationStateEnum = pgEnum("conversation_state", ["open", "clos
  * said it asked for work. It is a prediction the estimate later settles, not an
  * outcome. Replaces `is_lead` (2026-09-05).
  */
+/** See lib/leads/self-reported.ts. */
+export const selfReportedChannelEnum = pgEnum("self_reported_channel", [
+  "referral",
+  "google_search",
+  "social",
+  "sign_or_truck",
+  "repeat_customer",
+  "other",
+]);
+
 export const leadDispositionEnum = pgEnum("lead_disposition", [
   "requested_work", // asked for tree work / an estimate — the classifier's or a human's verdict
   "spam", // robocall, scam, junk form
@@ -919,9 +929,13 @@ export const leads = pgTable(
     // attribution sync; they derive from the estimate on read now (lib/leads/stage.ts).
     // Flags
     isSpam: boolean("is_spam").notNull().default(false),
-    // Caller's self-reported source ("how did you hear about us"), extracted from the
-    // call transcript — shown alongside the DNI-attributed source as a cross-check.
+    // Caller's self-reported source ("how did you hear about us"): the free text as
+    // the DETAIL, and its roll-up to a channel that can be counted. Captured from call
+    // transcripts, text bodies, web forms and Meta forms; shown alongside the
+    // DNI-attributed source as a cross-check, and the only instrument for contacts that
+    // reach us on a channel no tag can trace (lib/leads/self-reported.ts).
     selfReportedSource: text("self_reported_source"),
+    selfReportedChannel: selfReportedChannelEnum("self_reported_channel"),
     // See leadDispositionEnum. NULL = pending. `disposition_manual` is the human
     // override, which the classifiers never overwrite. Replaced `is_lead` /
     // `is_lead_manual` / `lead_reason` (dual-written for one cycle, dropped in 0053).

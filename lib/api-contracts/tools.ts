@@ -26,6 +26,8 @@ import { LOCATIONS } from "@/lib/locations";
  *  Defined HERE (db-free) so both the query layer and client code can import. */
 export const LEAD_TYPES = ["call", "web_form", "facebook_leadgen", "sms", "email"] as const;
 /** Mirrors leadDispositionEnum. NULL (absent) means pending — see the enum's comment. */
+/** Mirrors selfReportedChannelEnum / lib/leads/self-reported.ts. */
+export const SELF_REPORTED_CHANNELS = ["referral", "google_search", "social", "sign_or_truck", "repeat_customer", "other"] as const;
 export const LEAD_DISPOSITIONS = ["requested_work", "spam", "not_business", "existing_customer", "missed", "test"] as const;
 /** An enquiry's STAGE — derived from its linked estimate on read (lib/leads/stage.ts), never
  *  stored. new = no estimate yet · qualified = estimate written, unpriced · quoted = priced ·
@@ -765,7 +767,10 @@ export const RoiSummaryOutput = z.object({
     .object({
       landingPages: z.array(BreakdownRow),
       keywords: z.array(BreakdownRow),
-      selfReported: z.array(BreakdownRow).describe('Callers\' own "how did you hear about us"'),
+      selfReported: z.array(BreakdownRow).describe('Callers\' own "how did you hear about us" — the free-text DETAIL'),
+      selfReportedChannels: z
+        .array(BreakdownRow)
+        .describe("The same answers rolled up: referral | google_search | social | sign_or_truck | repeat_customer | other. The countable version — the instrument for contacts on a channel no tag can trace"),
     })
     .optional(),
 });
@@ -812,6 +817,7 @@ export const LeadRowSchema = z.object({
   medium: z.string().nullable(),
   keyword: z.string().nullable(),
   selfReportedSource: z.string().nullable(),
+  selfReportedChannel: z.enum(SELF_REPORTED_CHANNELS).nullable().describe("The self-report rolled up to a channel; null = nothing said"),
   gclid: z.string().nullable(),
   gbraid: z.string().nullable(),
   wbraid: z.string().nullable(),

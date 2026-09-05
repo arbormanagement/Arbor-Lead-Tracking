@@ -35,6 +35,7 @@ import { setIncludedFormIds } from "@/lib/sync/facebook-leads";
 import { setLeadAttribution } from "@/lib/leads/attribution";
 import { setLeadClassification, setLeadDisposition } from "@/lib/leads/classify-override";
 import { searchLeads } from "@/lib/queries/leads";
+import { normalizeSelfReported } from "@/lib/leads/self-reported";
 import { campaigns } from "@/lib/db/schema";
 
 let failures = 0;
@@ -71,6 +72,21 @@ async function main() {
     "…and retires it on the next run once the last reference is gone");
   ok((await db.select().from(sources).where(eq(sources.key, "referral"))).length === 1,
     "…while the seeded `referral` itself is never touched by the `%/referral` rule");
+
+  // ── self-reported source → channel: the rules, then the seed backfill ───────
+  const cases: Array<[string | null, string | null]> = [
+    ["referral - neighbor", "referral"], ["referral - Edwards Roofing Company", "referral"], ["referral - HOA meeting", "referral"],
+    ["my neighbor found you on Google", "referral"], ["google search", "google_search"], ["found you online", "google_search"],
+    ["saw your truck", "sign_or_truck"], ["yard sign", "sign_or_truck"], ["facebook", "social"], ["Nextdoor post", "social"],
+    ["used you before", "repeat_customer"], ["repeat customer", "repeat_customer"], ["a flyer in the mail", "other"], ["", null], [null, null],
+  ];
+  for (const [text, want] of cases) ok(normalizeSelfReported(text) === want, `normalizeSelfReported(${JSON.stringify(text)}) = ${want}`);
+  const [srLead] = await db.insert(leads).values({ type: "call", occurredAt: new Date(), phoneE164: ATTR_PHONE, selfReportedSource: "referral - daughter's in-laws" }).returning();
+  ok(srLead.selfReportedChannel === null, "a row written without a channel starts NULL");
+  await seedDefaults(db);
+  const [srAfter] = await db.select().from(leads).where(eq(leads.id, srLead.id));
+  ok(srAfter.selfReportedChannel === "referral", "…and the seed rolls it up from the detail on the next deploy");
+  await db.delete(leads).where(eq(leads.id, srLead.id));
 
   // ── setLeadDisposition — the human verdict, and the boolean slice of it ──────
   const [dLead] = await db.insert(leads).values({ type: "call", occurredAt: new Date(), phoneE164: ATTR_PHONE }).returning();

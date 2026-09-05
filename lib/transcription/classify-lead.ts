@@ -1,5 +1,6 @@
 import { getCredential } from "@/lib/credentials";
 import { analyzeCall } from "./analyze";
+import { normalizeSelfReported, SELF_REPORTED_CHANNELS, type SelfReportedChannel } from "@/lib/leads/self-reported";
 
 export interface LeadClassification {
   isLead: boolean; // did the caller request an estimate / want tree work?
@@ -10,6 +11,8 @@ export interface LeadClassification {
   summary: string | null;
   /** Caller's own "how did you hear about us" answer, if they said one (AI only). */
   selfReportedSource: string | null;
+  /** That answer rolled up to a channel — the model's pick, else the normalizer's. */
+  selfReportedChannel: SelfReportedChannel | null;
   method: "ai" | "keyword";
 }
 
@@ -44,7 +47,7 @@ export async function classifyCallLead(
 
   const apiKey = await getCredential("anthropic", "api_key");
   if (!apiKey || !t) {
-    return { isLead: kwIsLead, reason: t ? `keyword: ${kw.intent}` : KIND_COPY[kind].empty, intent: kw.intent, spamScore: kw.spamScore, summary: null, selfReportedSource: null, method: "keyword" };
+    return { isLead: kwIsLead, reason: t ? `keyword: ${kw.intent}` : KIND_COPY[kind].empty, intent: kw.intent, spamScore: kw.spamScore, summary: null, selfReportedSource: null, selfReportedChannel: null, method: "keyword" };
   }
 
   try {
@@ -56,11 +59,15 @@ export async function classifyCallLead(
       spamScore: ai.is_spam ? 1 : kw.spamScore,
       summary: ai.summary?.trim() || null,
       selfReportedSource: ai.self_reported_source?.trim() || null,
+      selfReportedChannel:
+        (ai.self_reported_channel && (SELF_REPORTED_CHANNELS as readonly string[]).includes(ai.self_reported_channel)
+          ? (ai.self_reported_channel as SelfReportedChannel)
+          : null) ?? normalizeSelfReported(ai.self_reported_source),
       method: "ai",
     };
   } catch (err) {
     console.error("[classify-lead] AI failed; keyword fallback", err);
-    return { isLead: kwIsLead, reason: `keyword: ${kw.intent} (ai error)`, intent: kw.intent, spamScore: kw.spamScore, summary: null, selfReportedSource: null, method: "keyword" };
+    return { isLead: kwIsLead, reason: `keyword: ${kw.intent} (ai error)`, intent: kw.intent, spamScore: kw.spamScore, summary: null, selfReportedSource: null, selfReportedChannel: null, method: "keyword" };
   }
 }
 
@@ -71,6 +78,7 @@ interface ClaudeResult {
   reason: string;
   summary?: string | null;
   self_reported_source?: string | null;
+  self_reported_channel?: string | null;
 }
 
 async function classifyWithClaude(
@@ -108,8 +116,13 @@ async function classifyWithClaude(
                 type: ["string", "null"],
                 description: "If the person mentions HOW they heard about the business (e.g. 'saw your truck', 'my neighbor used you', 'found you on Google', 'yard sign', 'Facebook ad'), a short normalized phrase like 'google search', 'referral - neighbor', 'yard sign', 'truck', 'facebook'. null if never mentioned.",
               },
+              self_reported_channel: {
+                type: ["string", "null"],
+                enum: ["referral", "google_search", "social", "sign_or_truck", "repeat_customer", "other", null],
+                description: "The same answer as ONE channel: referral (a person or another business recommended us), google_search (searched online / Google / Maps), social (Facebook, Instagram, Nextdoor), sign_or_truck (a yard sign, a truck, saw the crew), repeat_customer (has used us before themselves), other. null if never mentioned.",
+              },
             },
-            required: ["requested_estimate", "intent", "is_spam", "reason", "summary", "self_reported_source"],
+            required: ["requested_estimate", "intent", "is_spam", "reason", "summary", "self_reported_source", "self_reported_channel"],
           },
         },
       ],

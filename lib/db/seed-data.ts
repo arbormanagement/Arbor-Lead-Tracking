@@ -1,4 +1,5 @@
-import { and, eq, isNull, sql } from "drizzle-orm";
+import { and, eq, isNotNull, isNull, sql } from "drizzle-orm";
+import { normalizeSelfReported } from "@/lib/leads/self-reported";
 import * as schema from "./schema";
 import { SPEND_REPULL_DAYS } from "@/lib/campaigns";
 import { UNMAPPED_SOURCE_KEY as UNMAPPED_KEY, displayNameFor } from "@/lib/sources/naming";
@@ -144,6 +145,24 @@ export async function seedDefaults(db: Db, onRow?: (label: string) => void) {
        and not exists (select 1 from ${schema.webSessions}       where derived_source_id = s.id)
   `);
   if (retired.rowCount) onRow?.(`retired ${retired.rowCount} unreferenced source row(s)`);
+
+  // Roll up self-reported sources written before the channel column existed, and any
+  // written by the old container during a deploy window. Fill-only-a-NULL, and the
+  // normalizer is the one in lib/leads/self-reported.ts — the same one ingest uses —
+  // so the backfill cannot disagree with the live path. A handful of rows, in TS,
+  // rather than a second copy of the rules in SQL.
+  const unrolled = await db
+    .select({ id: schema.leads.id, text: schema.leads.selfReportedSource })
+    .from(schema.leads)
+    .where(and(isNull(schema.leads.selfReportedChannel), isNotNull(schema.leads.selfReportedSource)));
+  let rolled = 0;
+  for (const r of unrolled) {
+    const channel = normalizeSelfReported(r.text);
+    if (!channel) continue;
+    await db.update(schema.leads).set({ selfReportedChannel: channel }).where(eq(schema.leads.id, r.id));
+    rolled++;
+  }
+  if (rolled) onRow?.(`rolled ${rolled} self-reported source(s) up to a channel`);
 
   // Repair a thread whose first-touch snapshot still says `other` after its first
   // lead was moved off it. The snapshot is filled once from the first lead and never
