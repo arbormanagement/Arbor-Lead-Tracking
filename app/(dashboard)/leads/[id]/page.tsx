@@ -19,6 +19,7 @@ import { dateTime, dollars, durationLabel } from "@/lib/format";
 import { formatPhoneDisplay } from "@/lib/phone";
 import { LeadToggle } from "../../lead-toggle";
 import { stageClass, TYPE_META } from "../../stage";
+import { leadStageSql } from "@/lib/leads/stage";
 
 export const dynamic = "force-dynamic";
 
@@ -55,18 +56,21 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
   const [row] = await db
     .select({
       lead: leads,
+      stage: leadStageSql,
       sourceName: sources.displayName,
       sourceKey: sources.key,
       campaignName: campaigns.name,
       campaignPlatform: campaigns.platform,
     })
     .from(leads)
+    .leftJoin(hcpEstimates, eq(hcpEstimates.id, leads.hcpEstimateId))
     .leftJoin(sources, eq(leads.sourceId, sources.id))
     .leftJoin(campaigns, eq(leads.campaignId, campaigns.id))
     .where(eq(leads.id, id))
     .limit(1);
   if (!row) notFound();
   const lead = row.lead;
+  const stage = row.stage;
 
   const [callRows, forms, fbRows, messageRows, touches, session, estimate] = await Promise.all([
     db
@@ -113,7 +117,7 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
         </div>
         <div className="controls">
           {lead.isSpam && <span className="badge bad">spam</span>}
-          <span className={stageClass(lead.status)}>{lead.status}</span>
+          <span className={stageClass(stage)}>{stage}</span>
           {/* Available on every type, not just calls: a junk form submission has to
               be ejectable from the Leads list too, and this is the only control that
               does it (the list itself no longer carries one). */}
@@ -143,7 +147,7 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
                     {call.durationSec ? <span className="muted"> · {durationLabel(call.durationSec)}</span> : null}
                   </Def>
                   <Def label="Intent">{call.intentLabel}</Def>
-                  <Def label="Lead reason" title="Why this call was (or wasn't) classified as a lead">{lead.leadReason}</Def>
+                  <Def label="Lead reason" title="Why this call was (or wasn't) classified as a lead">{lead.dispositionReason}</Def>
                 </div>
                 {call.recordingUrl && (
                   <audio controls preload="none" style={{ width: "100%", height: 36, marginTop: 12 }} src={`/api/calls/${call.id}/recording`} />
@@ -281,10 +285,14 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
             <div className="card-head"><h3>Value</h3></div>
             <div className="card-body">
               <div className="def-list">
-                <Def label="Quoted">{lead.quoteValueCents ? dollars(lead.quoteValueCents) : null}</Def>
+                <Def label="Quoted">
+                  {estimate && !estimate.won && estimate.totalAmountCents ? dollars(estimate.totalAmountCents) : null}
+                </Def>
                 <Def label="Won">
-                  {lead.salesValueCents ? (
-                    <span style={{ color: "var(--accent)", fontWeight: 700 }}>{dollars(lead.salesValueCents)}</span>
+                  {estimate?.won ? (
+                    <span style={{ color: "var(--accent)", fontWeight: 700 }}>
+                      {dollars(estimate.approvedAmountCents || estimate.totalAmountCents || 0)}
+                    </span>
                   ) : null}
                 </Def>
                 {estimate && (
@@ -295,7 +303,7 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
                   </Def>
                 )}
               </div>
-              {!lead.quoteValueCents && !lead.salesValueCents && !estimate && (
+              {!estimate && (
                 <p className="muted" style={{ fontSize: 12, margin: 0 }}>
                   Not matched to a HousecallPro estimate yet. Matching runs on phone/email during the HCP sync.
                 </p>
@@ -315,8 +323,8 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
                 {/* Why this does (or doesn't) count as an estimate request — the
                     thing the Leads list filters on. */}
                 <Def label="Lead reason" title="Why this was classified as a lead or not">
-                  {lead.leadReason}
-                  {lead.isLeadManual ? <span className="muted"> · set by hand</span> : null}
+                  {lead.dispositionReason}
+                  {lead.dispositionManual ? <span className="muted"> · set by hand</span> : null}
                 </Def>
               </div>
             </div>

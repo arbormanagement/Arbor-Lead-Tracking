@@ -2,6 +2,7 @@ import { and, desc, eq, inArray } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { leads, messages, numberAssignments, trackingNumbers } from "@/lib/db/schema";
 import { resolveCampaignId } from "@/lib/campaigns";
+import { findOpenLead } from "@/lib/leads/open";
 import { clearSmsOptOut, markSmsOptedOut } from "@/lib/contacts/resolve";
 import { env } from "@/lib/env";
 import { preview, recordThreadActivity, upsertThread } from "@/lib/messaging/thread";
@@ -148,9 +149,6 @@ export async function POST(req: Request) {
   }
 }
 
-/** Stages an open lead can still be sitting in — anything past these is finished. */
-const OPEN_STAGES = ["new", "working", "qualified", "quoted"] as const;
-
 /**
  * Attach this text to the thread's still-open lead, or start a new one.
  *
@@ -172,13 +170,8 @@ async function attachToOpenLeadOrCreate(args: {
 }): Promise<string> {
   const { thread, fromE164, body, sourceId, spam, lease, conversionPage, staticCampaignId } = args;
 
-  const [open] = await db
-    .select({ id: leads.id })
-    .from(leads)
-    .where(and(eq(leads.conversationId, thread.conversationId), inArray(leads.status, [...OPEN_STAGES])))
-    .orderBy(desc(leads.occurredAt))
-    .limit(1);
-  if (open) return open.id;
+  const open = await findOpenLead(thread.conversationId);
+  if (open) return open;
 
   // Everything the DNI lease froze at assign time belongs on the lead, exactly as
   // it does for a call — this path resolved the lease and then discarded all but
@@ -196,9 +189,9 @@ async function attachToOpenLeadOrCreate(args: {
     .insert(leads)
     .values({
       type: "sms",
-      status: spam ? "spam" : "new",
       // Pending until the body is classified — a text is NOT presumed to be a lead.
       disposition: spam ? "spam" : null,
+      dispositionReason: spam ? "spam rule: blocked number" : null,
       phoneE164: fromE164,
       message: body || null,
       conversationId: thread.conversationId,
@@ -217,8 +210,6 @@ async function attachToOpenLeadOrCreate(args: {
       visitorId: lease?.visitorId ?? null,
       webSessionId: lease?.webSessionId ?? null,
       // Left unclassified on purpose — see the note at the top of this file.
-      isLead: spam ? false : null,
-      leadReason: spam ? "spam rule: blocked number" : null,
     })
     .returning({ id: leads.id });
   return lead.id;

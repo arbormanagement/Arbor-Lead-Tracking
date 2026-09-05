@@ -30,7 +30,7 @@ export async function syncMessageClassification({ limit = 25 }: { limit?: number
     const pending = await db
       .select({ id: leads.id })
       .from(leads)
-      .where(and(eq(leads.type, "sms"), isNull(leads.isLead), eq(leads.isLeadManual, false)))
+      .where(and(eq(leads.type, "sms"), isNull(leads.disposition), eq(leads.dispositionManual, false)))
       .orderBy(desc(leads.occurredAt))
       .limit(limit);
 
@@ -65,10 +65,8 @@ export async function syncMessageClassification({ limit = 25 }: { limit?: number
           .set({
             disposition: isSpam ? "spam" : cls.isLead ? "requested_work" : "not_business",
             dispositionReason: cls.reason,
-            isLead: isSpam ? false : cls.isLead,
-            leadReason: cls.reason,
             ...(cls.selfReportedSource ? { selfReportedSource: cls.selfReportedSource } : {}),
-            ...(isSpam ? { isSpam: true, status: "spam" as const } : {}),
+            ...(isSpam ? { isSpam: true } : {}),
           })
           // Re-check the override: a human may have decided while this ran.
           .where(and(eq(leads.id, lead.id), notManuallyDispositioned));

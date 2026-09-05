@@ -27,16 +27,17 @@ import { LOCATIONS } from "@/lib/locations";
 export const LEAD_TYPES = ["call", "web_form", "facebook_leadgen", "sms", "email"] as const;
 /** Mirrors leadDispositionEnum. NULL (absent) means pending — see the enum's comment. */
 export const LEAD_DISPOSITIONS = ["requested_work", "spam", "not_business", "existing_customer", "missed"] as const;
+/** An enquiry's STAGE — derived from its linked estimate on read (lib/leads/stage.ts), never
+ *  stored. new = no estimate yet · qualified = estimate written, unpriced · quoted = priced ·
+ *  won / lost / cancelled = the estimate's outcome · spam. */
 export const LEAD_STATUSES = [
   "new",
-  "working",
   "qualified",
   "quoted",
   "won",
   "lost",
   "cancelled",
   "spam",
-  "duplicate",
 ] as const;
 
 const days = (def: number) =>

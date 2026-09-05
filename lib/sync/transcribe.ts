@@ -82,9 +82,7 @@ async function runTranscription(call: PendingCall): Promise<"transcribed" | "spa
       .set({
         disposition: spam ? "spam" : cls.isLead ? "requested_work" : "not_business",
         dispositionReason: cls.reason,
-        isLead: spam ? false : cls.isLead,
-        leadReason: cls.reason,
-        ...(spam ? { isSpam: true, status: "spam" as const } : {}),
+        ...(spam ? { isSpam: true } : {}),
       })
       .where(and(eq(leads.id, call.leadId), notManuallyDispositioned));
     if (spam) return "spam";

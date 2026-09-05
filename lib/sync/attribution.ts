@@ -111,19 +111,10 @@ async function matchLeadsToEstimates(windowDays: number): Promise<{ qualified: n
       ),
     ),
   );
-  // Status reset must run first — clearing hcp_estimate_id would break the
-  // linked-estimate arm of `resettable` for the second statement. One transaction
-  // so a crash between the two can't leave leads half-reset.
-  await db.transaction(async (tx) => {
-    await tx
-      .update(leads)
-      .set({ status: "new" })
-      .where(and(resettable, inArray(leads.status, ["won", "qualified", "quoted", "lost", "cancelled"])));
-    await tx
-      .update(leads)
-      .set({ hcpEstimateId: null, salesValueCents: null, quoteValueCents: null })
-      .where(resettable);
-  });
+  // Unlink, then re-derive below. Stage and value are no longer stored on the lead —
+  // they derive from the linked estimate (lib/leads/stage.ts) — so the link is the
+  // only thing to reset.
+  await db.update(leads).set({ hcpEstimateId: null }).where(resettable);
 
   // Every estimate (created), ordered so the RIGHT estimate claims the lead. A lead
   // can be claimed only once (`claimedLeads` below), so when one customer has
@@ -273,13 +264,8 @@ async function matchLeadsToEstimates(windowDays: number): Promise<{ qualified: n
         // repeat customer whose enquiry landed inside the estimate's own second is
         // not read as having contacted us afterwards.
         if (prior && age > -HCP_CREATED_AT_GRANULARITY_MS && age <= customerWindowDays * 86_400_000) {
-          await db
-            .update(leads)
-            .set({
-              salesValueCents: sql`coalesce(${leads.salesValueCents}, 0) + ${est.approved ?? 0}`,
-              status: "won",
-            })
-            .where(eq(leads.id, prior.leadId));
+          // Nothing to write: the rollup below credits this estimate's revenue to the
+          // customer's first touch by CONTACT, so the prior lead needs no copy of it.
           won++;
         }
       }
@@ -288,34 +274,12 @@ async function matchLeadsToEstimates(windowDays: number): Promise<{ qualified: n
 
     claimedLeads.add(pick.id);
     for (const k of contactKeys) if (!claimedByContact.has(k)) claimedByContact.set(k, { leadId: pick.id, leadAt: pick.occurredAt });
-    // Stage from the estimate state: won (≥1 option approved) → won; cancelled →
-    // cancelled (estimate-level work_status — cancellation never reaches the option
-    // approval fields); lost (every decided option declined/expired) → lost; has a
-    // quote amount → quoted; estimate exists but no price yet → qualified.
+    // Only the LINK is written. Stage and value derive from the estimate on read
+    // (lib/leads/stage.ts), so there is no copy to keep in step.
+    await db.update(leads).set({ hcpCustomerId: est.custId, hcpEstimateId: est.estId }).where(eq(leads.id, pick.id));
     const s = (est.estStatus ?? "").toLowerCase();
-    const status = est.won
-      ? "won"
-      : /cancel/.test(s)
-        ? "cancelled"
-        : est.outcome === "lost"
-          ? "lost"
-          : (est.total ?? 0) > 0
-            ? "quoted"
-            : "qualified";
-    await db
-      .update(leads)
-      .set({
-        hcpCustomerId: est.custId,
-        hcpEstimateId: est.estId,
-        // Won → what was actually approved (multi-approval = add-ons, so the sum);
-        // otherwise the highest-value option (alternative bids, not a sum).
-        quoteValueCents: (est.won ? est.approved : null) || est.total || null,
-        salesValueCents: est.won ? est.approved || 0 : null,
-        status,
-      })
-      .where(eq(leads.id, pick.id));
     if (est.won) won++;
-    else if (status !== "lost" && status !== "cancelled") qualified++;
+    else if (est.outcome !== "lost" && !/cancel/.test(s)) qualified++;
   }
 
   // "qualified" total includes won leads (a won lead is also a qualified lead).

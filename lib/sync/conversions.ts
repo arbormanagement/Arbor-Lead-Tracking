@@ -1,5 +1,6 @@
-import { and, desc, eq, gte, inArray, ne, or, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNull, ne, or, sql } from "drizzle-orm";
 import { db } from "@/lib/db/client";
+import { estimateCancelledSql } from "@/lib/leads/stage";
 import { calls, conversionExports, facebookLeads, hcpEstimates, leads, numberAssignments, sources } from "@/lib/db/schema";
 import { getPlatformCreds } from "@/lib/credentials";
 import { ingestEvents, type EventSource, type IngestEvent } from "@/lib/integrations/data-manager";
@@ -135,7 +136,6 @@ export async function syncConversions({ sinceDays = 90, limit = 500 }: { sinceDa
       .select({
         id: leads.id,
         type: leads.type,
-        status: leads.status,
         gclid: leads.gclid,
         gbraid: leads.gbraid,
         wbraid: leads.wbraid,
@@ -150,9 +150,11 @@ export async function syncConversions({ sinceDays = 90, limit = 500 }: { sinceDa
         emailLc: leads.emailLc,
         // Gates the no-click-id fallback: only genuinely-paid sources qualify.
         sourceKey: sources.key,
-        // No `quoteValueCents`: only the `won` stage reports money now (see below).
-        salesValueCents: leads.salesValueCents,
         occurredAt: leads.occurredAt,
+        // The linked estimate is the stage AND the money: only `won` reports a value,
+        // and it is the approved amount, read here rather than from a copy on the lead.
+        estimateWon: hcpEstimates.won,
+        estimateApprovedCents: hcpEstimates.approvedAmountCents,
         estimateCreatedAt: hcpEstimates.createdAtHcp,
         estimateScheduledAt: hcpEstimates.scheduledStartHcp,
         estimateApprovedAt: hcpEstimates.approvedAtHcp,
@@ -165,12 +167,11 @@ export async function syncConversions({ sinceDays = 90, limit = 500 }: { sinceDa
       .leftJoin(sources, eq(sources.id, leads.sourceId))
       .where(
         and(
-          // Was qualified/quoted/won only, which made an estimate a precondition
-          // for exporting ANYTHING. `new`/`working` are now in scope so the
-          // lead-stage event can fire on the form submission or call itself.
-          // Terminal non-outcomes stay out: a lost/cancelled/duplicate lead has
-          // nothing useful to teach bidding.
-          inArray(leads.status, ["new", "working", "qualified", "quoted", "won"]),
+          // No estimate yet is in scope, so the lead-stage event can fire on the
+          // form submission or call itself. Terminal non-outcomes stay out: a lost or
+          // cancelled estimate has nothing useful to teach bidding. Derived from the
+          // estimate, never from a stored stage.
+          or(isNull(hcpEstimates.id), and(ne(hcpEstimates.outcome, "lost"), sql`not (${estimateCancelledSql})`)),
           eq(leads.isSpam, false),
           gte(leads.occurredAt, cutoff),
           // A call lead is only a lead once transcription has classified it as a
@@ -221,7 +222,7 @@ export async function syncConversions({ sinceDays = 90, limit = 500 }: { sinceDa
       ];
       // Only claim an estimate exists once one actually does. Status alone is not
       // enough to date it, so an estimate-less lead must not emit `qualified`.
-      if (l.status !== "new" && l.status !== "working") {
+      if (l.estimateCreatedAt) {
         events.push({
           event: "qualified",
           valueCents: 0,
@@ -237,10 +238,10 @@ export async function syncConversions({ sinceDays = 90, limit = 500 }: { sinceDa
           });
         }
       }
-      if (l.status === "won") {
+      if (l.estimateWon) {
         events.push({
           event: "won",
-          valueCents: l.salesValueCents ?? 0,
+          valueCents: l.estimateApprovedCents ?? 0,
           convertedAt: l.estimateApprovedAt ?? l.estimateCreatedAt ?? l.occurredAt,
         });
       }

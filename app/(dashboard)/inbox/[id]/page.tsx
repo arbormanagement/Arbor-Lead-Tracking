@@ -49,7 +49,7 @@ export default async function ThreadPage({ params }: { params: Promise<{ id: str
 
   // "Why is this a lead (or not)?" lives on the lead, but it's the call it was
   // judged from — so surface it on the call card where the transcript is.
-  const reasonByLead = new Map(leadRows.map((l) => [l.id, l.leadReason]));
+  const reasonByLead = new Map(leadRows.map((l) => [l.id, l.dispositionReason]));
 
   const entries: Entry[] = [
     ...callRows.map((r) => ({

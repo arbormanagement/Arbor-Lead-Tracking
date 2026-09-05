@@ -1,6 +1,7 @@
 import { and, desc, eq, ilike, isNotNull, not, or, sql, type SQL } from "drizzle-orm";
 import { db } from "@/lib/db/client";
-import { campaigns, leads, sources } from "@/lib/db/schema";
+import { campaigns, hcpEstimates, leads, sources } from "@/lib/db/schema";
+import { leadStageSql } from "@/lib/leads/stage";
 
 /**
  * Lead search — shared by GET /api/leads and the MCP `list_leads` tool.
@@ -58,7 +59,7 @@ export async function searchLeads(
 ): Promise<{ rows: LeadRow[]; total: number; hasMore: boolean; nextOffset: number | null }> {
   const where: SQL[] = [];
   if (p.type) where.push(eq(leads.type, p.type));
-  if (p.status) where.push(eq(leads.status, p.status));
+  if (p.status) where.push(eq(leadStageSql, p.status));
   if (p.isSpam !== undefined) where.push(eq(leads.isSpam, p.isSpam));
   if (p.q) {
     // Escape LIKE metacharacters so a search for "50%" or "a_b" is a literal
@@ -92,14 +93,18 @@ export async function searchLeads(
 
   // Counted over the same predicate as the page, so "showing N of M" is honest
   // rather than a description of whatever the fetch happened to return.
-  const [counted] = await db.select({ n: sql<number>`count(*)::int` }).from(leads).where(where_);
+  const [counted] = await db
+    .select({ n: sql<number>`count(*)::int` })
+    .from(leads)
+    .leftJoin(hcpEstimates, eq(hcpEstimates.id, leads.hcpEstimateId))
+    .where(where_);
   const total = counted?.n ?? 0;
 
   const rows = await db
     .select({
       id: leads.id,
       type: leads.type,
-      status: leads.status,
+      status: leadStageSql,
       name: leads.name,
       phoneE164: leads.phoneE164,
       emailLc: leads.emailLc,
@@ -121,6 +126,7 @@ export async function searchLeads(
       occurredAt: leads.occurredAt,
     })
     .from(leads)
+    .leftJoin(hcpEstimates, eq(hcpEstimates.id, leads.hcpEstimateId))
     .leftJoin(sources, eq(sources.id, leads.sourceId))
     .leftJoin(campaigns, eq(campaigns.id, leads.campaignId))
     .where(where_)
