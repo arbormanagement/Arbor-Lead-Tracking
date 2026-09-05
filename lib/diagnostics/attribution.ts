@@ -42,7 +42,10 @@ export async function attributionBreakdown(rawDays = 90) {
       SELECT
         e.id,
         e.hcp_estimate_id,
-        e.lead_id,
+        -- Aliased: the classified CTE selects est.* AND l.id AS lead_id below, and
+        -- two columns named lead_id made every later reference ambiguous (found
+        -- live 2026-09-05, first call after 0057 deployed).
+        e.lead_id AS linked_lead_id,
         e.created_at_hcp,
         e.hcp_customer_id,
         -- Every identifier this customer is known by, deduped and null-stripped.
@@ -83,7 +86,7 @@ export async function attributionBreakdown(rawDays = 90) {
             )
         ) AS reached_us
       FROM est
-      LEFT JOIN leads l ON l.id = est.lead_id AND l.is_spam = false
+      LEFT JOIN leads l ON l.id = est.linked_lead_id AND l.is_spam = false
     )
     SELECT
       count(*)::int AS total,
