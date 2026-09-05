@@ -383,6 +383,12 @@ export interface CustomerFilters {
    *         not to be contacted is not.
    */
   doNotService?: boolean;
+  /**
+   * Rows HousecallPro no longer lists (merged or deleted there — `missing_from_hcp_at`).
+   * Omitted or false = LIVE customers only, which is what every caller means by
+   * "customers". true = only the tombstoned ones, for auditing what went away.
+   */
+  missingFromHcp?: boolean;
 }
 
 /**
@@ -428,7 +434,10 @@ export async function listCustomers(opts: {
         : eq(hcpCustomers.doNotService, false),
     );
   }
-  const scope = conds.length ? and(...conds) : undefined;
+  // Always applied — a tombstoned customer is not "a customer HCP has", and the
+  // mailable set (`doNotService: false`) must never include one.
+  conds.push(filters.missingFromHcp ? isNotNull(hcpCustomers.missingFromHcpAt) : isNull(hcpCustomers.missingFromHcpAt));
+  const scope = and(...conds);
 
   const page = await db
     .select({
@@ -448,6 +457,7 @@ export async function listCustomers(opts: {
       notificationsEnabled: hcpCustomers.notificationsEnabled,
       // THREE-STATE. null = UNKNOWN (not yet re-read with the expand), NOT "false".
       doNotService: hcpCustomers.doNotService,
+      missingFromHcpAt: hcpCustomers.missingFromHcpAt,
       leadSourceRaw: hcpCustomers.leadSourceRaw,
       city: sql<string | null>`(
         select a->>'city' from jsonb_array_elements(

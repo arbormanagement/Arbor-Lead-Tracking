@@ -26,7 +26,15 @@ import { sql } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { hcpCustomers, hcpEstimates, hcpInvoices, hcpJobs } from "@/lib/db/schema";
 import { listCustomers, listInvoices, listJobs } from "@/lib/queries/hcp";
-import { CRAWL_INITIAL, advanceCrawl, crawlWindowFor, markCrawlSeen } from "@/lib/sync/hcp";
+import {
+  CRAWL_INITIAL,
+  TOMBSTONE_MAX_FLOOR,
+  advanceCrawl,
+  crawlWindowFor,
+  fullLapJustWrapped,
+  markCrawlSeen,
+  tombstoneMissing,
+} from "@/lib/sync/hcp";
 
 const now = new Date();
 const days = (n: number) => new Date(now.getTime() - n * 86_400_000);
@@ -283,13 +291,59 @@ async function main() {
   check("a row created after the pass began is not flagged", !missingIds.includes("cus_new"), missingIds);
   check("exactly one missing", missingIds.length === 1, missingIds);
 
-  // Re-stamping clears it — the crawl seeing a row again is what resolves the flag.
+  // ── Tombstoning: the detection written onto the row ─────────────────────────
+  console.log("\ntombstones:");
+  const stamped = await tombstoneMissing("hcp_customers", passStart);
+  check("the dropped customer is tombstoned, and only it", stamped === 1, stamped);
+  const tomb = await db.execute<{ hcp_id: string }>(sql`
+    select hcp_customer_id as hcp_id from hcp_customers where missing_from_hcp_at is not null
+  `);
+  check("tombstone landed on cus_gone", (tomb.rows ?? []).map((r) => r.hcp_id).join() === "cus_gone", tomb.rows);
+  check("tombstoning is idempotent", (await tombstoneMissing("hcp_customers", passStart)) === 0);
+  // Every reader that means "customers HCP has" excludes it, and the audit view
+  // is the only way to see it.
+  const live = await listCustomers({ limit: 100 });
+  check("listCustomers hides the tombstoned row by default", !live.rows.some((r) => r.hcpCustomerId === "cus_gone"), live.rows.map((r) => r.hcpCustomerId));
+  check("agg.total is the live count", live.agg?.total === live.rows.length, live.agg?.total);
+  const dead = await listCustomers({ filters: { missingFromHcp: true }, limit: 100 });
+  check("missingFromHcp:true is exactly the tombstoned set", dead.rows.map((r) => r.hcpCustomerId).join() === "cus_gone", dead.rows.map((r) => r.hcpCustomerId));
+  check("the row carries its tombstone date", dead.rows[0]?.missingFromHcpAt != null);
+  const tsMailable = await listCustomers({ filters: { doNotService: false }, limit: 100 });
+  check("the mailable set never includes a tombstoned row", !tsMailable.rows.some((r) => r.hcpCustomerId === "cus_gone"));
+
+  // The wrap detector: only a lap that started at page 1 publishes a cutoff.
+  const beforeWrap = { ...CRAWL_INITIAL, nextPage: 1, passes: 3, lastFullLapStartedAt: days(3).toISOString() };
+  const wrapped = advanceCrawl(beforeWrap, { rows: [], nextPage: 1, wrapped: true, totalItems: 4 }, now);
+  check("a full lap wrapping publishes its start as the cutoff", fullLapJustWrapped(beforeWrap, wrapped)?.getTime() === now.getTime(), fullLapJustWrapped(beforeWrap, wrapped));
+  check("no wrap, no cutoff", fullLapJustWrapped(beforeWrap, advanceCrawl(beforeWrap, { rows: [], nextPage: 2, wrapped: false, totalItems: 4 }, now)) === null);
+  const tsJoinedMidLap = { ...CRAWL_INITIAL, nextPage: 40, passes: 3, lastFullLapStartedAt: days(3).toISOString() };
+  const tsPartialWrap = advanceCrawl(tsJoinedMidLap, { rows: [], nextPage: 1, wrapped: true, totalItems: 4 }, now);
+  check("a lap joined midway wraps without a cutoff", fullLapJustWrapped(tsJoinedMidLap, tsPartialWrap) === null, tsPartialWrap.lastFullLapStartedAt);
+
+  // Re-stamping clears it — the crawl seeing a row again is what resolves the flag
+  // AND the tombstone: HCP listing the row is the one fact that means it is back.
   await markCrawlSeen("hcp_customers", "hcp_customer_id", ["cus_gone"]);
-  const after = await db.execute<{ n: number }>(sql`
-    select count(*)::int as n from hcp_customers
-    where created_at < ${passStart} and (crawl_seen_at is null or crawl_seen_at < ${passStart})
+  const after = await db.execute<{ n: number; dead: number }>(sql`
+    select count(*) filter (where created_at < ${passStart} and (crawl_seen_at is null or crawl_seen_at < ${passStart}))::int as n,
+           count(*) filter (where missing_from_hcp_at is not null)::int as dead
+    from hcp_customers
   `);
   check("re-seeing a row clears the flag", Number(after.rows?.[0]?.n) === 0, after.rows?.[0]?.n);
+  check("re-seeing a row clears its tombstone", Number(after.rows?.[0]?.dead) === 0, after.rows?.[0]?.dead);
+
+  // The mass-deletion guard: a lap that "finds" more than the ceiling missing is a
+  // crawl that skipped pages, not HCP deleting a tenth of its customers. Refused,
+  // reported as a negative count, nothing stamped.
+  const flood = Array.from({ length: TOMBSTONE_MAX_FLOOR + 5 }, (_, i) => ({
+    hcpCustomerId: `cus_flood_${i}`, firstName: "Flood", lastName: String(i), createdAtHcp: days(500),
+  }));
+  await db.insert(hcpCustomers).values(flood);
+  await db.execute(sql`UPDATE hcp_customers SET created_at = ${days(500)} WHERE hcp_customer_id LIKE 'cus_flood_%'`);
+  const refused = await tombstoneMissing("hcp_customers", passStart);
+  check("a flood is refused, and the refusal says how many", refused === -(TOMBSTONE_MAX_FLOOR + 5), refused);
+  const stampedAfterFlood = await db.execute<{ n: number }>(sql`select count(*)::int as n from hcp_customers where missing_from_hcp_at is not null`);
+  check("a refused lap stamps nothing", Number(stampedAfterFlood.rows?.[0]?.n) === 0, stampedAfterFlood.rows?.[0]?.n);
+  await db.execute(sql`DELETE FROM hcp_customers WHERE hcp_customer_id LIKE 'cus_flood_%'`);
 
   // ── Newly projected job fields ──────────────────────────────────────────────
   console.log("\nprojected job fields:");

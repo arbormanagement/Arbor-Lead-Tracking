@@ -44,7 +44,9 @@ export async function linkContactToHcpCustomer(contactId: string): Promise<strin
   const [customer] = await db
     .select({ id: hcpCustomers.id, phones: hcpCustomers.phonesE164, email: hcpCustomers.emailLc })
     .from(hcpCustomers)
-    .where(predicates.length === 1 ? predicates[0] : or(...predicates))
+    // Live rows only: after a merge in HCP the surviving record carries the same
+    // phone, and the tombstoned one must not win on age.
+    .where(and(isNull(hcpCustomers.missingFromHcpAt), predicates.length === 1 ? predicates[0] : or(...predicates)))
     // Oldest wins, so a duplicate in HCP resolves to the original record.
     .orderBy(hcpCustomers.createdAt)
     .limit(1);
@@ -103,9 +105,12 @@ export async function linkContactsToHcpCustomers(): Promise<{ linked: number }> 
     .from(contactIdentifiers)
     .innerJoin(
       hcpCustomers,
-      or(
-        and(eq(contactIdentifiers.kind, "phone"), sql`${hcpCustomers.phonesE164} @> array[${contactIdentifiers.value}]`),
-        and(eq(contactIdentifiers.kind, "email"), eq(hcpCustomers.emailLc, contactIdentifiers.value)),
+      and(
+        isNull(hcpCustomers.missingFromHcpAt),
+        or(
+          and(eq(contactIdentifiers.kind, "phone"), sql`${hcpCustomers.phonesE164} @> array[${contactIdentifiers.value}]`),
+          and(eq(contactIdentifiers.kind, "email"), eq(hcpCustomers.emailLc, contactIdentifiers.value)),
+        ),
       ),
     )
     .groupBy(contactIdentifiers.contactId)

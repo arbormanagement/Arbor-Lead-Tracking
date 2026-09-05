@@ -223,7 +223,7 @@ export async function POST(req: Request) {
       .values({
         id: sid,
         visitorId: vid,
-        source: cls.sourceKey,
+        sourceKey: cls.sourceKey,
         medium,
         campaign: utm.campaign,
         term: utm.term,

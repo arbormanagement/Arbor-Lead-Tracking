@@ -123,8 +123,15 @@ export const webSessions = pgTable(
     startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
     lastActivityAt: timestamp("last_activity_at", { withTimezone: true }).notNull().defaultNow(),
     endedAt: timestamp("ended_at", { withTimezone: true }),
-    // Last-touch attribution for this visit
-    source: text("source"),
+    // Last-touch attribution for this visit.
+    //
+    // `source_key` is the CLASSIFIED key (`sources.key`, the output of classifySource
+    // at ingest) — NOT the raw `utm_source`. Everything else in this block is raw.
+    // It was called `source` until 2026-09-05, and that name cost a real bug: the
+    // reclassify pass fed it back into the classifier as `utm_source`, so a lead on
+    // `other` read "other" and returned "other" forever. The raw tag lives on
+    // `landing_page`; read it from there.
+    sourceKey: text("source_key"),
     medium: text("medium"),
     campaign: text("campaign"),
     content: text("content"),
@@ -416,6 +423,19 @@ export const hcpCustomers = pgTable(
     // Rows still carrying a stamp older than the last completed pass are the ones
     // HCP no longer lists.
     crawlSeenAt: timestamp("crawl_seen_at", { withTimezone: true }),
+    /**
+     * TOMBSTONE: when a provably-full crawl lap wrapped without HousecallPro listing
+     * this row. Set by `tombstoneMissing` in lib/sync/hcp.ts, cleared by
+     * `markCrawlSeen` the moment a crawl sees the row again. NULL = live.
+     *
+     * The alternative — deleting — is ruled out everywhere in this app (a merged
+     * customer's estimates, jobs and contacts still reference the row). The
+     * alternative to THAT — leaving detection as a diagnostics warning — kept two
+     * warnings red for weeks over 62 customers HCP had merged away, which is how a
+     * warning stops being read. So the fact is written down once, on the row, and
+     * every reader that means "customers HCP has" filters on it.
+     */
+    missingFromHcpAt: timestamp("missing_from_hcp_at", { withTimezone: true }),
     raw: jsonb("raw"),
     syncedAt: timestamp("synced_at", { withTimezone: true }).notNull().defaultNow(),
     createdAt: createdAt(),
@@ -537,6 +557,8 @@ export const hcpJobs = pgTable(
     createdAtHcp: timestamp("created_at_hcp", { withTimezone: true }),
     /** When the cold-zone crawl last saw this row — see hcpCustomers.crawlSeenAt. */
     crawlSeenAt: timestamp("crawl_seen_at", { withTimezone: true }),
+    /** Tombstone — see hcpCustomers.missingFromHcpAt. */
+    missingFromHcpAt: timestamp("missing_from_hcp_at", { withTimezone: true }),
     raw: jsonb("raw"),
     syncedAt: timestamp("synced_at", { withTimezone: true }).notNull().defaultNow(),
     createdAt: createdAt(),
@@ -650,6 +672,8 @@ export const hcpEstimates = pgTable(
     updatedAtHcp: timestamp("updated_at_hcp", { withTimezone: true }),
     /** When the cold-zone crawl last saw this row — see hcpCustomers.crawlSeenAt. */
     crawlSeenAt: timestamp("crawl_seen_at", { withTimezone: true }),
+    /** Tombstone — see hcpCustomers.missingFromHcpAt. */
+    missingFromHcpAt: timestamp("missing_from_hcp_at", { withTimezone: true }),
     raw: jsonb("raw"),
     syncedAt: timestamp("synced_at", { withTimezone: true }).notNull().defaultNow(),
     createdAt: createdAt(),
@@ -749,6 +773,8 @@ export const hcpInvoices = pgTable(
     refunds: jsonb("refunds"),
     /** When the cold-zone crawl last saw this row — see hcpCustomers.crawlSeenAt. */
     crawlSeenAt: timestamp("crawl_seen_at", { withTimezone: true }),
+    /** Tombstone — see hcpCustomers.missingFromHcpAt. */
+    missingFromHcpAt: timestamp("missing_from_hcp_at", { withTimezone: true }),
     raw: jsonb("raw"),
     syncedAt: timestamp("synced_at", { withTimezone: true }).notNull().defaultNow(),
     createdAt: createdAt(),

@@ -21,7 +21,7 @@ import { UNMAPPED_SOURCE_KEY, displayNameFor } from "@/lib/sources/naming";
  * reason. Re-running once the rows have moved is a no-op.
  *
  * Raw UTM values are re-read from the URLs — the session's entry page first, then
- * the lead's own landing page — never from `web_sessions.source`, which holds the
+ * the lead's own landing page — never from `web_sessions.source_key`, which holds the
  * already-classified key. See the note in the loop for the bug that rule closes.
  */
 
@@ -124,7 +124,7 @@ export async function reclassifyUnmappedSources({
   const idCache = new Map<string, string>();
 
   for (const r of rows) {
-    // The RAW tags come from the URLs, never from `web_sessions.source`. That column
+    // The RAW tags come from the URLs, never from `web_sessions.source_key`. That column
     // holds the CLASSIFIED key — the output of `classifySource` at ingest — so for a
     // lead sitting on `other` it reads "other", and feeding "other" back in as
     // `utm_source` returns "other" forever. That was the state until 2026-09-05: any
