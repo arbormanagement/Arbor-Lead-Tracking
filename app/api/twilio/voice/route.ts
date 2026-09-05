@@ -5,6 +5,7 @@ import { resolveCampaignId } from "@/lib/campaigns";
 import { validateTwilioSignature, parseTwilioForm } from "@/lib/twilio/signature";
 import { ensureSourceId, isHardSpamNumber, resolveInboundAttribution } from "@/lib/twilio/inbound";
 import { recordThreadActivity, upsertThread } from "@/lib/messaging/thread";
+import { findOpenLead } from "@/lib/leads/open";
 import { getDefaultForwardNumber } from "@/lib/routing";
 import {
   DEFAULT_RECORDING_NOTICE,
@@ -223,6 +224,25 @@ async function recordCall(args: {
     );
   } catch (err) {
     console.error("[twilio/voice] threading failed (call still recorded)", err);
+  }
+
+  // "One thread, many leads": a caller ringing back about the estimate already in
+  // flight is the same inquiry, not a second one — texts have joined the open lead
+  // since the inbox landed, and until 2026-09-05 calls did not, so one customer sat
+  // on four rows for one enquiry. Attribution is written only on a NEW lead: a
+  // follow-up call must not rewrite the source that earned the first one. A call
+  // rejected as spam never joins a real inquiry.
+  const openLeadId = status === "rejected_spam" ? null : await findOpenLead(thread?.conversationId);
+  if (openLeadId) {
+    if (thread) {
+      try {
+        await recordThreadActivity(thread.conversationId, { channel: "call", direction: "inbound", preview: "Inbound call" });
+      } catch (err) {
+        console.error("[twilio/voice] thread activity failed (call still recorded)", err);
+      }
+    }
+    await db.update(calls).set({ leadId: openLeadId, conversationId: thread?.conversationId ?? null }).where(eq(calls.id, inserted.id));
+    return;
   }
 
   // Carry the DNI lease's frozen attribution onto the lead. Copying only the

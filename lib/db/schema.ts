@@ -59,6 +59,8 @@ export const contactIdentifierKindEnum = pgEnum("contact_identifier_kind", ["pho
 export const conversationStateEnum = pgEnum("conversation_state", ["open", "closed"]);
 /**
  * Why nothing came of an enquiry. NULL means pending — nobody has decided yet.
+ * `test` and `spam` both set `is_spam`, which is the hard filter every rollup applies,
+ * so neither is ever counted as a contact; the disposition says WHY it was excluded.
  *
  * The ESTIMATE is the ground truth for "was this business": an estimate linked to the
  * enquiry answers yes, and every metric already counts estimates. What an estimate
@@ -77,6 +79,7 @@ export const leadDispositionEnum = pgEnum("lead_disposition", [
   "not_business", // vendor, recruiter, wrong number
   "existing_customer", // service, scheduling or billing question on work already sold
   "missed", // a real request for work and no estimate was written — the one to chase
+  "test", // synthetic: our own test calls and forms, a monitor, a vendor's sample lead
 ]);
 
 // Option-approval outcome of an HCP estimate: won = ≥1 option approved; lost = every

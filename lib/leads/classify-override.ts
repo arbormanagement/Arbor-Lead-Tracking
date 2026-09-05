@@ -30,7 +30,8 @@ export async function setLeadDisposition(
         disposition,
         dispositionManual: true,
         dispositionReason: reason ?? `manual: ${disposition.replace("_", " ")}`,
-        ...(disposition === "spam" ? { isSpam: true } : {}),
+        // Both leave every count the way spam always has; the disposition says why.
+        ...(disposition === "spam" || disposition === "test" ? { isSpam: true } : {}),
       })
       .where(eq(leads.id, id))
       .returning({

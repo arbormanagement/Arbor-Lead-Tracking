@@ -1,7 +1,7 @@
 import { drizzle as drizzleHttp } from "drizzle-orm/neon-http";
 import { migrate as migrateHttp } from "drizzle-orm/neon-http/migrator";
 import { drizzle as drizzlePg } from "drizzle-orm/node-postgres";
-import { migrate as migratePg } from "drizzle-orm/node-postgres/migrator";
+import { migratePerFile } from "./migrate-per-file";
 import { neon } from "@neondatabase/serverless";
 import { Pool } from "pg";
 import * as schema from "./schema";
@@ -60,7 +60,12 @@ export function connectForSchemaWork(url: string, driver: DbDriver = "pg"): Admi
   return {
     db,
     driver,
-    migrate: () => migratePg(db, { migrationsFolder: MIGRATIONS_FOLDER }),
+    // One transaction per FILE, not Drizzle's one-for-everything: the full history
+    // cannot apply to an empty database otherwise (see lib/db/migrate-per-file.ts).
+    // Same bookkeeping table, so `drizzle-kit migrate` still agrees with it.
+    migrate: async () => {
+      await migratePerFile(db, MIGRATIONS_FOLDER);
+    },
     close: () => pool.end(),
   };
 }
