@@ -672,8 +672,15 @@ re-argued rather than assumed.
   is unaffected** — it comes from the campaign report (`advertising_channel_type =
   LOCAL_SERVICES`), never from that pull. `google/lsa` is still a source and `+16183669977`
   still its number, so calls attribute exactly as before. The 157 pre-cutover rows were
-  deleted at Justin's direction; that history is to be re-imported from CallRail, and until
-  it is, **Local Services shows near-zero attributed revenue for July/early August**.
+  deleted at Justin's direction. **Nothing is being imported from CallRail** (Justin,
+  2026-09-05 — "start fresh" applies to that history too), so **Local Services shows
+  near-zero attributed revenue for July/early August permanently**; any window reaching
+  before 2026-08-08 under-reports LSA for that reason and no other.
+  - `GOOGLE_ADS_LSA_CUSTOMER_ID` is OPTIONAL and unset on purpose: it exists for an
+    account whose LSA campaign lives in a separate customer under the MCC, and Arbor's
+    (21142513191) is in the main customer, so its spend arrives without it. Marked
+    `optional` in the credential spec (2026-09-05) so `/api/diagnostics` stops listing it
+    under `missing`; the `getLsaLeads` reader that also used it is deleted.
 - **The "~41% of estimates have no lead" figure was a WINDOW ARTEFACT — the real rate is
   ~18% (`/api/diagnostics/attribution`, measured 2026-08-15).** The original number was taken
   over "80 recent estimates" by appointment date, most of which were CREATED before the
@@ -705,7 +712,9 @@ re-argued rather than assumed.
 - Repeat customers are the other half of the unattributed tail and are genuinely unreachable by
   tracking: one customer in the sample had **20 estimates going back to 2018**. `self_reported_source`
   is the only instrument that does; it is now captured from web and Meta forms as well as call
-  transcripts, deliberately before the website has the field. Note also that under LAST touch a
+  transcripts. **The website form will NOT get a "how did you hear about us" field**
+  (Justin, 2026-09-05) — the instrument is what people SAY on calls and on Meta forms, which
+  the classifier already rolls up to `self_reported_channel`. Note also that under LAST touch a
   repeat customer is unattributed BY DESIGN; both models are stored, so switching to first
   touch is a display filter and the drop in Unattributed is the repeat-business share.
 - **An HCP estimate's `updated_at` does NOT move when an option is priced, approved,
@@ -1003,8 +1012,11 @@ re-argued rather than assumed.
       tests, so a campaign token can never turn a gclid click organic.
     - **Audit every link slot on a listing, not just `websiteUri`** —
       `google_business_list_place_action_links` per location is the check, and it
-      is not covered by anything automatic. Nothing in the app watches the `other`
-      bucket either, which is why this surfaced in September by eye.
+      is not covered by anything automatic. The `other` bucket IS watched now:
+      `sourceHealth` on `/api/diagnostics` (2026-09-05) counts a week's non-spam
+      inquiries on `other` and with NO source, samples them, and warns at 3 rows AND 5%
+      for `other` (a lone hand-built link is noise) and at ONE for a null source (there is
+      no innocent cause). This one would have surfaced in days instead of five months.
   - **Same rule applied across the schema on 2026-09-05 (migration 0049), after an audit of
     writers and readers per column:** `leads.hcp_job_id` (never written; two readers saw NULL
     forever), `leads.is_duplicate` + `duplicate_of_lead_id` (never written; a filter in
@@ -1066,10 +1078,19 @@ re-argued rather than assumed.
   keyed on `vid` (10/min). `vid` is client-supplied and forgeable, which is why it cannot be the
   only limit — but the Origin gate, the bot check, `MAX_ACTIVE_LEASES_PER_VISITOR` and the IP
   ceiling all still stand in front of it.
-  - **`coveredPct` in `swapCoverage` counts bots in its denominator, so it reads far worse than
-    reality.** 64.5% over that window was `bot` 106 (correctly refused — a crawler never dials),
-    `rate_limited` 42, `static_fallback` 2. Excluding bots it is 86%. Read the `byOutcome`
-    breakdown, not the percentage.
+  - **The two limiters are counted SEPARATELY since 2026-09-05** (`rate_limited_ip` /
+    `rate_limited_visitor`; rows before that carry the undifferentiated `rate_limited`).
+    65 refusals in the week to 2026-09-05 could not be told apart, and the two need opposite
+    fixes: the IP ceiling is what a scanner trips, the visitor budget is what a browser trips
+    by calling assign far more than a page needs. The one honest way a browser could do that
+    — a `visibilitychange` renewal on every tab switch — is now throttled in `track.js` to
+    one renewal a minute, so a visitor comparing quotes across tabs cannot rate-limit
+    themselves out of attribution. Read `byOutcome` after a week to see which one it was.
+  - **`coveredPct` in `swapCoverage` EXCLUDES crawlers since 2026-09-05** — they are refused on
+    purpose and never dial, so counting them as uncovered visitors made the rate read 62%
+    against a real 90% and kept the `< 80%` warning permanently red. They are reported under
+    `swapCoverage.bots`, outside the rate. (Before the change: 64.5% over the week to
+    2026-08-21 was `bot` 106, `rate_limited` 42, `static_fallback` 2 — 86% without bots.)
   - The per-IP ceiling is what used to bound how much body the route would read. Raising it moved
     that guarantee, so `MAX_BODY_BYTES` now bounds it explicitly — the zod schema caps what is
     ACCEPTED, but only after `req.text()` has already buffered whatever was sent.
@@ -1098,8 +1119,9 @@ re-argued rather than assumed.
   recorded none of them, and it cannot be reconstructed afterwards: `findShareableLease` hands a
   second visitor an EXISTING lease without writing a row, so a shared visitor and a refused one
   look identical in `number_assignments`. `swapCoverage` on `/api/diagnostics` splits a 7-day
-  window into `leased` / `session_reuse` / `visitor_capped` / `shared` (covered) against `bot` /
-  `rate_limited` / `origin_rejected` / `invalid_payload` / `static_fallback` / `none` / `error`.
+  window into `leased` / `session_reuse` / `visitor_capped` / `shared` (covered) against
+  `rate_limited_ip` / `rate_limited_visitor` / `origin_rejected` / `invalid_payload` /
+  `static_fallback` / `none` / `error`, with `bot` reported beside the rate rather than in it.
   - **`coveredPct` is an UPPER BOUND, not a measurement**, and the note on the endpoint says so.
     It proves a pool number was handed out, never that it reached the page. The client-side half
     that would close that gap was deliberately NOT built: a browser beacon is blocked by exactly

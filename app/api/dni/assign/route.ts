@@ -124,7 +124,7 @@ export async function POST(req: Request) {
   // where a shared address cannot reach it in normal use but a flood still trips it.
   const ipRl = rateLimit(`dni:ip:${clientIp(req)}`, 120, 60_000);
   if (!ipRl.ok) {
-    await record("rate_limited");
+    await record("rate_limited_ip");
     return Response.json(
       { error: "rate limited" },
       { status: 429, headers: { ...CORS, "Retry-After": String(ipRl.retryAfterSec) } },
@@ -167,7 +167,7 @@ export async function POST(req: Request) {
   // neighbours' traffic.
   const vidRl = rateLimit(`dni:vid:${b.vid}`, 10, 60_000);
   if (!vidRl.ok) {
-    await record("rate_limited");
+    await record("rate_limited_visitor");
     return Response.json(
       { error: "rate limited" },
       { status: 429, headers: { ...CORS, "Retry-After": String(vidRl.retryAfterSec) } },

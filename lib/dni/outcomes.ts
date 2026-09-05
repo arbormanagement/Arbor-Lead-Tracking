@@ -34,7 +34,20 @@ export type AssignOutcome =
   | "static_fallback"
   /** Refused as a crawler (`lib/bot.ts`). An absent user-agent lands here too. */
   | "bot"
-  /** Per-IP budget exceeded. */
+  /**
+   * The per-IP FLOOD ceiling (120/min) refused it. One address is not one visitor —
+   * this is the limiter a scanner or a scraper trips, and a shared NAT should not.
+   */
+  | "rate_limited_ip"
+  /** The per-visitor budget (10/min on `vid`) refused it — a browser firing assign far more than a page needs. */
+  | "rate_limited_visitor"
+  /**
+   * Both limiters, undifferentiated — rows recorded before 2026-09-05. Kept in the
+   * type so old rows still count as refusals; nothing records it any more. The split
+   * exists because 65 of these in a week could not be told apart: a visitor behind a
+   * busy address losing their attribution needs a different fix from a scraper
+   * hitting the ceiling, and the counter said the same thing for both.
+   */
   | "rate_limited"
   /** `Origin` missing or not on the allowlist. */
   | "origin_rejected"
@@ -58,6 +71,13 @@ const COVERED: ReadonlySet<AssignOutcome> = new Set<AssignOutcome>([
 
 /** Excluded from the rate entirely — our own monitoring, not a visitor. */
 const SYNTHETIC: ReadonlySet<AssignOutcome> = new Set<AssignOutcome>(["canary"]);
+
+/**
+ * Also out of the rate, and reported on their own. A crawler is refused a number on
+ * purpose and never dials one, so counting it as an uncovered visitor made the rate
+ * read 62% against a real 90% — and a warning that is permanently red is furniture.
+ */
+const CRAWLERS: ReadonlySet<AssignOutcome> = new Set<AssignOutcome>(["bot"]);
 
 /**
  * Buffer, flushed on elapsed time or size — NOT one write per request.
@@ -158,8 +178,10 @@ export async function flushAssignOutcomes(): Promise<number> {
 
 export interface SwapCoverage {
   windowDays: number;
-  /** Requests that came from a real visitor (canary excluded). */
+  /** Requests that came from a real visitor (canary and refused crawlers excluded). */
   visitors: number;
+  /** Requests refused as crawlers — deliberately not visitors, and not in the rate. */
+  bots: number;
   /** Of those, how many left with a rotating pool number. */
   covered: number;
   /** Percentage, or null when nothing has been recorded yet. */
@@ -185,10 +207,15 @@ export async function readSwapCoverage(windowDays = 7): Promise<SwapCoverage> {
   const byOutcome: Record<string, number> = {};
   let visitors = 0;
   let covered = 0;
+  let bots = 0;
   for (const r of rows) {
     const n = Number(r.n ?? 0);
     byOutcome[r.outcome] = n;
     if (SYNTHETIC.has(r.outcome as AssignOutcome)) continue;
+    if (CRAWLERS.has(r.outcome as AssignOutcome)) {
+      bots += n;
+      continue;
+    }
     visitors += n;
     if (COVERED.has(r.outcome as AssignOutcome)) covered += n;
   }
@@ -196,12 +223,14 @@ export async function readSwapCoverage(windowDays = 7): Promise<SwapCoverage> {
   return {
     windowDays,
     visitors,
+    bots,
     covered,
     coveredPct: visitors ? Math.round((covered / visitors) * 1000) / 10 : null,
     byOutcome,
     note:
       "Server-side only: 'covered' means a pool number was handed out, not that it reached the " +
       "page. Treat it as an upper bound. A visit where track.js never ran is invisible here by " +
-      "construction — the dni.canary job is what catches that.",
+      "construction — the dni.canary job is what catches that. Crawlers are refused on purpose " +
+      "and reported under `bots`, outside the rate.",
   };
 }

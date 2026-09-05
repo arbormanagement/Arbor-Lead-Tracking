@@ -1,5 +1,4 @@
 import { getPlatformCreds } from "@/lib/credentials";
-import { parseWallTime } from "@/lib/tz";
 import { fetchWithRetry } from "./http";
 import type { SpendProvider, SpendRow } from "./types";
 
@@ -132,51 +131,6 @@ class GoogleAdsProvider implements SpendProvider {
   }
 
   /**
-   * Local Services Ads leads. Best-effort field mapping — the local_services_lead
-   * resource shape can vary; raw is retained.
-   */
-  async getLsaLeads({ sinceDays }: { sinceDays: number }): Promise<LsaLead[]> {
-    const cfg = await this.config();
-    // local_services_lead only exists in the LSA customer account — use the
-    // dedicated lsa_customer_id when it's configured (else assume customer_id is it).
-    const c = await getPlatformCreds("google_ads");
-    if (c.lsa_customer_id) cfg.customerId = c.lsa_customer_id.replace(/-/g, "");
-    // Server-side lower bound so each run reads only the window, not all history.
-    // creation_date_time is a DATE_TIME field → "yyyy-MM-dd HH:mm:ss" literal.
-    const since = new Date(Date.now() - sinceDays * 86_400_000).toISOString().slice(0, 10);
-    const gaql = `
-      SELECT local_services_lead.id, local_services_lead.contact_details,
-             local_services_lead.lead_type, local_services_lead.lead_status,
-             local_services_lead.creation_date_time
-      FROM local_services_lead
-      WHERE local_services_lead.creation_date_time >= '${since} 00:00:00'`;
-    const results = await this.searchStream(cfg, gaql);
-
-    const cutoff = Date.now() - sinceDays * 86_400_000;
-    const out: LsaLead[] = [];
-    for (const r of results) {
-      const l = r.localServicesLead ?? {};
-      const cd = l.contactDetails ?? {};
-      // NOT `new Date(...)`: the field is a bare "yyyy-MM-dd HH:mm:ss" in the
-      // ACCOUNT's timezone, and Node would read an offset-less string as the
-      // server's local time (UTC on Railway), filing every lead five hours early.
-      const created = l.creationDateTime ? parseWallTime(l.creationDateTime) : null;
-      if (created && created.getTime() < cutoff) continue;
-      out.push({
-        id: String(l.id ?? ""),
-        name: cd.consumerName ?? null,
-        phone: cd.phoneNumber ?? null,
-        email: cd.email ?? null,
-        leadType: l.leadType ?? null,
-        status: l.leadStatus ?? null,
-        createdTime: created,
-        raw: r,
-      });
-    }
-    return out;
-  }
-
-  /**
    * Enabled import (`UPLOAD_CLICKS`) conversion actions — the only valid OCI
    * upload targets — so Settings → Integrations can offer a pick-list instead of
    * hand-pasted ids.
@@ -202,17 +156,6 @@ export interface ConversionActionOption {
   id: string;
   name: string;
   category: string | null;
-}
-
-export interface LsaLead {
-  id: string;
-  name: string | null;
-  phone: string | null;
-  email: string | null;
-  leadType: string | null;
-  status: string | null;
-  createdTime: Date | null;
-  raw?: unknown;
 }
 
 export const googleAds = new GoogleAdsProvider();
