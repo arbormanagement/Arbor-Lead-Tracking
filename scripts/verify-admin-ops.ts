@@ -140,6 +140,11 @@ async function main() {
   await setLeadAttribution(tLead.id, { sourceKey: "google/cpc" });
   const [tConvHeld] = await db.select().from(conversations).where(eq(conversations.id, tConv.id));
   ok(tConvHeld.sourceId === directSrc!.id, "…but leaves a snapshot that was taken from a different enquiry alone");
+  // …and the seed repairs a thread left saying `other` by a correction that predates this rule.
+  await db.update(conversations).set({ sourceId: otherSrc2!.id }).where(eq(conversations.id, tConv.id));
+  await seedDefaults(db);
+  const [tConvRepaired] = await db.select().from(conversations).where(eq(conversations.id, tConv.id));
+  ok(tConvRepaired.sourceId !== otherSrc2!.id, "the seed re-points a thread snapshot still on `other` to its first lead's source");
   await db.delete(leads).where(eq(leads.id, tLead.id));
   await db.delete(conversations).where(eq(conversations.id, tConv.id));
   await db.delete(contacts).where(eq(contacts.id, tContact.id));
