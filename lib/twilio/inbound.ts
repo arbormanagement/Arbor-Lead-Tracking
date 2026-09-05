@@ -1,5 +1,6 @@
 import { displayNameFor } from "@/lib/sources/naming";
-import { and, desc, eq, gt } from "drizzle-orm";
+import { and, desc, eq, gt, sql } from "drizzle-orm";
+import { CANARY_SESSION_ID } from "@/lib/dni/canary";
 import { db } from "@/lib/db/client";
 import { numberAssignments, sources, spamRules, trackingNumbers, webSessions } from "@/lib/db/schema";
 
@@ -108,11 +109,30 @@ export async function resolveInboundAttribution(
   // second query. LEFT, not inner: a lease can be seeded by /api/dni/assign before
   // any pageview reached /api/track, and losing the whole attribution because the
   // page is unknown would be a far worse trade.
+  //
+  // The DNI canary's own leases are excluded, and this is a bug fix rather than
+  // tidiness. The canary leases a real pool number every hour and releases it in a
+  // `finally` — but release stamps `released_at`, which this lookup deliberately
+  // ignores, and leaves `expires_at` fifteen minutes out. So for the two hours after
+  // every run, the monitor's lease is a live candidate on that number, and because
+  // it is usually the NEWEST assignment it WINS. Measured 2026-09-05: three real calls
+  // carried the canary's snapshot (`keyword = arbor-dni-canary`, source `direct`),
+  // one of them a customer mid-quote from a Google Ads click who rang back twice
+  // the next morning and was filed as `direct` both times. The monitor turned "no
+  // lease matched" into a wrong answer on a paid-channel customer. `IS DISTINCT
+  // FROM`, not `<>`: `web_session_id` is nullable and `NULL <> x` is NULL, which
+  // would silently drop every lease that has no session.
   const [row] = await db
     .select({ assignment: numberAssignments, conversionPage: webSessions.lastPage })
     .from(numberAssignments)
     .leftJoin(webSessions, eq(webSessions.id, numberAssignments.webSessionId))
-    .where(and(eq(numberAssignments.trackingNumberId, tn.id), gt(numberAssignments.expiresAt, graceCutoff)))
+    .where(
+      and(
+        eq(numberAssignments.trackingNumberId, tn.id),
+        gt(numberAssignments.expiresAt, graceCutoff),
+        sql`${numberAssignments.webSessionId} IS DISTINCT FROM ${CANARY_SESSION_ID}`,
+      ),
+    )
     .orderBy(desc(numberAssignments.assignedAt))
     .limit(1);
 

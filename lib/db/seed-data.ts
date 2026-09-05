@@ -76,6 +76,14 @@ export const SEED_CAMPAIGNS: Array<{
 
 // `isDni` = website DNI draws rotating numbers from this pool; the rest are
 // buckets for organizing static numbers.
+//
+// ONE DNI pool, on purpose. Until 0049 there were four — `google`, `facebook`,
+// `organic` and `direct` — named as if a Google visitor were handed a Google number.
+// They never were: `leaseNumber` is one flat rotation over every `is_dni` pool, and
+// the visitor's source is frozen onto the LEASE, not read off the number (that is
+// what lets six numbers serve every channel). Three of the four sat empty for a
+// month while all six pool numbers lived in `direct`, so the names described routing
+// that did not exist. `website` says what the pool actually is.
 export const SEED_POOLS: Array<{
   key: string;
   displayName: string;
@@ -83,10 +91,7 @@ export const SEED_POOLS: Array<{
   isDni: boolean;
 }> = [
   { key: "reserved", displayName: "Reserved", description: "Default bucket for static / test numbers", isDni: false },
-  { key: "google", displayName: "Google Ads", description: "DNI rotation for paid Google visitors", isDni: true },
-  { key: "facebook", displayName: "Facebook / Instagram", description: "DNI rotation for Meta visitors", isDni: true },
-  { key: "organic", displayName: "Organic / GBP", description: "DNI rotation for organic + GBP visitors", isDni: true },
-  { key: "direct", displayName: "Direct", description: "DNI rotation for direct / unknown visitors", isDni: true },
+  { key: "website", displayName: "Website (DNI)", description: "The rotation track.js leases from — one pool for every source; attribution rides on the lease", isDni: true },
   { key: "lsa", displayName: "Local Services Ads", description: "Static LSA tracking numbers", isDni: false },
   { key: "print", displayName: "Print / Signage", description: "Yard signs, flyers, truck wraps", isDni: false },
 ];

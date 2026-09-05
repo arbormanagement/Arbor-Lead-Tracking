@@ -216,18 +216,7 @@ export async function POST(req: Request) {
     // from this request's own attribution (no-op when the pageview won the race).
     await db
       .insert(visitors)
-      .values({
-        id: vid,
-        ftSource: cls.sourceKey,
-        ftMedium: medium,
-        ftCampaign: utm.campaign,
-        ftTerm: utm.term,
-        ftGclid: click.gclid,
-        ftFbclid: click.fbclid,
-        ftReferrer: referrer,
-        ftLandingPage: url,
-        ftAt: new Date(),
-      })
+      .values({ id: vid })
       .onConflictDoNothing({ target: visitors.id });
     await db
       .insert(webSessions)

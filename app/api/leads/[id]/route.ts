@@ -45,7 +45,6 @@ export async function DELETE(req: Request, { params }: { params: Promise<{ id: s
       status: leads.status,
       name: leads.name,
       hcpCustomerId: leads.hcpCustomerId,
-      hcpJobId: leads.hcpJobId,
       hcpEstimateId: leads.hcpEstimateId,
     })
     .from(leads)
@@ -61,7 +60,7 @@ export async function DELETE(req: Request, { params }: { params: Promise<{ id: s
     );
   }
 
-  const linkedToHcp = !!(lead.hcpCustomerId || lead.hcpJobId || lead.hcpEstimateId);
+  const linkedToHcp = !!(lead.hcpCustomerId || lead.hcpEstimateId);
   if (linkedToHcp && !force) {
     return forbidden(
       "this lead is linked to HousecallPro (customer/job/estimate) — it has been matched to real work. Re-send with ?force=true from an admin session to override.",

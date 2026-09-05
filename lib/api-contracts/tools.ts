@@ -24,7 +24,7 @@ import { LOCATIONS } from "@/lib/locations";
 /** Mirrors leadTypeEnum / leadStatusEnum in lib/db/schema.ts exactly — a value
  *  that isn't in the pg enum fails the query rather than matching nothing.
  *  Defined HERE (db-free) so both the query layer and client code can import. */
-export const LEAD_TYPES = ["call", "web_form", "facebook_leadgen", "lsa", "manual", "sms", "email"] as const;
+export const LEAD_TYPES = ["call", "web_form", "facebook_leadgen", "sms", "email"] as const;
 export const LEAD_STATUSES = [
   "new",
   "working",

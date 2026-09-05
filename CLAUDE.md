@@ -115,7 +115,7 @@ Edwardsville + O'Fallon). WhatConverts-style. Single-tenant. Owner: Justin
   cleared the same work in thirteen minutes. If a fill ever needs forcing by hand,
   re-triggering the `hcp` job is the lever — each run advances every cursor.
 - **All four HCP collections are synced COMPLETE, not windowed** — ~10.7k customers, ~10.8k jobs, ~15.5k estimates, ~10.6k invoices. Each gets a hot pass (recent rows, every run) plus a cold crawl (a cursor walking the whole collection, 2 pages/run, wrapping forever). The crawls are the reason this is complete: before them, jobs were bounded to a 180-day schedule window and customers to whatever the incremental window reached, so most of the account was simply absent. A cold start fills in ~1.1 days with no manual backfill.
-- **Read path is DIRECT to each platform API** (decision 2026-06-26): a background sync needs clean typed data + reliability, so we don't route it through the LLM-oriented MCP gateway. All spend/revenue access is behind `lib/integrations` (`SpendProvider`/`RevenueProvider`) so any provider can be swapped — including back to an MCP-backed impl. The MCP client (`lib/mcp/client.ts`) is retained as an optional per-platform fallback.
+- **Read path is DIRECT to each platform API** (decision 2026-06-26): a background sync needs clean typed data + reliability, so we don't route it through the LLM-oriented MCP gateway. All spend/revenue access is behind `lib/integrations` (`SpendProvider`/`RevenueProvider`) so any provider can be swapped — including back to an MCP-backed impl. (The old MCP client under `lib/mcp/` was deleted 2026-09-05: nothing had imported it since the direct providers landed, and its header still described the pre-2026-06 architecture.)
 - Direct providers: `lib/integrations/housecallpro.ts` (API key), `google-ads.ts` (OAuth refresh → GAQL searchStream), `facebook.ts` (Graph insights). Sync jobs in `lib/sync/{spend,hcp}.ts`, recorded in `sync_runs`; admin trigger `POST /api/sync/{spend|hcp}`, scheduled by the `cron` worker (`scripts/cron.ts`) hitting `GET /api/cron/{job}`.
 
 ## Stack & conventions
@@ -137,7 +137,8 @@ Edwardsville + O'Fallon). WhatConverts-style. Single-tenant. Owner: Justin
   shadowed env. **Side effect worth keeping: credential resolution no longer touches the DB,
   so it cannot fail on a blip — which matters because `/api/twilio/voice` must answer in <3s
   and `/status` + `/sms` fail CLOSED on an unresolvable auth token.**
-  The `integration_credentials` table is still in the schema, empty, and read by nothing.
+  The `integration_credentials` table was dropped in migration 0049 (2026-09-05), having sat
+  empty and unread since.
   **Re-consent for Google is now manual**: OAuth Playground against the shared client with
   `.../auth/adwords` + `.../auth/datamanager` typed into "Input your own scopes" (Data Manager
   is not in its product list), then paste into `GOOGLE_ADS_REFRESH_TOKEN`. Verify with a
@@ -164,7 +165,6 @@ Edwardsville + O'Fallon). WhatConverts-style. Single-tenant. Owner: Justin
 - `lib/contacts/link-hcp.ts` — **this app stores no customer data; it links to HousecallPro.** `contacts.hcp_customer_id` is matched on the same normalized phone/email key the ROI pipeline already uses, so a thread and its revenue agree on who the customer is by construction. Names are read through the join, never copied — a fix in HCP shows up immediately. Linking runs both ways: inline when a contact is first resolved, and as a sweep after each HCP sync (for the stranger who becomes a customer later). A match also **adopts the HCP record's other identifiers**, so someone who only ever texted is still recognized when they first email.
 - `lib/messaging/thread.ts` — threading. Attribution snapshotted at thread creation only fills gaps afterwards, so a rotated DNI lease can't rewrite the source that earned the original call. `last_endpoint_key` is the deliberate exception — it must track the newest inbound endpoint because that's the reply-to.
 - `lib/messaging/send.ts` — outbound SMS, consent-gated. **A2P 10DLC: brand `BNaaa7ccb11b86fc05a110ef1441fc0025`, campaign `CZPD8CT` (VERIFIED, LOW_VOLUME) on messaging service `MG2fea0b23db4aa369705393147cc857ba`.** A number only sends under that campaign once it's in the service's sender pool — as of 2026-08-09 **all 12 local numbers are in it**. (The unused toll-free `+18334791834` was released the same day; toll-free uses a separate verification track, not 10DLC.) The service has `use_inbound_webhook_on_number: true`, which is what keeps inbound texts arriving at each number's own `smsUrl` rather than being hijacked to the service.
-- `lib/mcp/client.ts` — `executeTool`/`executeTools` over MCP JSON-RPC.
 - `lib/attribution/classify.ts` — click-id/utm/referrer → source key + DNI pool.
 
 ## HousecallPro API traps (verified 2026-08-25)
@@ -275,7 +275,8 @@ unions them into one timeline. There is no per-channel inbox table.
 
 **Surfaces (all estimate-anchored as of 2026-08-14):** `/` overview · `/inbox` threads ·
 `/estimates` opportunities · `/sources` channels + campaigns + landing pages.
-`/leads`, `/calls`, `/numbers`, `/spend`, `/roi`, `/pages` are redirects to their new homes.
+`/leads`, `/calls`, `/numbers`, `/spend`, `/roi`, `/pages` were redirects to their new homes
+until 2026-09-05 and are now gone (Phase 4 retirement); `/leads/[id]` remains as contact detail.
 
 **`/sources` is one page with three VIEWS** (`?view=channel|campaign|page`, 2026-08-15).
 Campaigns and Landing pages were their own nav items; they are one question at three
@@ -812,6 +813,16 @@ re-argued rather than assumed.
   mapped sources, so it cannot rewrite the source that earned a call. First use: the 18 Aug
   2026 SendGrid newsletter (`utm_source=newsletter&utm_medium=email`), 10 leads and 9
   estimates that were sitting in "Other / Unmapped" — now `email/newsletter`.
+  - **⚠️ It could not rescue a session-backed lead on its SOURCE until 2026-09-05.**
+    `web_sessions.source` holds the CLASSIFIED key (the output of `classifySource` at ingest), and
+    reclassify was feeding it back in as `utm_source` — so for a lead on `other` it read "other"
+    and returned "other" forever. The newsletter rescue only worked because `medium` is stored raw
+    and the classifier's email branch tests the medium; the GBP transposed-tag rescue only worked
+    through the campaign slot. A mapping keyed on `utm_source` alone reached only leads with NO
+    session. Raw tags are now re-read from the URLs (the session's ENTRY page first — a form
+    lead's own `landing_page` is the form page and carries no tag — then the lead's), never from
+    the classified column. Renaming `web_sessions.source` to say it is classified is on the
+    model-cleanup list.
 - Both Google Business Profiles link to the site as `utm_source=google+my+business` — which
   arrives as `"google my business"`, since `+` decodes to a space. `classifySource` therefore
   compares utm values **squashed** to letters and digits, so a spelling change in a tag can't
@@ -905,6 +916,18 @@ re-argued rather than assumed.
       `google_business_list_place_action_links` per location is the check, and it
       is not covered by anything automatic. Nothing in the app watches the `other`
       bucket either, which is why this surfaced in September by eye.
+  - **Same rule applied across the schema on 2026-09-05 (migration 0049), after an audit of
+    writers and readers per column:** `leads.hcp_job_id` (never written; two readers saw NULL
+    forever), `leads.is_duplicate` + `duplicate_of_lead_id` (never written; a filter in
+    `runAttribution` could never exclude anything), the ten `visitors.ft_*` first-touch columns
+    (written on every pageview, read by nothing — the first touch that reports derives from
+    `leads` inside `runAttribution`), the empty `integration_credentials` table, the `lsa` and
+    `manual` lead types (no writer, no rows), and the dead `lib/mcp/` client. The four
+    source-named DNI pools collapsed to one, `website`: `leaseNumber` is a flat rotation over
+    `is_dni` with no per-source predicate, so `google`/`facebook`/`organic` sat empty while every
+    pool number lived in `direct`, and the names described routing that never existed. The six
+    redirect-only pages (`/leads`, `/calls`, `/roi`, `/pages`, `/spend`, `/numbers`) went with
+    them; `/leads/[id]` stays as contact detail.
   - `location` STAYS on `campaigns`, `tracking_numbers` and `pools`. There it is
     CONFIGURATION — what an asset represents — not an inference about a person.
   - Two things that looked like reasons to keep it and were not: it does NOT say where the
@@ -1014,7 +1037,21 @@ re-argued rather than assumed.
   deploy. It leases a real number each run and releases it in a `finally` — an unreleased canary
   lease would push a real visitor onto the fallback, i.e. the monitor causing the fault it watches
   for. Release is scoped to its own `web_session_id`, so a run handed a SHARED lease cannot release
-  a customer's number mid-visit. **It does NOT verify the number reached the screen** — that needs
+  a customer's number mid-visit.
+  - **⚠️ Releasing was not enough — the monitor's lease was still WINNING calls for two hours
+    after every run (found and fixed 2026-09-05).** `releaseSessionLeases` stamps `released_at`,
+    which the `/voice` lease lookup deliberately ignores (see the grace-window entry above), and
+    leaves `expires_at` fifteen minutes out. So the canary's lease stayed a live candidate on that
+    number for `GRACE_MS`, and since it was usually the NEWEST assignment it was the answer.
+    Three real calls carried its snapshot (`keyword = arbor-dni-canary`, source `direct`); one
+    was a customer mid-quote from a Google Ads click who rang back twice the next morning and was
+    filed as `direct` both times. The monitor turned "no lease matched" — a coarse answer — into a
+    WRONG one on a paid-channel customer. The lookup now excludes the canary's session
+    (`lib/twilio/inbound.ts`, `IS DISTINCT FROM` because `web_session_id` is nullable), the ids
+    live in `lib/dni/canary.ts` so the hot path can read them without the canary's machinery,
+    migration 0049 cleared the keyword off the three leads, and `verify:campaigns` reproduces the
+    exact shape. **A monitor that touches production state needs its rows told apart everywhere
+    they could be mistaken for a customer's, not only where it cleans up after itself.** **It does NOT verify the number reached the screen** — that needs
   a headless browser on the `cron` service, deliberately deferred; the SPA re-render risk is real
   but is already defended by the MutationObserver in `app/track.js/route.ts`.
   - **"References track.js" and "has anything to swap" are DIFFERENT failures, and the second is
