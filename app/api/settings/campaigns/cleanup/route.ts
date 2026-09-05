@@ -9,7 +9,7 @@ export const runtime = "nodejs";
  *
  * Flagging a campaign keeps its leads out of every ROI number immediately; this is
  * the separate, explicit step that also clears them out of the inbox. The work is
- * lib/leads/cleanup.ts, shared with the MCP `arbor_cleanup_leads` tool. Ad spend is
+ * lib/leads/cleanup.ts, shared with the MCP `arbor_cleanup_inquiries` tool. Ad spend is
  * deliberately kept — it stays as history, just uncounted.
  */
 export async function POST() {

@@ -7,7 +7,7 @@ export const runtime = "nodejs";
 
 /**
  * Set an enquiry's disposition by hand. The logic lives in
- * lib/leads/classify-override.ts, shared with the MCP `arbor_set_lead_disposition`
+ * lib/leads/classify-override.ts, shared with the MCP `arbor_set_inquiry_disposition`
  * tool. Session or ADMIN_API_TOKEN. `disposition: null` clears the manual override.
  */
 const Body = z.object({

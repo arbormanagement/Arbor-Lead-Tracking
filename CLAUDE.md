@@ -6,6 +6,22 @@ Edwardsville + O'Fallon). WhatConverts-style. Single-tenant. Owner: Justin
 
 ## What this app is
 - **Native call tracking + DNI on Twilio** — we own the numbers, swap/forward/record/transcribe. Goal: replace CallRail.
+- **Vocabulary (settled 2026-09-05).** An **inquiry** is one episode of a person reaching out —
+  a follow-up text or a corrected form resubmission joins it, and since 2026-09-05 so does a
+  call about the estimate already in flight. It carries the attribution and the disposition.
+  A **touch point** is one event: a call (`calls`), a text (`messages`), a form
+  (`form_submissions`), a Meta form (`facebook_leads`), later an email. A **thread**
+  (`conversations`) is the person's whole history across channels. An **estimate** is the
+  opportunity. "Lead" is retired from the interface: the MCP catalog is `arbor_list_inquiries`,
+  `arbor_set_inquiry_attribution`, `arbor_set_inquiry_disposition`, `arbor_classify_inquiry`,
+  `arbor_cleanup_inquiries` (the `*_lead*` names are DEPRECATED aliases until 2026-10-05),
+  the routes are `/api/inquiries/*` (`/api/leads/*` aliases them) and the page is
+  `/inquiries/[id]` (`/leads/[id]` redirects). **The physical table is still `leads`, with
+  `lead_id` FKs and the `leads` identifier in TypeScript, on purpose:** nothing user-facing
+  reads those names under the MCP-first premise, and `drizzle-kit generate` cannot express a
+  table rename without an interactive prompt (it asks "created or renamed?"), so a hand-written
+  rename would leave the snapshot disagreeing with the schema. Rename them when a migration is
+  being generated interactively anyway, not before.
 - **Inbox + Estimates are two different things, deliberately.** The **Inbox** (`/inbox`) is
   everything that came in on any channel — calls, texts, web forms, Facebook lead forms,
   later email — whether or not it turned out to be business. **Estimates** (`/estimates`) is
@@ -851,10 +867,10 @@ re-argued rather than assumed.
   BEFORE an estimate exists, and that export's semantics (a call fires only once the classifier
   says it asked for work) are unchanged on purpose — changing what Google sees is a decision, not
   a refactor. `disposition_manual` is the human override the classifiers never overwrite;
-  `arbor_set_lead_disposition` / `POST /api/leads/[id]/disposition` set it, `classify_lead` is
+  `arbor_set_inquiry_disposition` / `POST /api/leads/[id]/disposition` set it, `classify_lead` is
   now its two-valued slice. `lib/leads/qualified.ts` (`isQualifiedLead`) is gone — it had no
   importers. `is_spam` stays a boolean for now: it is a hard filter in every rollup.
-- **A lead's source/campaign can be corrected by hand — `arbor_set_lead_attribution` /
+- **A lead's source/campaign can be corrected by hand — `arbor_set_inquiry_attribution` /
   `PATCH /api/leads/[id]/attribution` (2026-09-05), and the correction is LOCKED.** Until then
   there was no write path at all: the Garber estimate needed a classifier change and a deploy to
   leave `other`, and a second deploy for its listing. The function (`lib/leads/attribution.ts`)

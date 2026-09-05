@@ -9,7 +9,7 @@ import { FB_INCLUDED_FORMS_KEY } from "@/lib/sync/facebook-leads";
  * Removing leads that were captured against something since marked "not ours" — a
  * campaign flagged recruiting, or a Facebook lead form unchecked.
  *
- * Shared by the two Settings cleanup routes and the MCP `arbor_cleanup_leads` tool.
+ * Shared by the two Settings cleanup routes and the MCP `arbor_cleanup_inquiries` tool.
  *
  * These are the only operations in this app that HARD DELETE leads, which is why
  * they are structured as collect-then-delete rather than one statement: the caller

@@ -11,7 +11,7 @@ import { useRouter } from "next/navigation";
  */
 const OPTIONS: Array<{ value: string; label: string; title: string }> = [
   { value: "", label: "Pending", title: "Nobody has decided yet (automatic)" },
-  { value: "requested_work", label: "Lead", title: "Asked for tree work / an estimate" },
+  { value: "requested_work", label: "Requested work", title: "Asked for tree work / an estimate" },
   { value: "not_business", label: "Not business", title: "Vendor, recruiter, wrong number" },
   { value: "existing_customer", label: "Existing customer", title: "Service, scheduling or billing on work already sold" },
   { value: "missed", label: "Missed", title: "A real request nobody wrote an estimate for" },
@@ -38,7 +38,7 @@ export function LeadToggle({
   async function set(next: string) {
     setBusy(true);
     try {
-      const res = await fetch(`/api/leads/${leadId}/disposition`, {
+      const res = await fetch(`/api/inquiries/${leadId}/disposition`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ disposition: next || null }),

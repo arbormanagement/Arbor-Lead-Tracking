@@ -412,7 +412,7 @@ export const SetThreadStateInput = z.object({
 });
 
 export const SetLeadAttributionInput = z.object({
-  id: z.string().max(64).describe("Lead id, from arbor_list_leads or arbor_get_thread's enquiries — one ENQUIRY, not a person"),
+  id: z.string().max(64).describe("Lead id, from arbor_list_inquiries or arbor_get_thread's enquiries — one ENQUIRY, not a person"),
   sourceKey: z
     .string()
     .max(100)
@@ -432,7 +432,7 @@ export const SetLeadAttributionInput = z.object({
 });
 
 export const SetLeadDispositionInput = z.object({
-  id: z.string().max(64).describe("Lead id, from arbor_list_leads or arbor_get_thread's enquiries — one ENQUIRY, not a person"),
+  id: z.string().max(64).describe("Lead id, from arbor_list_inquiries or arbor_get_thread's enquiries — one ENQUIRY, not a person"),
   disposition: z
     .enum(LEAD_DISPOSITIONS)
     .nullable()

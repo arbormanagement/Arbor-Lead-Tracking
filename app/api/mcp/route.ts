@@ -1,3 +1,4 @@
+import type { McpServer, RegisteredTool } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { createMcpHandler } from "mcp-handler";
 import { attributionBreakdown } from "@/lib/diagnostics/attribution";
 import { diagnosticsReport } from "@/lib/diagnostics/report";
@@ -139,6 +140,32 @@ export const dynamic = "force-dynamic";
  * string. Serializing first guarantees what is validated is exactly what a
  * client receives.
  */
+/**
+ * Register a DEPRECATED alias for a tool under its old name. The catalog was renamed
+ * lead → inquiry on 2026-09-05 (an inquiry is one episode of a person reaching out;
+ * calls, texts and forms are its touch points; "lead" collided with the sales sense
+ * and with HousecallPro's own field). Anything saved against the old names —
+ * connector prompts, artifacts, Claude Code sessions — keeps working through these
+ * until 2026-10-05, after which they go.
+ */
+type RegisterArgs = Parameters<McpServer["registerTool"]>;
+function registerLegacyAlias(server: McpServer, legacyName: string, canonicalName: string, tool: RegisteredTool): RegisteredTool {
+  server.registerTool(
+    legacyName,
+    {
+      title: tool.title ? `${tool.title} (legacy name)` : undefined,
+      description:
+        `DEPRECATED alias of ${canonicalName} — same behaviour, kept so anything saved against the old name keeps working; removed after 2026-10-05. ` +
+        (tool.description ?? ""),
+      inputSchema: tool.inputSchema,
+      outputSchema: tool.outputSchema,
+      annotations: tool.annotations,
+    } as RegisterArgs[1],
+    tool.handler as RegisterArgs[2],
+  );
+  return tool;
+}
+
 const json = (value: unknown) => {
   const payload = JSON.parse(JSON.stringify(value));
   return { content: [{ type: "text" as const, text: JSON.stringify(payload) }], structuredContent: payload };
@@ -469,8 +496,8 @@ const handler = createMcpHandler(
       },
     );
 
-    server.registerTool(
-      "arbor_list_leads",
+    registerLegacyAlias(server, "arbor_list_leads", "arbor_list_inquiries", server.registerTool(
+      "arbor_list_inquiries",
       {
         title: "Search leads",
         description:
@@ -485,7 +512,7 @@ const handler = createMcpHandler(
         const { rows, total, hasMore, nextOffset } = await searchLeads(p);
         return json({ leads: rows, total, hasMore, nextOffset });
       },
-    );
+    ));
 
     server.registerTool(
       "arbor_spend_summary",
@@ -584,8 +611,8 @@ const handler = createMcpHandler(
       },
     );
 
-    server.registerTool(
-      "arbor_set_lead_disposition",
+    registerLegacyAlias(server, "arbor_set_lead_disposition", "arbor_set_inquiry_disposition", server.registerTool(
+      "arbor_set_inquiry_disposition",
       {
         title: "Set why nothing came of an enquiry",
         description:
@@ -601,19 +628,19 @@ const handler = createMcpHandler(
         if (!row) {
           return fail(
             `No lead with id '${id}'.`,
-            "Lead ids come from arbor_list_leads, or from arbor_get_thread's `enquiries` array. A lead id is not an estimate id.",
+            "Lead ids come from arbor_list_inquiries, or from arbor_get_thread's `enquiries` array. A lead id is not an estimate id.",
           );
         }
         return json({ ok: true, ...row });
       },
-    );
+    ));
 
-    server.registerTool(
-      "arbor_classify_lead",
+    registerLegacyAlias(server, "arbor_classify_lead", "arbor_classify_inquiry", server.registerTool(
+      "arbor_classify_inquiry",
       {
         title: "Mark a lead as lead / not a lead",
         description:
-          "The two-valued slice of arbor_set_lead_disposition (true = requested_work, false = not_business), kept for the inbox toggle. Prefer arbor_set_lead_disposition, which can also say existing_customer, missed or spam. " +
+          "The two-valued slice of arbor_set_inquiry_disposition (true = requested_work, false = not_business), kept for the inbox toggle. Prefer arbor_set_inquiry_disposition, which can also say existing_customer, missed or spam. " +
           "For inbox triage only — NO metric reads this (estimates are counted from HousecallPro), so it cannot move ROI numbers. " +
           "A boolean sets a manual verdict the auto-classifier will not overwrite; null clears the override and re-runs the classifier on the call transcript.",
         inputSchema: ClassifyLeadInput.shape,
@@ -624,15 +651,15 @@ const handler = createMcpHandler(
         if (!row) {
           return fail(
             `No lead with id '${id}'.`,
-            "Lead ids come from arbor_list_leads, or from arbor_get_thread's `enquiries` array. A lead id is not an estimate id.",
+            "Lead ids come from arbor_list_inquiries, or from arbor_get_thread's `enquiries` array. A lead id is not an estimate id.",
           );
         }
         return json({ ok: true, ...row });
       },
-    );
+    ));
 
-    server.registerTool(
-      "arbor_set_lead_attribution",
+    registerLegacyAlias(server, "arbor_set_lead_attribution", "arbor_set_inquiry_attribution", server.registerTool(
+      "arbor_set_inquiry_attribution",
       {
         title: "Correct a lead's source and/or campaign",
         description:
@@ -640,7 +667,7 @@ const handler = createMcpHandler(
           "Validates against EXISTING sources and campaigns and never mints either; a campaign must belong to the lead's resulting source or the write is refused. " +
           "Stamps attribution_set_manually_at so the automatic repair passes (seed backfills, reclassify) leave the row alone from then on; manual:false releases that lock without changing values; campaignId:null clears the campaign. " +
           "Then run arbor_trigger_sync { job: 'attribution' } — roi_daily is rebuilt from leads and /sources does not move until it runs. " +
-          "Source keys come from arbor_roi_summary rows; campaign ids from arbor_list_campaigns; lead ids from arbor_list_leads or arbor_get_thread.",
+          "Source keys come from arbor_roi_summary rows; campaign ids from arbor_list_campaigns; lead ids from arbor_list_inquiries or arbor_get_thread.",
         inputSchema: SetLeadAttributionInput.shape,
         annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
       },
@@ -649,7 +676,7 @@ const handler = createMcpHandler(
         if (!result.ok) return fail(result.error, result.nextStep);
         return json(result);
       },
-    );
+    ));
 
     server.registerTool(
       "arbor_trigger_sync",
@@ -684,7 +711,7 @@ const handler = createMcpHandler(
       {
         title: "Facebook lead forms",
         description:
-          "Every lead form on the page, with which are currently polled. ⚠️ An EMPTY `selected` means every ACTIVE form is polled, not none — the same inversion that decides whether arbor_cleanup_leads has anything to do.",
+          "Every lead form on the page, with which are currently polled. ⚠️ An EMPTY `selected` means every ACTIVE form is polled, not none — the same inversion that decides whether arbor_cleanup_inquiries has anything to do.",
         inputSchema: ListFacebookFormsInput.shape,
         outputSchema: ListFacebookFormsOutput.shape,
         annotations: { readOnlyHint: true },
@@ -709,7 +736,7 @@ const handler = createMcpHandler(
         title: "Choose which Facebook forms are polled",
         description:
           "REPLACES the selection — read arbor_list_facebook_forms first and send the full set. An empty list restores 'poll every active form'. " +
-          "Unchecking a form stops FUTURE leads from it; leads already ingested stay until arbor_cleanup_leads removes them.",
+          "Unchecking a form stops FUTURE leads from it; leads already ingested stay until arbor_cleanup_inquiries removes them.",
         inputSchema: SetFacebookFormsInput.shape,
         annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
       },
@@ -719,8 +746,8 @@ const handler = createMcpHandler(
       },
     );
 
-    server.registerTool(
-      "arbor_cleanup_leads",
+    registerLegacyAlias(server, "arbor_cleanup_leads", "arbor_cleanup_inquiries", server.registerTool(
+      "arbor_cleanup_inquiries",
       {
         title: "Remove leads from an excluded campaign or form",
         description:
@@ -732,7 +759,7 @@ const handler = createMcpHandler(
         annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false },
       },
       async ({ scope, apply }) => json(await runLeadCleanup(scope, apply)),
-    );
+    ));
 
     server.registerTool(
       "arbor_import_number",

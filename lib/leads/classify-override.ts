@@ -7,7 +7,7 @@ export type LeadDisposition = (typeof leads.$inferSelect)["disposition"];
 
 /**
  * Set an enquiry's DISPOSITION by hand — why nothing (or something) came of it.
- * Shared by POST /api/leads/[id]/disposition and the MCP `arbor_set_lead_disposition`
+ * Shared by POST /api/leads/[id]/disposition and the MCP `arbor_set_inquiry_disposition`
  * tool. See `leadDispositionEnum` in lib/db/schema.ts for what each value means and
  * why `requested_work` exists at all.
  *
