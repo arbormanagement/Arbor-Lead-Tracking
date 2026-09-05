@@ -817,6 +817,17 @@ re-argued rather than assumed.
   accumulation of a repeat estimate's revenue onto the prior lead — never reached Google (an
   export row reaches `sent` once) and the rollup already credits it by contact.
   `npm run verify:lead-stage` proves the derivation for every estimate state.
+- **Self-reported source is now TWO fields (2026-09-05, migration 0055):** `self_reported_source`
+  stays as the free-text DETAIL ("referral - Edwards Roofing Company") and
+  `self_reported_channel` is its roll-up — `referral` · `google_search` · `social` ·
+  `sign_or_truck` · `repeat_customer` · `other` — the countable version, and the instrument for
+  the ~31% of contacts on a channel no tag can trace. The classifier is asked for both; the
+  normalizer in `lib/leads/self-reported.ts` is the fallback, the ingest rule for web and Meta
+  forms, and the seed's fill-only-NULL backfill, so there is exactly one set of rules. People-words
+  outrank search-words on purpose ("my neighbor found you on Google" is a referral). Also fixed on
+  the way: the web form parsed "how did you hear about us" since August and never wrote it to the
+  lead — only Meta forms carried it. `roi_summary.breakdowns.selfReportedChannels` is the rolled-up
+  breakdown; `selfReported` keeps the raw detail.
 - **A call now JOINS the inquiry already in flight, like a text (2026-09-05).** `/voice` asks
   `findOpenLead` before inserting; a caller ringing back about an open estimate attaches to the
   same lead, and attribution is written only on a NEW lead so a follow-up cannot rewrite the

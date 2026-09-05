@@ -1,4 +1,5 @@
 import { displayNameFor } from "@/lib/sources/naming";
+import { normalizeSelfReported } from "@/lib/leads/self-reported";
 import { and, eq } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { campaigns, facebookLeads, leads, sources } from "@/lib/db/schema";
@@ -67,6 +68,7 @@ export async function ingestFacebookLead(detail: FbLeadDetail): Promise<IngestRe
         emailLc: normalizeEmail(c.email),
         message: c.message,
         selfReportedSource: c.selfReportedSource,
+        selfReportedChannel: normalizeSelfReported(c.selfReportedSource),
         sourceId,
         medium: "paid",
         campaignId,

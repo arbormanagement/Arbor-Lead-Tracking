@@ -181,6 +181,8 @@ export async function sourceBreakdowns(days: number): Promise<{
   landingPages: BreakdownRow[];
   keywords: BreakdownRow[];
   selfReported: BreakdownRow[];
+  /** The same answers rolled up to a channel — the countable version. */
+  selfReportedChannels: BreakdownRow[];
 }> {
   const windowStart = new Date(Date.now() - days * 86_400_000);
   const excluded = await excludedCampaignIds();
@@ -203,12 +205,13 @@ export async function sourceBreakdowns(days: number): Promise<{
       .limit(8);
 
   // Landing pages group by PATH, not the raw stored URL — see lib/landing-page.ts.
-  const [landingPages, keywords, selfReported] = await Promise.all([
+  const [landingPages, keywords, selfReported, selfReportedChannels] = await Promise.all([
     breakdownOf(leads.landingPage, landingPathSql(leads.landingPage)),
     breakdownOf(leads.keyword),
     breakdownOf(leads.selfReportedSource),
+    breakdownOf(leads.selfReportedChannel),
   ]);
-  return { landingPages, keywords, selfReported };
+  return { landingPages, keywords, selfReported, selfReportedChannels };
 }
 
 export interface CampaignPerfRow {

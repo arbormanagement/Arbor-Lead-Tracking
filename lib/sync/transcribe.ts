@@ -74,7 +74,10 @@ async function runTranscription(call: PendingCall): Promise<"transcribed" | "spa
     // Self-reported source is data, not judgment — set it regardless of the manual
     // is_lead override below.
     if (cls.selfReportedSource) {
-      await db.update(leads).set({ selfReportedSource: cls.selfReportedSource }).where(eq(leads.id, call.leadId));
+      await db
+        .update(leads)
+        .set({ selfReportedSource: cls.selfReportedSource, selfReportedChannel: cls.selfReportedChannel })
+        .where(eq(leads.id, call.leadId));
     }
     // Skip if a human set the disposition — their decision wins over auto-classify.
     await db

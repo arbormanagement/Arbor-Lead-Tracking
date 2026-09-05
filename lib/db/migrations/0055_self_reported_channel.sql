@@ -1,0 +1,2 @@
+CREATE TYPE "public"."self_reported_channel" AS ENUM('referral', 'google_search', 'social', 'sign_or_truck', 'repeat_customer', 'other');--> statement-breakpoint
+ALTER TABLE "leads" ADD COLUMN "self_reported_channel" "self_reported_channel";

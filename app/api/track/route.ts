@@ -6,6 +6,7 @@ import { db } from "@/lib/db/client";
 import { formSubmissions, leads, sources, visitors, webSessions } from "@/lib/db/schema";
 import { classifySource } from "@/lib/attribution/classify";
 import { resolveCampaignId } from "@/lib/campaigns";
+import { normalizeSelfReported } from "@/lib/leads/self-reported";
 import { isAllowedOrigin } from "@/lib/origin";
 import { preview, recordThreadActivity, upsertThread } from "@/lib/messaging/thread";
 import { normalizeEmail, normalizePhone } from "@/lib/phone";
@@ -276,6 +277,10 @@ export async function POST(req: Request) {
         phoneE164: normalizePhone(c.phone),
         emailLc: normalizeEmail(c.email),
         message: c.message,
+        // Parsed from the form's "how did you hear about us" field since 2026-08 and,
+        // until 2026-09-05, never written to the lead — only Meta forms carried it.
+        selfReportedSource: c.selfReportedSource,
+        selfReportedChannel: normalizeSelfReported(c.selfReportedSource),
         conversationId: thread?.conversationId ?? null,
         contactId: thread?.contactId ?? null,
         sourceId: leadSourceId,
