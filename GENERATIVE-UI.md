@@ -7,10 +7,11 @@
 `list_jobs` / `list_invoices` / `list_customers`, added 2026-08-25) plus eight writes
 (`reply_to_thread`, `set_thread_state`, `classify_lead`, `trigger_sync`,
 `set_campaign_excluded`, `set_attribution_model`, `reclassify_sources` —
-dry-run by default — and `set_lead_attribution`, added 2026-09-05: the correction
-of one enquiry's source/campaign, validated against existing rows and locked
-against the automatic repair passes), each wrapping the same lib function its
-route uses.
+dry-run by default — `set_lead_attribution` (2026-09-05: the correction of one
+enquiry's source/campaign, validated against existing rows and locked against the
+automatic repair passes) and `set_lead_disposition` (2026-09-05: why nothing came
+of an enquiry — `classify_lead` is now its two-valued slice)), each wrapping the
+same lib function its route uses.
 Deliberately NOT tools: routing changes, number management, credentials,
 `conversions/reset`, lead deletion — rare + risky stays behind the session
 UI (see Phase 3 rationale below).

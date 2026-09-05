@@ -801,6 +801,19 @@ re-argued rather than assumed.
   - **Do NOT delete the `campaigns` row.** `ad_spend` (its $4,663.50 of real historical spend),
     `roi_daily` and `attributions` all reference it, and `runAttribution` rebuilds 365 days of
     those. Same rule as everywhere else here: tombstone, never hard delete.
+- **`disposition` replaced `is_lead` (2026-09-05, migration 0052; the old columns are dual-written
+  for one deploy cycle and then dropped).** The ESTIMATE is the ground truth for "was this
+  business" — every metric counts estimates — and what an estimate cannot say is NO. `disposition`
+  is that answer: `spam`, `not_business` (vendor, recruiter, wrong number), `existing_customer`
+  (service/billing on work already sold), `missed` (a real request nobody wrote an estimate for —
+  the operational number estimates cannot give), or NULL = pending. `requested_work` is the ONE
+  positive value, kept deliberately: the inbox toggle and the `Lead Created` export need a verdict
+  BEFORE an estimate exists, and that export's semantics (a call fires only once the classifier
+  says it asked for work) are unchanged on purpose — changing what Google sees is a decision, not
+  a refactor. `disposition_manual` is the human override the classifiers never overwrite;
+  `arbor_set_lead_disposition` / `POST /api/leads/[id]/disposition` set it, `classify_lead` is
+  now its two-valued slice. `lib/leads/qualified.ts` (`isQualifiedLead`) is gone — it had no
+  importers. `is_spam` stays a boolean for now: it is a hard filter in every rollup.
 - **A lead's source/campaign can be corrected by hand — `arbor_set_lead_attribution` /
   `PATCH /api/leads/[id]/attribution` (2026-09-05), and the correction is LOCKED.** Until then
   there was no write path at all: the Garber estimate needed a classifier change and a deploy to

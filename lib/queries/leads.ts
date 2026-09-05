@@ -114,6 +114,8 @@ export async function searchLeads(
       fbclid: leads.fbclid,
       landingPage: leads.landingPage,
       isSpam: leads.isSpam,
+      disposition: leads.disposition,
+      dispositionManual: leads.dispositionManual,
       isFirstTime: leads.isFirstTime,
       hcpEstimateId: leads.hcpEstimateId,
       occurredAt: leads.occurredAt,

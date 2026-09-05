@@ -57,6 +57,28 @@ export const contactIdentifierKindEnum = pgEnum("contact_identifier_kind", ["pho
 // Threads are worked, not just read: `closed` is "dealt with", and the inbox
 // defaults to open so it drains like a real inbox instead of growing forever.
 export const conversationStateEnum = pgEnum("conversation_state", ["open", "closed"]);
+/**
+ * Why nothing came of an enquiry. NULL means pending — nobody has decided yet.
+ *
+ * The ESTIMATE is the ground truth for "was this business": an estimate linked to the
+ * enquiry answers yes, and every metric already counts estimates. What an estimate
+ * cannot say is NO — it cannot tell a real request nobody wrote up from a vendor, a
+ * wrong number or an existing customer asking about an invoice. This is that answer.
+ *
+ * `requested_work` is the one positive value, and it exists because two things need a
+ * verdict BEFORE an estimate exists: inbox triage (is this worth calling back?) and the
+ * `Lead Created` conversion export, which fires on a call only once the classifier has
+ * said it asked for work. It is a prediction the estimate later settles, not an
+ * outcome. Replaces `is_lead` (2026-09-05).
+ */
+export const leadDispositionEnum = pgEnum("lead_disposition", [
+  "requested_work", // asked for tree work / an estimate — the classifier's or a human's verdict
+  "spam", // robocall, scam, junk form
+  "not_business", // vendor, recruiter, wrong number
+  "existing_customer", // service, scheduling or billing question on work already sold
+  "missed", // a real request for work and no estimate was written — the one to chase
+]);
+
 export const leadStatusEnum = pgEnum("lead_status", [
   "new",
   "working",
@@ -915,6 +937,12 @@ export const leads = pgTable(
     // call transcript — shown alongside the DNI-attributed source as a cross-check.
     selfReportedSource: text("self_reported_source"),
     isLeadManual: boolean("is_lead_manual").notNull().default(false), // human override — auto-classify won't touch it
+    // See leadDispositionEnum. NULL = pending. `disposition_manual` is the human
+    // override, which the classifiers never overwrite. `is_lead` / `is_lead_manual` /
+    // `lead_reason` are dual-written for one deploy cycle and then dropped.
+    disposition: leadDispositionEnum("disposition"),
+    dispositionManual: boolean("disposition_manual").notNull().default(false),
+    dispositionReason: text("disposition_reason"),
     isFirstTime: boolean("is_first_time"),
     // The upstream platform's own id for this lead (LSA lead id, …) — the real
     // idempotency key for synced lead types that have one.

@@ -173,13 +173,15 @@ export async function syncConversions({ sinceDays = 90, limit = 500 }: { sinceDa
           inArray(leads.status, ["new", "working", "qualified", "quoted", "won"]),
           eq(leads.isSpam, false),
           gte(leads.occurredAt, cutoff),
-          // A call lead is only a lead once transcription has classified it, and
-          // that is what also scores it for spam. Exporting on `isLead IS NULL`
-          // raced the classifier: a call arriving shortly before this job ran was
-          // uploaded as a "Lead" conversion and then flagged spam minutes later —
-          // and a sent conversion cannot be retracted, so Google and Meta keep
-          // optimizing toward junk calls. Non-call types are inherently leads.
-          or(ne(leads.type, "call"), eq(leads.isLead, true)),
+          // A call lead is only a lead once transcription has classified it as a
+          // request for work, and that is what also scores it for spam. Exporting a
+          // still-pending call raced the classifier: a call arriving shortly before
+          // this job ran was uploaded as a "Lead" conversion and then flagged spam
+          // minutes later — and a sent conversion cannot be retracted, so Google and
+          // Meta keep optimizing toward junk calls. Non-call types are inherently
+          // requests for work. (`disposition` replaced `is_lead` 2026-09-05; what
+          // reaches Google is deliberately unchanged.)
+          or(ne(leads.type, "call"), eq(leads.disposition, "requested_work")),
         ),
       )
       // Deterministic under LIMIT: keep the newest candidates, not planner order.

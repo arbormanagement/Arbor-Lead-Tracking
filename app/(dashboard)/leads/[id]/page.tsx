@@ -117,7 +117,7 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
           {/* Available on every type, not just calls: a junk form submission has to
               be ejectable from the Leads list too, and this is the only control that
               does it (the list itself no longer carries one). */}
-          <LeadToggle leadId={lead.id} isLead={lead.isLead} manual={lead.isLeadManual ?? false} />
+          <LeadToggle leadId={lead.id} disposition={lead.disposition} manual={lead.dispositionManual} />
         </div>
       </div>
 
