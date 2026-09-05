@@ -23,7 +23,7 @@
  */
 import { eq, inArray } from "drizzle-orm";
 import { db } from "@/lib/db/client";
-import { conversionExports, facebookLeads, leads, pools, sources, trackingNumbers } from "@/lib/db/schema";
+import { contacts, conversations, conversionExports, facebookLeads, leads, pools, sources, trackingNumbers } from "@/lib/db/schema";
 import { seedDefaults } from "@/lib/db/seed-data";
 import { createPool, deletePool, listPools, updatePool } from "@/lib/pools";
 import { deleteManualSpend, listManualSpend, normalizeMonth, setManualSpend } from "@/lib/spend/manual";
@@ -127,6 +127,23 @@ async function main() {
   const attrCleared = await setLeadAttribution(attrLead.id, { campaignId: null });
   ok(attrCleared.ok && attrCleared.lead.campaignId === null && attrCleared.lead.sourceKey === "gbp" && !!attrCleared.lead.attributionSetManuallyAt,
     "campaignId:null clears the campaign, keeps the source, keeps the lock");
+  // The thread's first-touch snapshot follows a corrected source — only where it came from this lead.
+  const [otherSrc2] = await db.select({ id: sources.id }).from(sources).where(eq(sources.key, "other")).limit(1);
+  const [directSrc] = await db.select({ id: sources.id }).from(sources).where(eq(sources.key, "direct")).limit(1);
+  const [tContact] = await db.insert(contacts).values({}).returning();
+  const [tConv] = await db.insert(conversations).values({ contactId: tContact.id, sourceId: otherSrc2!.id }).returning();
+  const [tLead] = await db.insert(leads).values({ type: "call", occurredAt: new Date(), phoneE164: ATTR_PHONE, sourceId: otherSrc2!.id, conversationId: tConv.id, contactId: tContact.id }).returning();
+  await setLeadAttribution(tLead.id, { sourceKey: "gbp", note: "verify: thread follows" });
+  const [tConvAfter] = await db.select().from(conversations).where(eq(conversations.id, tConv.id));
+  ok(tConvAfter.sourceId === gbpSrc.id, "correcting a lead's source also moves the thread's first-touch snapshot when it came from that lead");
+  await db.update(conversations).set({ sourceId: directSrc!.id }).where(eq(conversations.id, tConv.id));
+  await setLeadAttribution(tLead.id, { sourceKey: "google/cpc" });
+  const [tConvHeld] = await db.select().from(conversations).where(eq(conversations.id, tConv.id));
+  ok(tConvHeld.sourceId === directSrc!.id, "…but leaves a snapshot that was taken from a different enquiry alone");
+  await db.delete(leads).where(eq(leads.id, tLead.id));
+  await db.delete(conversations).where(eq(conversations.id, tConv.id));
+  await db.delete(contacts).where(eq(contacts.id, tContact.id));
+
   const attrReleased = await setLeadAttribution(attrLead.id, { manual: false });
   ok(attrReleased.ok && attrReleased.lead.attributionSetManuallyAt === null && attrReleased.lead.sourceKey === "gbp",
     "manual:false releases the lock and touches no value");

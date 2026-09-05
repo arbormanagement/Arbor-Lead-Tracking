@@ -1,7 +1,7 @@
 import { and, eq, isNotNull, isNull } from "drizzle-orm";
 import { classifySource } from "@/lib/attribution/classify";
 import { db } from "@/lib/db/client";
-import { leads, sources, webSessions } from "@/lib/db/schema";
+import { conversations, leads, sources, webSessions } from "@/lib/db/schema";
 import { UNMAPPED_SOURCE_KEY, displayNameFor } from "@/lib/sources/naming";
 
 /**
@@ -103,6 +103,7 @@ export async function reclassifyUnmappedSources({
   const rows = await db
     .select({
       leadId: leads.id,
+      conversationId: leads.conversationId,
       occurredAt: leads.occurredAt,
       type: leads.type,
       landingPage: leads.landingPage,
@@ -164,6 +165,14 @@ export async function reclassifyUnmappedSources({
       .update(leads)
       .set({ sourceId, medium: cls.medium })
       .where(eq(leads.id, r.leadId));
+    // The thread's first-touch snapshot follows, where it was taken from this lead
+    // (it still says `other`). Same rule as setLeadAttribution.
+    if (r.conversationId) {
+      await db
+        .update(conversations)
+        .set({ sourceId })
+        .where(and(eq(conversations.id, r.conversationId), eq(conversations.sourceId, unmapped.id)));
+    }
   }
 
   return {
