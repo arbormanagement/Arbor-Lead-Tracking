@@ -199,7 +199,18 @@ export async function sourceBreakdowns(days: number): Promise<{
       })
       .from(leads)
       .leftJoin(hcpEstimates, eq(hcpEstimates.id, leads.hcpEstimateId))
-      .where(and(gte(leads.occurredAt, windowStart), eq(leads.isSpam, false), isNotNull(col), ne(col, ""), notRecruiting))
+      // The empty-string guard casts to text on purpose: `self_reported_channel` is an
+      // ENUM, and Postgres rejects comparing one against '' outright ("invalid input
+      // value for enum"), which took `roi_summary` down as a whole rather than one row.
+      .where(
+        and(
+          gte(leads.occurredAt, windowStart),
+          eq(leads.isSpam, false),
+          isNotNull(col),
+          sql`${col}::text <> ''`,
+          notRecruiting,
+        ),
+      )
       .groupBy(sql`${groupBy}`)
       .orderBy(desc(sql`count(*)`))
       .limit(8);
