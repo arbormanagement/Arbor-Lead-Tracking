@@ -221,8 +221,27 @@ export async function syncConversions({ sinceDays = 90, limit = 500 }: { sinceDa
       // Harmless while the campaign bids on conversion COUNT, and a live trap the
       // moment anyone tries Maximize Conversion Value — so it is zeroed at the
       // source rather than left for the bidder to discover.
+      // NORMALIZE, don't trust. Every value below comes from a query, and a raw `sql`
+      // aggregate hands back the wire STRING rather than a Date (see lib/leads/stage.ts) —
+      // which is exactly how one row took down every Google upload for three days. The
+      // source is fixed; this is the guard that keeps a future raw expression from doing
+      // it again, and it is the same "normalize a value into the shape you promise"
+      // rule the getJobById cast taught. An unparseable value yields null and the event
+      // is skipped, rather than throwing partway through building the batch.
+      const at = (v: unknown): Date | null => {
+        if (v instanceof Date) return Number.isNaN(v.getTime()) ? null : v;
+        if (typeof v === "string" || typeof v === "number") {
+          const d = new Date(v);
+          return Number.isNaN(d.getTime()) ? null : d;
+        }
+        return null;
+      };
+      const occurredAt = at(l.occurredAt);
+      // No usable lead time means no honest timestamp for ANY of its events.
+      if (!occurredAt) continue;
+
       const events: Array<{ event: EventKind; valueCents: number; convertedAt: Date }> = [
-        { event: "lead", valueCents: 0, convertedAt: l.occurredAt },
+        { event: "lead", valueCents: 0, convertedAt: occurredAt },
       ];
       // Only claim an estimate exists once one actually does. Status alone is not
       // enough to date it, so an estimate-less lead must not emit `qualified`.
@@ -230,7 +249,7 @@ export async function syncConversions({ sinceDays = 90, limit = 500 }: { sinceDa
         events.push({
           event: "qualified",
           valueCents: 0,
-          convertedAt: l.estimateCreatedAt ?? l.occurredAt,
+          convertedAt: at(l.estimateCreatedAt) ?? occurredAt,
         });
         // Only when a date actually exists. Reporting it at estimate-creation time
         // would claim an appointment that may never have been booked.
@@ -238,7 +257,7 @@ export async function syncConversions({ sinceDays = 90, limit = 500 }: { sinceDa
           events.push({
             event: "scheduled",
             valueCents: 0,
-            convertedAt: l.estimateScheduledAt,
+            convertedAt: at(l.estimateScheduledAt) ?? occurredAt,
           });
         }
       }
@@ -246,13 +265,13 @@ export async function syncConversions({ sinceDays = 90, limit = 500 }: { sinceDa
         events.push({
           event: "won",
           valueCents: l.estimateApprovedCents ?? 0,
-          convertedAt: l.estimateApprovedAt ?? l.estimateCreatedAt ?? l.occurredAt,
+          convertedAt: at(l.estimateApprovedAt) ?? at(l.estimateCreatedAt) ?? occurredAt,
         });
       }
 
       const base = {
         leadId: l.id,
-        occurredAt: l.occurredAt,
+        occurredAt,
         leadType: l.type,
         phoneE164: l.phoneE164,
         emailLc: l.emailLc,

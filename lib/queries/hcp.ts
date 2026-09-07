@@ -489,7 +489,12 @@ export async function listCustomers(opts: {
           .select({
             customerId: hcpJobs.hcpCustomerId,
             jobs: sql<number>`count(*)::int`,
-            lastJobAt: sql<Date | null>`max(coalesce(${hcpJobs.completedAtHcp}, ${hcpJobs.scheduledStart}, ${hcpJobs.createdAtHcp}))`,
+            // .mapWith or this arrives as the raw wire string and the contract's
+            // `isoDate` is only `z.string()`, so a non-ISO value passes validation
+            // while claiming to be ISO-8601. Same trap as lib/leads/stage.ts.
+            lastJobAt: sql<Date | null>`max(coalesce(${hcpJobs.completedAtHcp}, ${hcpJobs.scheduledStart}, ${hcpJobs.createdAtHcp}))`.mapWith(
+              hcpJobs.completedAtHcp,
+            ),
           })
           .from(hcpJobs)
           .where(and(inArray(hcpJobs.hcpCustomerId, ids), isNull(hcpJobs.deletedAtHcp)))
