@@ -52,6 +52,7 @@ export function shouldSkipReview(customerTags: string[], jobTags: string[]): boo
  * because this branch is tested first. Four towns named in that list carry
  * 622xx zips — Collinsville (62234), Troy (62294), Highland (62249) and
  * St. Jacob (62281) — so all four route to St. Clair whenever a zip is
+<<<<<<< HEAD
  * present, and to Madison when it is blank. **All four are now DELIBERATE:**
  * Collinsville is listed in STCLAIR_CITIES above, and Justin decided on
  * 2026-09-07 to leave Troy, Highland and St. Jacob on the O'Fallon profile
@@ -60,6 +61,12 @@ export function shouldSkipReview(customerTags: string[], jobTags: string[]): boo
  * pending: do NOT "fix" the ordering to make `MADISON_CITIES` win. The tests
  * pin both sides, so a reorder fails a check rather than silently moving a
  * town's reviews.
+=======
+ * present, and to Madison when it is blank. Collinsville is now deliberate
+ * (see above); the other three are inherited behavior, flagged to Justin
+ * 2026-09-04 and left as-is pending his call. Measure before changing the
+ * order: `MADISON_CITIES` says one thing and the zip rule does another.
+>>>>>>> origin/claude/arbor-automations-lead-tracking-5p3ii9
  */
 export function determineCounty(city: string, zip: string): "madison" | "stclair" {
   const cityLower = (city || "").toLowerCase().trim();
