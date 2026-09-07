@@ -30,12 +30,13 @@ check("Collinsville + zip -> stclair", determineCounty("Collinsville", "62234"),
 check("Collinsville, NO zip -> stclair", determineCounty("Collinsville", ""), "stclair");
 check("Collinsville lowercase -> stclair", determineCounty("collinsville", ""), "stclair");
 check("Collinsville -> O'Fallon review url", getReviewUrl(determineCounty("Collinsville", "")), STCLAIR_REVIEW_URL);
-// Documents the inherited zip-over-city precedence for the other three, so a
-// future reorder trips a test instead of silently moving a town's reviews.
-check("Troy + 62294 zip -> stclair (inherited)", determineCounty("Troy", "62294"), "stclair");
+// Troy, Highland and St. Jacob stay on the O'Fallon profile by DECISION
+// (Justin, 2026-09-07), not by accident — these pin that, so a future reorder
+// trips a test instead of silently moving a town's reviews.
+check("Troy + 62294 zip -> stclair (decided)", determineCounty("Troy", "62294"), "stclair");
 check("Troy, no zip -> madison (city list)", determineCounty("Troy", ""), "madison");
-check("Highland + 62249 zip -> stclair (inherited)", determineCounty("Highland", "62249"), "stclair");
-check("St. Jacob + 62281 zip -> stclair (inherited)", determineCounty("St. Jacob", "62281"), "stclair");
+check("Highland + 62249 zip -> stclair (decided)", determineCounty("Highland", "62249"), "stclair");
+check("St. Jacob + 62281 zip -> stclair (decided)", determineCounty("St. Jacob", "62281"), "stclair");
 check("madison url", getReviewUrl("madison"), MADISON_REVIEW_URL);
 check("stclair url", getReviewUrl("stclair"), STCLAIR_REVIEW_URL);
 
