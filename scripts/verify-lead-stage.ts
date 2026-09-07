@@ -23,6 +23,7 @@ import { findOpenLead } from "@/lib/leads/open";
 import { getThreadDetail } from "@/lib/queries/inbox";
 import { runAttribution } from "@/lib/sync/attribution";
 import { conversations, contacts } from "@/lib/db/schema";
+import { leadEstimateRollup } from "@/lib/leads/stage";
 
 type Est = Partial<typeof hcpEstimates.$inferInsert>;
 const open = (total = 0, status: string | null = "needs scheduling"): Est => ({ outcome: "open", won: false, totalAmountCents: total, status });
@@ -107,6 +108,53 @@ async function main() {
   await db.delete(leads).where(eq(leads.id, inq.id));
   await db.delete(conversations).where(eq(conversations.id, conv.id));
   await db.delete(contacts).where(eq(contacts.id, contact.id));
+
+  // ── the rollup's DATE columns must arrive as Dates, not wire strings ──────────
+  // `sql<Date | null>` is an assertion tsc cannot check. Without `.mapWith()` these come
+  // back as "2026-09-06 15:17:00.451+00" and every Google conversion upload dies on
+  // `convertedAt.getTime is not a function` — which is what happened 2026-09-05 → 09-07.
+  // Assert the RUNTIME type, because that is the only thing that was ever wrong; the
+  // plain column on the same row is the control that proves the harness itself is sound.
+  console.log("\nrollup date decoding:");
+  {
+    const [c2] = await db.insert(contacts).values({}).returning();
+    const [cv2] = await db.insert(conversations).values({ contactId: c2.id }).returning();
+    const [i2] = await db
+      .insert(leads)
+      .values({ type: "call", phoneE164: "+16185558888", conversationId: cv2.id, contactId: c2.id })
+      .returning();
+    const [e2] = await db
+      .insert(hcpEstimates)
+      .values({
+        hcpEstimateId: "verify-typecheck-0",
+        leadId: i2.id,
+        createdAtHcp: new Date(Date.now() - 3 * 60_000),
+        scheduledStartHcp: new Date(Date.now() - 2 * 60_000),
+        approvedAtHcp: new Date(Date.now() - 60_000),
+        ...wonEst(50000, 40000),
+      } as typeof hcpEstimates.$inferInsert)
+      .returning();
+    const roll = leadEstimateRollup();
+    const [row] = await db
+      .select({
+        occurredAt: leads.occurredAt,
+        created: roll.firstCreatedAt,
+        scheduled: roll.firstScheduledAt,
+        approved: roll.firstApprovedAt,
+      })
+      .from(leads)
+      .leftJoin(roll, eq(roll.leadId, leads.id))
+      .where(eq(leads.id, i2.id));
+    ok(row.occurredAt instanceof Date, "control: a plain column decodes to Date");
+    ok(row.created instanceof Date, `firstCreatedAt decodes to a Date (got ${typeof row.created})`);
+    ok(row.scheduled instanceof Date, `firstScheduledAt decodes to a Date (got ${typeof row.scheduled})`);
+    ok(row.approved instanceof Date, `firstApprovedAt decodes to a Date (got ${typeof row.approved})`);
+    ok(typeof (row.created as Date)?.getTime === "function", "firstCreatedAt.getTime exists (the exporter's exact call)");
+    await db.delete(hcpEstimates).where(eq(hcpEstimates.id, e2.id));
+    await db.delete(leads).where(eq(leads.id, i2.id));
+    await db.delete(conversations).where(eq(conversations.id, cv2.id));
+    await db.delete(contacts).where(eq(contacts.id, c2.id));
+  }
 
   console.log(failures ? `\n${failures} FAILED` : "\nAll stage checks passed.");
   process.exit(failures ? 1 : 0);

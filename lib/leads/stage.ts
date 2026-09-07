@@ -55,12 +55,27 @@ export function leadEstimateRollup() {
       allTotalCents: sql<number | null>`sum(nullif(${hcpEstimates.totalAmountCents}, 0))::int`.as("all_total_cents"),
       /** The only ROI revenue: approved amounts on won estimates. NULL until something is won. */
       salesCents: sql<number | null>`sum(coalesce(${hcpEstimates.approvedAmountCents}, 0)) filter (where ${hcpEstimates.outcome} = 'won')::int`.as("sales_cents"),
+      // ⚠️ `.mapWith(<column>)` is LOAD-BEARING on every date aggregate below, and its
+      // absence is invisible to `tsc`. Drizzle turns OFF node-postgres's own type parsers
+      // so it can decode per column — so a RAW `sql` expression gets no decoder at all and
+      // arrives as the wire string ("2026-09-06 15:17:00.451+00"), while a plain column on
+      // the same row arrives as a Date. `sql<Date | null>` is an ASSERTION, not a check:
+      // it compiled clean and broke every Google conversion upload for three days
+      // (2026-09-05 → 09-07) on `convertedAt.getTime is not a function`. `mapWith` attaches
+      // that column's decoder; NULL still decodes to null. Reproduced and fixed against a
+      // real Postgres — `npm run verify:lead-stage` asserts the runtime type.
       /** When the office first wrote an estimate for this inquiry — the `qualified` conversion. */
-      firstCreatedAt: sql<Date | null>`min(${hcpEstimates.createdAtHcp})`.as("first_created_at"),
+      firstCreatedAt: sql<Date | null>`min(${hcpEstimates.createdAtHcp})`
+        .mapWith(hcpEstimates.createdAtHcp)
+        .as("first_created_at"),
       /** The first appointment actually booked, cancelled ones excluded — the `scheduled` conversion. */
-      firstScheduledAt: sql<Date | null>`min(${hcpEstimates.scheduledStartHcp}) filter (where ${live})`.as("first_scheduled_at"),
+      firstScheduledAt: sql<Date | null>`min(${hcpEstimates.scheduledStartHcp}) filter (where ${live})`
+        .mapWith(hcpEstimates.scheduledStartHcp)
+        .as("first_scheduled_at"),
       /** When the first of them was approved — the `won` conversion. */
-      firstApprovedAt: sql<Date | null>`min(${hcpEstimates.approvedAtHcp}) filter (where ${hcpEstimates.outcome} = 'won')`.as("first_approved_at"),
+      firstApprovedAt: sql<Date | null>`min(${hcpEstimates.approvedAtHcp}) filter (where ${hcpEstimates.outcome} = 'won')`
+        .mapWith(hcpEstimates.approvedAtHcp)
+        .as("first_approved_at"),
       /** This app's estimate ids, oldest first. */
       ids: sql<string[]>`array_agg(${hcpEstimates.id} order by ${hcpEstimates.createdAtHcp} nulls last, ${hcpEstimates.id})`.as("ids"),
     })
