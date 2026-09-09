@@ -4,14 +4,14 @@
  * change here changes what customers receive). Split from `workflow.ts` so the
  * verify script runs with no database or environment.
  */
-import { toZoned } from "@/lib/retell/office-hours";
+import { holidayName, toZoned } from "@/lib/retell/office-hours";
 
 export const SMS_DELAY_MS = 1 * 60 * 1000;
 export const EMAIL_DELAY_MS = 24 * 60 * 60 * 1000 + SMS_DELAY_MS;
 export const FINAL_SMS_DELAY_MS = EMAIL_DELAY_MS + 2 * 24 * 60 * 60 * 1000;
 export const MAX_RETRIES = 3;
 
-export type ReviewStep = "sms1" | "email" | "email_skip" | "sms2";
+export type ReviewStep = "sms1" | "email" | "email_skip" | "sms2" | "sms2_skip";
 
 /**
  * Which step (if any) is due for a pending row at `now`. Pure so the verify
@@ -24,11 +24,15 @@ export function nextDueStep(
     finalSmsSent: boolean;
     customerEmail: string | null;
     createdAt: Date;
+    /** Twilio reported the first text as failed/undelivered — see `sms2_skip`. */
+    smsUndeliverable?: boolean;
   },
   now: Date,
 ): ReviewStep | null {
   const elapsed = now.getTime() - row.createdAt.getTime();
 
+  // Not gated on `smsUndeliverable`: the flag can only be set by a delivery
+  // receipt for a message we already sent, so `smsSent` is true by then.
   if (!row.smsSent && elapsed >= SMS_DELAY_MS) return "sms1";
 
   if (row.smsSent && row.emailSent === "pending" && elapsed >= EMAIL_DELAY_MS) {
@@ -36,7 +40,12 @@ export function nextDueStep(
   }
 
   const emailDone = row.emailSent === "sent" || row.emailSent === "skipped";
-  if (emailDone && !row.finalSmsSent && elapsed >= FINAL_SMS_DELAY_MS) return "sms2";
+  if (emailDone && !row.finalSmsSent && elapsed >= FINAL_SMS_DELAY_MS) {
+    // The carrier already told us this number cannot receive our texts. Sending
+    // the follow-up anyway buys nothing and bills for it, so the step is
+    // recorded as taken rather than performed — the mirror of `email_skip`.
+    return row.smsUndeliverable ? "sms2_skip" : "sms2";
+  }
 
   return null;
 }
@@ -81,8 +90,27 @@ export function followUpEmailHtml(customerName: string, trackingUrl: string): st
 export const SEND_WINDOW_START_HOUR = 9; // 9:00 AM CT, inclusive
 export const SEND_WINDOW_END_HOUR = 19; // 7:00 PM CT, exclusive
 
+/**
+ * Why the window is shut, or null when it is open. Returned as a phrase rather
+ * than a boolean so the held-queue log line says WHICH rule held it — "held
+ * outside the send window" over a public holiday reads like a bug to whoever is
+ * on the other end of it.
+ */
+export function sendWindowHold(now: Date): string | null {
+  const zoned = toZoned(now);
+  if (zoned.weekday === 0 || zoned.weekday === 6) return "weekend";
+  // Same closure calendar Chloe answers on, deliberately: a review text at 9am
+  // on Thanksgiving is the same intrusion as the office picking up. Reused from
+  // the office-hours module — federal observance shifts and the Dec 24-Jan 1
+  // block are already settled there and must not be re-derived here.
+  const holiday = holidayName(zoned);
+  if (holiday) return holiday === "our holiday closure" ? "the holiday closure" : holiday;
+  if (zoned.hour < SEND_WINDOW_START_HOUR || zoned.hour >= SEND_WINDOW_END_HOUR) {
+    return "outside 9am-7pm CT";
+  }
+  return null;
+}
+
 export function isWithinSendWindow(now: Date): boolean {
-  const { hour, weekday } = toZoned(now);
-  if (weekday === 0 || weekday === 6) return false; // Sun/Sat: no sends at all
-  return hour >= SEND_WINDOW_START_HOUR && hour < SEND_WINDOW_END_HOUR;
+  return sendWindowHold(now) === null;
 }

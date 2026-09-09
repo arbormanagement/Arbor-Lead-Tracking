@@ -22,7 +22,7 @@ import { reviewRequests } from "@/lib/db/schema";
 import { sendEmail, sendFailureAlert } from "@/lib/email/sendgrid";
 import { env } from "@/lib/env";
 import { sendReviewSms } from "@/lib/reviews/outreach";
-import { MAX_RETRIES, finalSmsBody, followUpEmailHtml, initialSmsBody, isWithinSendWindow, nextDueStep, type ReviewStep } from "@/lib/reviews/sequence";
+import { MAX_RETRIES, finalSmsBody, followUpEmailHtml, initialSmsBody, nextDueStep, sendWindowHold, type ReviewStep } from "@/lib/reviews/sequence";
 
 type ReviewRow = typeof reviewRequests.$inferSelect;
 
@@ -64,6 +64,16 @@ async function runStep(row: ReviewRow, step: ReviewStep): Promise<void> {
     return;
   }
 
+  if (step === "sms2_skip") {
+    // The carrier already refused the first text for this number. Recording the
+    // step as taken settles the row instead of leaving it pending forever.
+    await set(row, { finalSmsSent: true, status: "completed" });
+    console.log(
+      `[reviews] ${row.customerName} is unreachable by SMS (${row.smsUndeliverableCode ?? "no code"}) — final text skipped`,
+    );
+    return;
+  }
+
   if (await freshClicked(row)) {
     // Completed by the click handler; just mark the step so the row settles.
     if (step === "sms1") await set(row, { status: "completed", smsSent: true });
@@ -99,6 +109,7 @@ async function runStep(row: ReviewRow, step: ReviewStep): Promise<void> {
       toE164: row.customerPhoneE164,
       customerName: row.customerName,
       body,
+      reviewRequestId: row.id,
     });
     if (!result.ok) {
       if (result.reason === "opted_out") {
@@ -124,9 +135,15 @@ async function runStep(row: ReviewRow, step: ReviewStep): Promise<void> {
   }
 }
 
-export async function processReviewWorkflows(): Promise<{ enabled: boolean; pending: number; stepsRun: number; held: number }> {
+export async function processReviewWorkflows(): Promise<{
+  enabled: boolean;
+  pending: number;
+  stepsRun: number;
+  held: number;
+  heldReason: string | null;
+}> {
   if (env.REVIEW_WORKFLOW_ENABLED !== "true") {
-    return { enabled: false, pending: 0, stepsRun: 0, held: 0 };
+    return { enabled: false, pending: 0, stepsRun: 0, held: 0, heldReason: null };
   }
 
   const pending = await db
@@ -139,13 +156,17 @@ export async function processReviewWorkflows(): Promise<{ enabled: boolean; pend
   // and goes out on the first tick inside it. `email_skip` is exempt because it
   // contacts nobody — it only marks a row that has no email on file, and making
   // it wait would push that row's final SMS out by the length of the hold.
-  const sendable = isWithinSendWindow(now);
+  const hold = sendWindowHold(now);
   let stepsRun = 0;
   let held = 0;
   for (const row of pending) {
-    const step = nextDueStep(row, now);
+    const step = nextDueStep({ ...row, smsUndeliverable: row.smsUndeliverableAt !== null }, now);
     if (!step) continue;
-    if (!sendable && step !== "email_skip") {
+    // `email_skip` and `sms2_skip` are exempt because they contact NOBODY: they
+    // only record a step that cannot happen. Holding them would push the rest of
+    // the row's timeline out by the length of the hold for no one's benefit.
+    const contactsSomeone = step !== "email_skip" && step !== "sms2_skip";
+    if (hold && contactsSomeone) {
       held++;
       continue;
     }
@@ -158,9 +179,11 @@ export async function processReviewWorkflows(): Promise<{ enabled: boolean; pend
     }
   }
   if (held > 0) {
-    // Say it out loud. A silently-held queue reads exactly like an empty one,
-    // which is the failure mode that hid the getJobById bug for two days.
-    console.log(`[reviews] ${held} step(s) held outside the send window (Mon-Fri 9am-7pm CT)`);
+    // Say it out loud, and say WHY. A silently-held queue reads exactly like an
+    // empty one, which is the failure mode that hid the getJobById bug for two
+    // days — and "held" over a public holiday reads like a stall unless the log
+    // names the holiday.
+    console.log(`[reviews] ${held} step(s) held — ${hold}`);
   }
-  return { enabled: true, pending: pending.length, stepsRun, held };
+  return { enabled: true, pending: pending.length, stepsRun, held, heldReason: held > 0 ? hold : null };
 }

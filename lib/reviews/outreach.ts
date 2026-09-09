@@ -21,6 +21,7 @@ import { contacts, conversations, messages } from "@/lib/db/schema";
 import { env } from "@/lib/env";
 import { preview, recordThreadActivity, upsertThread } from "@/lib/messaging/thread";
 import { getTwilioClient } from "@/lib/twilio/client";
+import { messageStatusCallbackUrl } from "@/lib/twilio/webhook-url";
 
 /** Twilio's "recipient has opted out" error — the carrier-side STOP block. */
 const OPT_OUT_ERROR = 21610;
@@ -33,6 +34,9 @@ export async function sendReviewSms(args: {
   toE164: string;
   customerName: string;
   body: string;
+  /** The review request this send belongs to. Rides on the delivery-receipt URL
+   *  so a carrier rejection lands back on the right row — see `messageStatusCallbackUrl`. */
+  reviewRequestId?: string;
 }): Promise<ReviewSendResult> {
   const from = env.REVIEW_SMS_FROM;
   if (!from) {
@@ -84,7 +88,15 @@ export async function sendReviewSms(args: {
 
   try {
     const client = await getTwilioClient();
-    const sent = await client.messages.create({ from, to: args.toE164, body: args.body });
+    // ⚠️ `messages.create` resolving means Twilio ACCEPTED the message, not that
+    // a handset received it. The carrier verdict only ever arrives here, on the
+    // status callback — without it a landline looks exactly like a delivery.
+    const sent = await client.messages.create({
+      from,
+      to: args.toE164,
+      body: args.body,
+      statusCallback: await messageStatusCallbackUrl(args.reviewRequestId),
+    });
 
     await db
       .update(messages)

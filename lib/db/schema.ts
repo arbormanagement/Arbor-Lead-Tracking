@@ -1598,6 +1598,22 @@ export const reviewRequests = pgTable(
     smsSent: boolean("sms_sent").notNull().default(false),
     emailSent: text("email_sent").notNull().default("pending"), // pending | sent | skipped
     finalSmsSent: boolean("final_sms_sent").notNull().default(false),
+    /**
+     * Twilio's DELIVERY RECEIPT said this number cannot receive our texts
+     * (MessageStatus `failed`/`undelivered`), which is a different answer from
+     * the send being rejected at creation time.
+     *
+     * ⚠️ A Twilio `messages.create` that resolves is only an ACCEPTANCE — the
+     * carrier verdict arrives later, on the status callback, and until this
+     * column existed nothing in the app ever read it. So a landline marched
+     * through the whole sequence: first text undelivered (error 30006), final
+     * text three days later, also undelivered, both billed and neither seen.
+     * The row now skips the final SMS (`sms2_skip`) while still sending the
+     * email, which is the one channel that might still reach them.
+     */
+    smsUndeliverableAt: timestamp("sms_undeliverable_at", { withTimezone: true }),
+    /** Twilio error code behind it (30006 landline, 30003 unreachable, …). */
+    smsUndeliverableCode: text("sms_undeliverable_code"),
     // pending | completed | failed | suppressed (opted out / do-not-service)
     status: text("status").notNull().default("pending"),
     attemptsSms1: integer("attempts_sms1").notNull().default(0),

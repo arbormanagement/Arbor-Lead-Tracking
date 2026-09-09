@@ -16,6 +16,7 @@ import {
   leads,
   numberAssignments,
   pools,
+  reviewRequests,
   sources,
   syncRuns,
   trackingNumbers,
@@ -34,6 +35,7 @@ import {
 } from "@/lib/hcp/line-items";
 import { getSetting } from "@/lib/settings";
 import { MAX_EXPORT_ATTEMPTS } from "@/lib/sync/conversions";
+import { FINAL_SMS_DELAY_MS } from "@/lib/reviews/sequence";
 import { businessDate, BUSINESS_TZ } from "@/lib/tz";
 
 /**
@@ -336,6 +338,72 @@ export async function diagnosticsReport(): Promise<{ httpStatus: number; report:
       "unmapped = inquiries on the `other` source: a tag or link the classifier does not recognise. " +
       "Add the mapping, then run arbor_reclassify_sources. noSource = no attribution at all; " +
       "correct the row with arbor_set_inquiry_attribution and find the ingest path that skipped it.",
+  };
+
+  // ── Review sequence: is anyone actually being asked? ────────────────────────
+  //
+  // The cron job already appears under `jobs`, but a job that RAN is not a
+  // sequence that WORKED: enrolment depends on an HCP webhook whose absence
+  // leaves no trace, and a row that fails its three send attempts settles to
+  // `failed` and is never looked at again. Both are invisible from the run
+  // stats. `stalled` is the sharp one — a pending row older than the whole
+  // timeline has stopped moving and nothing else will notice.
+  const reviewWindowDays = 30;
+  const reviewSince = new Date(now.getTime() - reviewWindowDays * 24 * 60 * 60 * 1000);
+  const stalledBefore = new Date(now.getTime() - FINAL_SMS_DELAY_MS - 24 * 60 * 60 * 1000);
+  const [reviewRow] = await db
+    .select({
+      enrolled: sql<number>`count(*)::int`,
+      pending: sql<number>`count(*) filter (where ${reviewRequests.status} = 'pending')::int`,
+      completed: sql<number>`count(*) filter (where ${reviewRequests.status} = 'completed')::int`,
+      failed: sql<number>`count(*) filter (where ${reviewRequests.status} = 'failed')::int`,
+      suppressed: sql<number>`count(*) filter (where ${reviewRequests.status} = 'suppressed')::int`,
+      clicked: sql<number>`count(*) filter (where ${reviewRequests.clicked})::int`,
+      texted: sql<number>`count(*) filter (where ${reviewRequests.smsSent})::int`,
+      undeliverable: sql<number>`count(*) filter (where ${reviewRequests.smsUndeliverableAt} is not null)::int`,
+      stalled: sql<number>`count(*) filter (where ${reviewRequests.status} = 'pending' and ${reviewRequests.createdAt} < ${stalledBefore.toISOString()})::int`,
+      lastEnrolledAt: sql<string | null>`max(${reviewRequests.createdAt})`,
+    })
+    .from(reviewRequests)
+    .where(gte(reviewRequests.createdAt, reviewSince));
+  const reviewFailSample = await db
+    .select({
+      id: reviewRequests.id,
+      customer: reviewRequests.customerName,
+      status: reviewRequests.status,
+      createdAt: reviewRequests.createdAt,
+      error: reviewRequests.errorMessage,
+    })
+    .from(reviewRequests)
+    .where(
+      and(
+        gte(reviewRequests.createdAt, reviewSince),
+        sql`(${reviewRequests.status} = 'failed' or (${reviewRequests.status} = 'pending' and ${reviewRequests.createdAt} < ${stalledBefore.toISOString()}))`,
+      ),
+    )
+    .orderBy(desc(reviewRequests.createdAt))
+    .limit(5);
+  const reviewTexted = reviewRow?.texted ?? 0;
+  const reviews = {
+    enabled: env.REVIEW_WORKFLOW_ENABLED === "true",
+    windowDays: reviewWindowDays,
+    enrolled: reviewRow?.enrolled ?? 0,
+    pending: reviewRow?.pending ?? 0,
+    completed: reviewRow?.completed ?? 0,
+    failed: reviewRow?.failed ?? 0,
+    suppressed: reviewRow?.suppressed ?? 0,
+    texted: reviewTexted,
+    clicked: reviewRow?.clicked ?? 0,
+    clickRatePct: reviewTexted ? Math.round(((reviewRow?.clicked ?? 0) / reviewTexted) * 1000) / 10 : null,
+    undeliverable: reviewRow?.undeliverable ?? 0,
+    stalled: reviewRow?.stalled ?? 0,
+    lastEnrolledAt: reviewRow?.lastEnrolledAt ?? null,
+    sample: reviewFailSample,
+    note:
+      "Enrolment comes from the HCP invoice.paid webhook, with lib/reviews/backfill.ts as the repair " +
+      "path for invoices it misses. `clicked` counts people who opened the review link, which is the " +
+      "closest thing to an outcome this app can see — Google never tells us who left the review. " +
+      "`undeliverable` is carrier-confirmed (a landline, a dead number), not a send error.",
   };
 
   // ── Estimate sync coverage: is HousecallPro actually reconciled? ─────────────
@@ -835,6 +903,24 @@ export async function diagnosticsReport(): Promise<{ httpStatus: number; report:
   // Thresholds, not zero: a single unmapped inquiry a week is a hand-built link or a
   // one-off referrer, and a warning that fires on it gets ignored by the third week.
   // A NULL source has no innocent explanation, so one is enough.
+  if (reviews.stalled > 0) {
+    warnings.push(
+      `${reviews.stalled} review request(s) have been pending longer than the whole sequence takes — ` +
+        `the sequencer has stopped advancing them. See reviews.sample`,
+    );
+  }
+  if (reviews.failed > 0) {
+    warnings.push(
+      `${reviews.failed} review request(s) in the last ${reviews.windowDays}d failed after every ` +
+        `retry — those customers were never asked. See reviews.sample`,
+    );
+  }
+  if (!reviews.enabled && reviews.pending > 0) {
+    warnings.push(
+      `REVIEW_WORKFLOW_ENABLED is not 'true' but ${reviews.pending} review request(s) are pending — ` +
+        `they will sit unsent until the flag is set`,
+    );
+  }
   if (sourceHealth.noSource > 0) {
     warnings.push(
       `${sourceHealth.noSource} inquiry(ies) in the last ${sourceHealth.windowDays}d have NO source at all — ` +
@@ -910,6 +996,7 @@ export async function diagnosticsReport(): Promise<{ httpStatus: number; report:
       traffic,
       swapCoverage,
       sourceHealth,
+      reviews,
       volume: { ...vol, ...callVol },
       estimateSync,
       hcpSync,

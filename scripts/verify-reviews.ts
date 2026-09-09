@@ -6,7 +6,7 @@
  *   npm run verify:reviews
  */
 import { determineCounty, getReviewUrl, shouldSkipReview, MADISON_REVIEW_URL, STCLAIR_REVIEW_URL } from "@/lib/reviews/county";
-import { EMAIL_DELAY_MS, FINAL_SMS_DELAY_MS, SMS_DELAY_MS, finalSmsBody, followUpEmailHtml, initialSmsBody, isWithinSendWindow, nextDueStep } from "@/lib/reviews/sequence";
+import { EMAIL_DELAY_MS, FINAL_SMS_DELAY_MS, SMS_DELAY_MS, finalSmsBody, followUpEmailHtml, initialSmsBody, isWithinSendWindow, nextDueStep, sendWindowHold } from "@/lib/reviews/sequence";
 
 let failed = 0;
 function check(label: string, got: unknown, want: unknown) {
@@ -91,11 +91,46 @@ check("Fri 2am CT -> closed", isWithinSendWindow(ct("2026-09-04T07:00:00Z")), fa
 check("Sat 10am CT -> closed (weekend)", isWithinSendWindow(ct("2026-09-05T15:00:00Z")), false);
 check("Sun 9am CT -> closed (weekend)", isWithinSendWindow(ct("2026-09-06T14:00:00Z")), false);
 check("Sun 6pm CT -> closed (weekend)", isWithinSendWindow(ct("2026-09-06T23:00:00Z")), false);
-check("Mon 9:00am CT -> open again", isWithinSendWindow(ct("2026-09-07T14:00:00Z")), true);
+check("Mon 9:00am CT -> open again", isWithinSendWindow(ct("2026-09-14T14:00:00Z")), true);
 // DST: the window must follow Chicago, not a fixed UTC offset. In January CT
 // is UTC-6, so 15:00Z is 9:00am CT and 14:00Z is 8:00am CT (closed).
 check("winter: Thu 8:00am CT -> closed (DST-aware)", isWithinSendWindow(ct("2027-01-07T14:00:00Z")), false);
 check("winter: Thu 9:00am CT -> open (DST-aware)", isWithinSendWindow(ct("2027-01-07T15:00:00Z")), true);
+
+// ── Holidays ────────────────────────────────────────────────────────────────
+// A weekday check alone is not a quiet-hours rule. Five review texts went out
+// at 9:00am on Labor Day 2026 (Monday the 7th) — the window opened because the
+// day is a weekday, and nothing asked whether anyone was working. The closure
+// calendar is Chloe's, reused rather than re-derived, so the office being shut
+// and the sequence being quiet cannot drift apart.
+check("Labor Day 10am CT -> closed", isWithinSendWindow(ct("2026-09-07T15:00:00Z")), false);
+check("Labor Day names itself in the hold", sendWindowHold(ct("2026-09-07T15:00:00Z")), "Labor Day");
+check("the day after Labor Day -> open", isWithinSendWindow(ct("2026-09-08T15:00:00Z")), true);
+check("Thanksgiving 10am CT -> closed", isWithinSendWindow(ct("2026-11-26T16:00:00Z")), false);
+check("Memorial Day 10am CT -> closed", isWithinSendWindow(ct("2027-05-31T15:00:00Z")), false);
+check("Christmas Eve -> closed (winter block)", isWithinSendWindow(ct("2026-12-24T16:00:00Z")), false);
+check("New Year's Eve -> closed (winter block)", isWithinSendWindow(ct("2026-12-31T16:00:00Z")), false);
+check("Jan 2nd 2027 (Sat) -> closed", isWithinSendWindow(ct("2027-01-02T16:00:00Z")), false);
+// July 4th 2026 is a Saturday, so the federal observance is Friday the 3rd.
+check("observed 4th of July (Fri 3rd) -> closed", isWithinSendWindow(ct("2026-07-03T16:00:00Z")), false);
+
+// ── Hold reasons: the held-queue log has to say WHICH rule held it ──────────
+check("open window has no hold", sendWindowHold(ct("2026-09-03T17:30:00Z")), null);
+check("weekend hold", sendWindowHold(ct("2026-09-05T15:00:00Z")), "weekend");
+check("evening hold", sendWindowHold(ct("2026-09-04T00:11:00Z")), "outside 9am-7pm CT");
+check("winter closure hold", sendWindowHold(ct("2026-12-28T16:00:00Z")), "the holiday closure");
+
+// ── Undeliverable numbers skip the final text, not the email ───────────────
+// Susan's number returned Twilio error 30006 on the first text; the sequence
+// sent the final one anyway three days later, also undelivered. A carrier
+// verdict is now terminal for SMS on that row — but the email, the one channel
+// that might still reach them, is untouched.
+const dead = { ...smsDone, smsUndeliverable: true };
+check("undeliverable still gets the email", nextDueStep(dead, at(EMAIL_DELAY_MS)), "email");
+check("undeliverable + no email -> email_skip", nextDueStep({ ...dead, customerEmail: null }, at(EMAIL_DELAY_MS)), "email_skip");
+check("undeliverable -> sms2_skip, not sms2", nextDueStep({ ...dead, emailSent: "sent" }, at(FINAL_SMS_DELAY_MS)), "sms2_skip");
+check("deliverable -> sms2 as before", nextDueStep({ ...smsDone, emailSent: "sent" }, at(FINAL_SMS_DELAY_MS)), "sms2");
+check("undeliverable row settles after the skip", nextDueStep({ ...dead, emailSent: "sent", finalSmsSent: true }, at(FINAL_SMS_DELAY_MS * 2)), null);
 
 console.log(failed === 0 ? "\nALL PASS" : `\n${failed} FAILURES`);
 process.exit(failed === 0 ? 0 : 1);
