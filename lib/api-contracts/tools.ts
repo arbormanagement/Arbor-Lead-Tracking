@@ -466,6 +466,7 @@ export const SYNC_JOBS = [
   "thread-backfill",
   "conversions",
   "fbleads",
+  "review-workflow",
   "all",
 ] as const;
 export type SyncJob = (typeof SYNC_JOBS)[number];

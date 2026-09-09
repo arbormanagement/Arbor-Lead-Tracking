@@ -1,3 +1,4 @@
+import { backfillMissedEnrollments } from "@/lib/reviews/backfill";
 import { processReviewWorkflows } from "@/lib/reviews/workflow";
 import { withSyncRun } from "./run";
 
@@ -14,5 +15,14 @@ import { withSyncRun } from "./run";
  * (default off) — a `{enabled:false}` result means the flag, not a lock.
  */
 export async function syncReviewWorkflow() {
-  return withSyncRun("reviews.workflow", async () => processReviewWorkflows());
+  return withSyncRun("reviews.workflow", async () => {
+    // Repair BEFORE sending, so an invoice the webhook missed is enrolled and
+    // then sequenced on the same tick rather than waiting five more minutes.
+    // Both halves are gated by REVIEW_WORKFLOW_ENABLED; `enrolled > 0` in the
+    // run stats means the webhook did not deliver and this caught it, which is
+    // worth noticing rather than silently repairing forever.
+    const backfill = await backfillMissedEnrollments();
+    const workflow = await processReviewWorkflows();
+    return { ...workflow, backfill };
+  });
 }

@@ -615,12 +615,61 @@ re-argued rather than assumed.
     `job_type_name` undefined, the `!== "tree service"` filter passed *everything*, so fixing
     only the visible half would have started enrolling Stump Service and maintenance jobs.
     When a field reads undefined, check every predicate that reads it before shipping the fix.
-- **Review sends are held, not skipped, outside Mon–Fri 9am–7pm CT** (`isWithinSendWindow`,
-  `lib/reviews/sequence.ts`, added 2026-09-03 at Justin's request). A held step is retried when
-  the window reopens, so nothing is lost — `workflow.ts` returns `held` alongside `stepsRun`, and
-  a run that reports `held > 0` overnight is correct behavior, not a stall. `email_skip` is
-  exempt because it contacts nobody. It reuses `toZoned` from the office-hours module rather than
-  its own DST math, so the review window and Chloe's office hours cannot drift apart.
+- **Review sends are held, not skipped, outside Mon–Fri 9am–7pm CT AND on the office's holidays**
+  (`isWithinSendWindow`, `lib/reviews/sequence.ts`, added 2026-09-03 at Justin's request; holidays
+  2026-09-09). A held step is retried when the window reopens, so nothing is lost — `workflow.ts`
+  returns `held` alongside `stepsRun`, and a run that reports `held > 0` overnight is correct
+  behavior, not a stall. `email_skip` and `sms2_skip` are exempt because they contact nobody. It
+  reuses `toZoned` AND `holidayName` from the office-hours module rather than its own DST or
+  calendar math, so the review window and Chloe's office hours cannot drift apart.
+  - **A weekday test is not a quiet-hours rule.** Five review texts went out at 9:00am on **Labor
+    Day 2026** — Monday passed the weekday check and nothing asked whether anyone was working.
+    The verify suite had a `Mon 9:00am CT -> open again` case pinned to 2026-09-07, which IS
+    Labor Day, so the test asserted the bug. `sendWindowHold()` now returns WHY the window is
+    shut ("weekend" · "Labor Day" · "the holiday closure" · "outside 9am-7pm CT") and the held
+    log line names it — a queue held over Thanksgiving reads as a stall unless it says so.
+- **Enrolment is a webhook PLUS a sweep, because a webhook that never arrives leaves no trace**
+  (`lib/reviews/backfill.ts`, 2026-09-09). `invoice.paid` → `enrollReviewRequest` is still the
+  normal door, but nothing could ever see it NOT fire: no row, no error, no failed run. Across
+  the Arbor-Automations cutover (2026-08-31, old app off and this one not yet receiving) a $2,975
+  Tree Service invoice was paid inside the gap and its customer was never asked. The sweep asks
+  the question from the other side — which paid invoices have no review request — bounded by a
+  14-day window, a 30-minute grace (so it repairs the webhook rather than racing it) and a cap of
+  10 per run. `backfill.enrolled > 0` in the run stats means the webhook missed something.
+  - **The eligibility rules live in `lib/reviews/enroll.ts` and BOTH doors call it.** A sweep with
+    its own copy would enroll exactly the people the webhook declines — PHC clients, `NO FEEDBACK
+    EMAIL` jobs, stump-only work — which is the two-dispatch-tables failure the cron switch
+    already cost this repo once.
+  - **The sweep's SQL pre-filter is about COST, not correctness.** A declined invoice never gets
+    a row, so without it a dozen PHC invoices would each cost two HCP reads every five minutes
+    forever. It reads the SYNCED job/customer rows, only ever REMOVES candidates, and uses the
+    same `SKIP_TAGS` constant — one set of rules evaluated twice, not two sets. ⚠️ The
+    already-asked guard joins `hcp_customers.hcp_customer_id`, NOT `hcp_invoices.hcp_customer_id`:
+    the invoice column is our ULID FK while the review request stores HCP's `cus_…` id, so
+    comparing those two matches nothing and the guard would look present while doing nothing.
+  - The repeat-ask guard in `enrollReviewRequest` widened from `status = 'pending'` to "already
+    texted OR still in flight, within 30 days". A customer who clicked through was `completed`,
+    so the next invoice they settled asked them again a week later — and the sweep needs a guard
+    that holds even when an older row's invoice key differs.
+- **⚠️ A Twilio `messages.create` that resolves is an ACCEPTANCE, not a delivery** (fixed
+  2026-09-09). Neither send path set a `statusCallback`, so `messages.status` froze at whatever
+  the create call returned and the carrier's verdict — which only ever arrives on that callback —
+  was never read by anything. A landline (error 30006) therefore consumed a whole review
+  sequence: first text undelivered, final text three days later also undelivered, both billed,
+  neither visible. `/api/twilio/message-status` now records receipts for BOTH review sends and
+  inbox replies, `review_requests.sms_undeliverable_at` marks the row, and `nextDueStep` returns
+  `sms2_skip` — the email still goes, because it is the one channel that might still reach them.
+  A 21610 on the receipt writes the opt-out back to the CONTACT, same as a create-time 21610.
+  The review request id rides on the callback URL (`?rr=`), which Twilio signs, so the link is
+  precise and tamper-evident and `messages` keeps no foreign key to a feature it should not know
+  about.
+- **`reviews` on `/api/diagnostics` is the check on all of it** (2026-09-09). The cron job already
+  appeared under `jobs`, but a job that RAN is not a sequence that WORKED: `stalled` counts
+  pending rows older than the whole timeline, `failed` counts customers who were never asked
+  after three attempts, `undeliverable` is carrier-confirmed, and `clicked` / `clickRatePct` are
+  the closest thing to an outcome this app can see — Google never says who left the review.
+  `review-workflow` is also hand-triggerable now (`arbor_trigger_sync`), deliberately NOT part of
+  `all`: nothing that texts customers belongs on a button labelled "sync".
 - IL/MO mixed-consent recording → recording notice is played to callers.
 - E.164 normalization is load-bearing for lead↔HCP matching/ROI.
 - Scheduled jobs are fire-and-log: a failed run is logged and retried on the next tick, so

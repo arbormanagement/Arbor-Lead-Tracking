@@ -2,6 +2,7 @@ import { and, desc, eq } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { contacts, conversations, leads, messages, trackingNumbers } from "@/lib/db/schema";
 import { getTwilioClient } from "@/lib/twilio/client";
+import { messageStatusCallbackUrl } from "@/lib/twilio/webhook-url";
 import { preview, recordThreadActivity } from "./thread";
 
 /** Twilio's "recipient has opted out" error — the carrier-side STOP block. */
@@ -82,7 +83,14 @@ export async function sendThreadSms(args: {
 
   try {
     const client = await getTwilioClient();
-    const sent = await client.messages.create({ from, to, body });
+    // Same delivery receipts as the review sends: an accepted message is not a
+    // delivered one, and an inbox reply that never landed should not read as sent.
+    const sent = await client.messages.create({
+      from,
+      to,
+      body,
+      statusCallback: await messageStatusCallbackUrl(),
+    });
 
     const [updated] = await db
       .update(messages)

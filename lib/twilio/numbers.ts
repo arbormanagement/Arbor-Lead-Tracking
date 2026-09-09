@@ -3,6 +3,7 @@ import { db } from "@/lib/db/client";
 import { sources, trackingNumbers } from "@/lib/db/schema";
 import { displayNameFor } from "@/lib/sources/naming";
 import { getTwilioClient, getTwilioConfig } from "./client";
+import { twilioWebhookBase as webhookBase } from "./webhook-url";
 import { env } from "@/lib/env";
 import { getDefaultForwardNumber } from "@/lib/routing";
 import type { locationEnum, numberStatusEnum } from "@/lib/db/schema";
@@ -129,10 +130,6 @@ function assertImportIsSafe(
   );
 }
 
-async function webhookBase(): Promise<string> {
-  const cfg = await getTwilioConfig();
-  return cfg.voiceWebhookBase ?? env.TWILIO_VOICE_WEBHOOK_BASE ?? `${env.APP_BASE_URL}/api/twilio`;
-}
 
 /**
  * Voice fallback: Twilio-hosted TwiML (the "forward" twimlet) that answers and

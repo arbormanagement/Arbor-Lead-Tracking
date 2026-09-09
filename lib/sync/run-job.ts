@@ -8,6 +8,7 @@ import { syncHcpLineItems } from "@/lib/sync/hcp-line-items";
 import { syncSpend } from "@/lib/sync/spend";
 import { backfillCallThreads } from "@/lib/sync/thread-backfill";
 import { syncTranscriptions } from "@/lib/sync/transcribe";
+import { syncReviewWorkflow } from "@/lib/sync/review-workflow";
 import { syncNumberWebhooks } from "@/lib/sync/twilio-webhooks";
 
 /**
@@ -66,6 +67,17 @@ export async function runSyncJob(job: SyncJob, days?: number): Promise<unknown> 
       return syncConversions();
     case "fbleads":
       return syncFacebookLeads(days ? { sinceDays: days } : {});
+    case "review-workflow":
+      // The Google-review sequence: enrolment repair sweep, then any due step.
+      // Hand-triggerable because the two things a human wants from it are both
+      // urgent-ish — pulling in a customer whose invoice.paid webhook never
+      // arrived, and confirming after a config change that sends resume — and
+      // waiting out a five-minute tick to learn either is a poor way to find
+      // out. Still gated by REVIEW_WORKFLOW_ENABLED, and still one-at-a-time
+      // via withSyncRun, so triggering it by hand cannot double-text anyone.
+      // Deliberately NOT part of `all`: `all` is the revenue/ROI chain, and
+      // nothing that texts customers belongs on a button labelled "sync".
+      return syncReviewWorkflow();
     case "all": {
       // Ingest leads (fbleads) + revenue (hcp) BEFORE attribution so newly-pulled
       // leads/estimates get matched in the same run. `days` widens hcp, fbleads
