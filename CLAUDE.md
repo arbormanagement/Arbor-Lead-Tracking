@@ -663,6 +663,19 @@ re-argued rather than assumed.
   The review request id rides on the callback URL (`?rr=`), which Twilio signs, so the link is
   precise and tamper-evident and `messages` keeps no foreign key to a feature it should not know
   about.
+- **⚠️ Drizzle binds a JS array as ONE UNTYPED parameter, so `= any(${jsArray})` fails at
+  RUNTIME** — `op ANY/ALL (array) requires array on right side`. It typechecks, lints and
+  builds, because `tsc` cannot see inside a `sql` template. The backfill sweep's skip-tag
+  filter shipped this way on 2026-09-09 and every `reviews.workflow` run errored for 13
+  minutes, sends included, because the sweep runs AHEAD of the sequencer — one bad predicate
+  in the repair path took down the thing it was repairing. Bind each element as its own
+  parameter (`sql.join(items.map((i) => sql`${i}`), sql`, `)` into an `in (…)`), or cast
+  explicitly. **`npm run verify:review-backfill` runs the real query against a scratch
+  Postgres**, which is the only thing that can catch this class of bug — the same reason
+  `verify:hcp` and `verify:campaigns` exist. It reproduces the exact error against the old
+  predicate.
+  - Order the sweep AFTER the sequencer if this ever recurs in a shape that cannot be tested
+    — repair work must not be able to block the send path.
 - **`reviews` on `/api/diagnostics` is the check on all of it** (2026-09-09). The cron job already
   appeared under `jobs`, but a job that RAN is not a sequence that WORKED: `stalled` counts
   pending rows older than the whole timeline, `failed` counts customers who were never asked

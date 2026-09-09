@@ -61,11 +61,21 @@ export interface BackfillStats {
   failed: number;
 }
 
-export async function backfillMissedEnrollments(): Promise<BackfillStats> {
-  const empty: BackfillStats = { candidates: 0, enrolled: 0, duplicate: 0, skipped: 0, failed: 0 };
-  if (env.REVIEW_WORKFLOW_ENABLED !== "true") return empty;
-
-  const now = Date.now();
+/**
+ * The candidate query, exported so `verify:review-backfill` can run it against a
+ * real Postgres.
+ *
+ * ⚠️ Nothing here is visible to `tsc` — it is all inside `sql` templates — and
+ * the first version shipped with `= any(${SKIP_TAGS})`, which typechecked, built,
+ * and then failed on EVERY run in production ("op ANY/ALL (array) requires array
+ * on right side"), taking the sequencer down with it because the sweep runs
+ * first. That is the whole argument for the verify script: this query has to be
+ * executed by a real server to be known to work at all.
+ */
+export async function findBackfillCandidates(
+  nowMs: number = Date.now(),
+): Promise<Array<{ invoiceKey: string; jobId: string | null; paidAt: Date | null }>> {
+  const now = nowMs;
   const windowStart = new Date(now - BACKFILL_WINDOW_DAYS * 24 * 60 * 60 * 1000);
   const graceCutoff = new Date(now - BACKFILL_GRACE_MINUTES * 60 * 1000);
 
@@ -78,10 +88,21 @@ export async function backfillMissedEnrollments(): Promise<BackfillStats> {
    * ("NO FEEDBACK EMAIL", "PHC", "Phc Client" have all been seen), so a plain
    * array overlap against the lower-case constants would match none of them
    * and the pre-filter would quietly stop pre-filtering.
+   *
+   * ⚠️ Each tag is bound as its OWN parameter rather than passing the array to
+   * `= any($1)`. Drizzle binds a JS array as a single untyped parameter, so
+   * Postgres receives text where it wants `text[]` and the whole statement dies
+   * with "op ANY/ALL (array) requires array on right side" — which took down
+   * every reviews.workflow run for 13 minutes after the first deploy, sends
+   * included, because the sweep runs ahead of the sequencer.
    */
+  const skipTagParams = sql.join(
+    SKIP_TAGS.map((tag) => sql`${tag}`),
+    sql`, `,
+  );
   const hasNoSkipTag = (tags: PgColumn) => sql`not exists (
     select 1 from unnest(coalesce(${tags}, '{}'::text[])) as tag
-    where lower(btrim(tag)) = any(${SKIP_TAGS})
+    where lower(btrim(tag)) in (${skipTagParams})
   )`;
   // HCP's own job id, which is what the webhook payload carries and what
   // `getJobById` expects — NOT our ULID FK.
@@ -140,6 +161,14 @@ export async function backfillMissedEnrollments(): Promise<BackfillStats> {
     .orderBy(hcpInvoices.paidAt)
     .limit(BACKFILL_MAX_PER_RUN);
 
+  return candidates;
+}
+
+export async function backfillMissedEnrollments(): Promise<BackfillStats> {
+  const empty: BackfillStats = { candidates: 0, enrolled: 0, duplicate: 0, skipped: 0, failed: 0 };
+  if (env.REVIEW_WORKFLOW_ENABLED !== "true") return empty;
+
+  const candidates = await findBackfillCandidates();
   if (candidates.length === 0) return empty;
 
   const stats: BackfillStats = { ...empty, candidates: candidates.length };
