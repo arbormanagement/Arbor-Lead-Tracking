@@ -19,7 +19,7 @@
 import { and, eq, sql } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { reviewRequests } from "@/lib/db/schema";
-import { sendEmail, sendFailureAlert } from "@/lib/email/sendgrid";
+import { sendEmail, sendFailureAlert } from "@/lib/email";
 import { env } from "@/lib/env";
 import { sendReviewSms } from "@/lib/reviews/outreach";
 import { MAX_RETRIES, finalSmsBody, followUpEmailHtml, initialSmsBody, nextDueStep, sendWindowHold, type ReviewStep } from "@/lib/reviews/sequence";

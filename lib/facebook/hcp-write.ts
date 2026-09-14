@@ -14,7 +14,7 @@
  * field_data (the ingest's own `mapFbFields` extracts contact identity only —
  * HCP needs the address block too).
  */
-import { sendFailureAlert } from "@/lib/email/sendgrid";
+import { sendFailureAlert } from "@/lib/email";
 import { env } from "@/lib/env";
 import { createIntake, processIntake, updateIntakeFailed } from "@/lib/intake/process";
 import { formatPhoneNumber } from "@/lib/integrations/housecallpro-write";

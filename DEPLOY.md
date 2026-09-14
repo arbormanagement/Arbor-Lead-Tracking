@@ -400,6 +400,91 @@ Read the generated SQL and confirm it says `RENAME COLUMN` (or `RENAME TO`), nev
 `DROP COLUMN` + `ADD COLUMN`. Then prove it from an empty database:
 `DATABASE_URL=<fresh scratch db> npm run db:deploy`.
 
+## Email transport (Google Workspace)
+
+Transactional mail — Chloe's call summaries to info@, review follow-ups, Facebook
+intake notices, failure alerts — goes out through **Google Workspace** via the Gmail
+API, with SendGrid kept behind it as a fallback. Set up 2026-09-14.
+
+**Why it moved.** SendGrid's Email API was on a trial that lapsed on 2026-09-14.
+Every send 401'd with `Maximum credits exceeded` for seven hours: 30 call summaries,
+the review queue, the Facebook intake notices, and — because the alert travels by the
+same channel it reports on — all 40+ failure alerts about it. Workspace is already
+paid for, already authorized in DNS, and carries ~95% of this traffic to a mailbox on
+that same Workspace.
+
+**The newsletter is NOT this.** It goes out as SendGrid *Marketing Campaigns* Single
+Sends, billed by stored contact (~8,600), driven from their dashboard. It never passed
+through `lib/email` and is unaffected by any of this.
+
+**No DNS work was needed** and none should be added. `arbor-mgmt.com` already publishes
+`v=spf1 include:_spf.google.com ~all` and MXes to `smtp.google.com`. (SendGrid was
+passing DMARC on its DKIM signature alone, via the `em5670` CNAMEs — SPF never covered
+it, and DMARC is `p=none`.)
+
+### Mode 1 — service account + domain-wide delegation (preferred)
+
+One credential sends as any mailbox in the domain. The app needs that: call summaries
+go out as `info@` and review follow-ups as `justin@`. Nothing to re-consent later.
+
+1. Google Cloud console → a project → **IAM & Admin → Service Accounts** → create one.
+   No project roles are needed; the authority comes from Workspace, not from IAM.
+2. On that service account, **Keys → Add key → JSON**. Note its **client ID** (a long
+   number, shown as "Unique ID").
+3. Workspace **Admin console → Security → Access and data control → API controls →
+   Domain-wide delegation → Add new**. Client ID = the number from step 2. Scope =
+   `https://www.googleapis.com/auth/gmail.send`, exactly, on its own.
+4. Set on the `web` service (and `cron`, if it ever sends):
+   - `GOOGLE_WORKSPACE_SENDER=info@arbor-mgmt.com`
+   - `GOOGLE_WORKSPACE_SA_EMAIL` — the `client_email` from the JSON
+   - `GOOGLE_WORKSPACE_SA_PRIVATE_KEY` — the `private_key` from the JSON. Railway
+     cannot hold literal newlines: paste it with `\n` escapes and
+     `lib/email/gmail.ts` normalizes them.
+
+⚠️ Delegation is granted to the service account's **client ID**, not its email, and the
+scope string must match character for character. A near-miss fails at send time with a
+401 naming neither.
+
+### Mode 2 — OAuth refresh token (fallback)
+
+Authenticates ONE mailbox. A `from` other than that mailbox works only if Workspace has
+it as a verified *Send mail as* alias, so review follow-ups from `justin@` need that
+alias on `info@` (or vice versa). Set `GOOGLE_WORKSPACE_OAUTH_CLIENT_ID`,
+`GOOGLE_WORKSPACE_OAUTH_CLIENT_SECRET`, `GOOGLE_WORKSPACE_OAUTH_REFRESH_TOKEN`.
+
+⚠️ **Use a separate OAuth client from `GOOGLE_ADS_CLIENT_ID`.** That one is shared with
+the Arbor MCP server; revoking its grant kills every token on it. See CLAUDE.md.
+
+### Verifying
+
+```bash
+npm run verify:email                              # 33 offline checks, no credentials
+npx tsx scripts/verify-email.ts --live you@arbor-mgmt.com   # one real send
+```
+
+The offline suite covers MIME assembly, RFC 2047 encoding and transport ordering. Its
+sharpest cases are **header injection**: SendGrid took JSON and built the message
+itself, while Gmail takes the RAW message, so a CR/LF in a header value ends that header
+— and `app/api/webhook/call_summary` builds its subject from a webhook-supplied phone
+number. `To`/`From`/`Reply-To` rely on `sanitizeHeaderValue` alone; `Subject` is also
+covered by the encoded-word path.
+
+The live flag is not part of the suite because it needs real credentials and puts mail in
+someone's inbox. Run it once after setting the variables; `[email] sent to … via gmail`
+in the logs is the confirmation.
+
+### Falling back
+
+Both transports stay configured. `EMAIL_TRANSPORT` pins the primary (`gmail` |
+`sendgrid`); unset means Workspace when configured, else SendGrid. A transport that is
+not fully configured is skipped rather than attempted, so a half-set credential cannot
+become the thing that fails. Falling back is safe because a transport only resolves
+after a 2xx — every failure path is a thrown error from a non-2xx or a refused
+connection, so there is no window where one provider accepted the message and we send
+it again.
+
+Workspace's own sending limit is ~2,000 recipients/day, against ~35/day here.
+
 ## Backups
 
 **Yes — but they are not on by default, and they are not the same thing Neon gave you.**

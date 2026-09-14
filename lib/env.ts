@@ -94,7 +94,33 @@ export const env = createEnv({
     SENDGRID_API_KEY: z.string().optional(),
     SENDGRID_FROM_EMAIL: z.string().optional(),
     SENDGRID_FROM_NAME: z.string().optional(),
-    // Failure-alert recipient. Defaults to jhays@ in lib/email/sendgrid.ts.
+    // ── Google Workspace transport (primary sender since 2026-09-14) ──
+    // Transactional mail moved off SendGrid's Email API after its trial lapsed and
+    // hard-blocked every send for seven hours. Workspace is already paid for and
+    // arbor-mgmt.com already lists include:_spf.google.com, so no DNS work.
+    // The mailbox to send as, and to impersonate in service-account mode.
+    GOOGLE_WORKSPACE_SENDER: z.string().optional(),
+    // Mode 1 (preferred): service account + domain-wide delegation. One credential
+    // sends as ANY mailbox in the domain, which the app needs — call summaries go
+    // out as info@ and review follow-ups as justin@. The private key is a PEM; a
+    // host that cannot store literal newlines may hold it with escaped \n, which
+    // lib/email/gmail.ts normalizes.
+    GOOGLE_WORKSPACE_SA_EMAIL: z.string().optional(),
+    GOOGLE_WORKSPACE_SA_PRIVATE_KEY: z.string().optional(),
+    // Mode 2 (fallback): an OAuth refresh token for ONE mailbox. ⚠️ Use a SEPARATE
+    // OAuth client from GOOGLE_ADS_CLIENT_ID — that one is shared with the Arbor
+    // MCP server and revoking its grant kills every token on it.
+    GOOGLE_WORKSPACE_OAUTH_CLIENT_ID: z.string().optional(),
+    GOOGLE_WORKSPACE_OAUTH_CLIENT_SECRET: z.string().optional(),
+    GOOGLE_WORKSPACE_OAUTH_REFRESH_TOKEN: z.string().optional(),
+    // Pins the primary transport ("gmail" | "sendgrid"). Unset = Workspace when
+    // configured, else SendGrid; the other stays on as fallback either way.
+    EMAIL_TRANSPORT: z.enum(["gmail", "sendgrid"]).optional(),
+    // Display name on outbound mail, transport-independent. Falls back to
+    // SENDGRID_FROM_NAME so an existing deployment keeps its identity.
+    EMAIL_FROM_NAME: z.string().optional(),
+
+    // Failure-alert recipient. Defaults to jhays@ in lib/email/index.ts.
     ALERT_EMAIL_TO: z.string().optional(),
     // Shared secret the website form sends as X-Webhook-Secret.
     WEBSITE_LEAD_SECRET: z.string().optional(),
@@ -194,6 +220,14 @@ export const env = createEnv({
     SENDGRID_API_KEY: process.env.SENDGRID_API_KEY,
     SENDGRID_FROM_EMAIL: process.env.SENDGRID_FROM_EMAIL,
     SENDGRID_FROM_NAME: process.env.SENDGRID_FROM_NAME,
+    GOOGLE_WORKSPACE_SENDER: process.env.GOOGLE_WORKSPACE_SENDER,
+    GOOGLE_WORKSPACE_SA_EMAIL: process.env.GOOGLE_WORKSPACE_SA_EMAIL,
+    GOOGLE_WORKSPACE_SA_PRIVATE_KEY: process.env.GOOGLE_WORKSPACE_SA_PRIVATE_KEY,
+    GOOGLE_WORKSPACE_OAUTH_CLIENT_ID: process.env.GOOGLE_WORKSPACE_OAUTH_CLIENT_ID,
+    GOOGLE_WORKSPACE_OAUTH_CLIENT_SECRET: process.env.GOOGLE_WORKSPACE_OAUTH_CLIENT_SECRET,
+    GOOGLE_WORKSPACE_OAUTH_REFRESH_TOKEN: process.env.GOOGLE_WORKSPACE_OAUTH_REFRESH_TOKEN,
+    EMAIL_TRANSPORT: process.env.EMAIL_TRANSPORT,
+    EMAIL_FROM_NAME: process.env.EMAIL_FROM_NAME,
     ALERT_EMAIL_TO: process.env.ALERT_EMAIL_TO,
     WEBSITE_LEAD_SECRET: process.env.WEBSITE_LEAD_SECRET,
     AUTOMATION_WEBHOOK_SECRET: process.env.AUTOMATION_WEBHOOK_SECRET,

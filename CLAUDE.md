@@ -615,6 +615,45 @@ re-argued rather than assumed.
     `job_type_name` undefined, the `!== "tree service"` filter passed *everything*, so fixing
     only the visible half would have started enrolling Stump Service and maintenance jobs.
     When a field reads undefined, check every predicate that reads it before shipping the fix.
+- **⚠️ ALL transactional email goes through `lib/email`, and it is TWO transports now —
+  Google Workspace first, SendGrid second (2026-09-14, Justin).** SendGrid's Email API
+  sat on a **trial** that lapsed at 08:48 CT that day and hard-blocked every send for
+  seven hours with `401 Maximum credits exceeded`: 30 of Chloe's call summaries, the
+  review queue, the Facebook intake notices, and all 40+ failure alerts *about* the
+  outage, which travel by the same channel they report on. Nothing in the app was
+  broken — Retell, the webhook and the endpoint all tested healthy — and no deploy had
+  happened in five days.
+  - **The newsletter was NOT the cause, and an early reading that blamed it was wrong.**
+    Marketing goes out as SendGrid **Marketing Campaigns Single Sends** (July, August and
+    an August catch-up; ~8,600 stored contacts, invoices on the 1st), billed by CONTACT
+    on a separate product. It never passes through `lib/email`. `/v3/stats` reports both
+    products in one series, which is what made an 8,099-email day look like Email API
+    traffic. **Read the product, not the total.**
+  - **Workspace needed no DNS work** — `arbor-mgmt.com` already publishes
+    `v=spf1 include:_spf.google.com ~all` and MXes to `smtp.google.com`. SendGrid had been
+    passing DMARC on DKIM alone (the `em5670` CNAMEs) with SPF never covering it; the move
+    tightens that. Gmail API over HTTPS rather than SMTP relay because Railway's egress
+    addresses are not static, so relay's IP allowlist is unavailable and the alternative is
+    an app password on a human's account.
+  - **Two auth modes, because the app sends as TWO mailboxes** — summaries as `info@`,
+    review follow-ups as `justin@`. A service account with domain-wide delegation
+    impersonates either; an OAuth refresh token authenticates one and needs a verified
+    *send mail as* alias for the other. ⚠️ If you take the OAuth route, use a SEPARATE
+    client from `GOOGLE_ADS_CLIENT_ID` — that one is shared with the Arbor MCP server.
+  - **⚠️ Gmail takes the RAW message, so header injection is live where it was not before.**
+    SendGrid took JSON and assembled the message itself; a CR/LF in a header value now ends
+    that header. `app/api/webhook/call_summary` builds its subject as
+    `Call from ${fromNumber}` straight off the webhook payload. `sanitizeHeaderValue`
+    (`lib/email/mime.ts`) is the guard, and for `To`/`From`/`Reply-To` it is the ONLY one —
+    `Subject` is additionally covered by the encoded-word path, so disabling the sanitizer
+    leaves the subject case passing and the address cases failing. `npm run verify:email`
+    is 33 offline checks over exactly this; `--live <addr>` sends one real message and is
+    deliberately outside the suite.
+  - **The failure alert still shares a channel with what it reports on.** Two transports make
+    a total email outage much less likely, but an alert about email that travels BY email
+    cannot report the one failure that silences it. A second channel (a text, or a
+    `/api/diagnostics` warning) is the real fix and is NOT built. Note also `ALERT_EMAIL_TO`
+    is unset, so alerts default to jhays@, not Justin.
 - **Review sends are held, not skipped, outside Mon–Fri 9am–7pm CT AND on the office's holidays**
   (`isWithinSendWindow`, `lib/reviews/sequence.ts`, added 2026-09-03 at Justin's request; holidays
   2026-09-09). A held step is retried when the window reopens, so nothing is lost — `workflow.ts`

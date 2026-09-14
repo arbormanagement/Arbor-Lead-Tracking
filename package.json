@@ -30,7 +30,8 @@
     "db:reclassify-sources": "tsx scripts/reclassify-sources.ts",
     "db:backup": "tsx scripts/db-backup.ts",
     "db:transfer": "tsx scripts/db-transfer.ts",
-    "verify:pac": "tsx scripts/verify-pac.ts"
+    "verify:pac": "tsx scripts/verify-pac.ts",
+    "verify:email": "tsx scripts/verify-email.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.26.0",

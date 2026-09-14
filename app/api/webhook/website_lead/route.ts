@@ -3,7 +3,7 @@ import { and, eq, gte } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { automationIntakes } from "@/lib/db/schema";
 import { env } from "@/lib/env";
-import { sendFailureAlert } from "@/lib/email/sendgrid";
+import { sendFailureAlert } from "@/lib/email";
 import { createIntake, processIntake, updateIntakeFailed } from "@/lib/intake/process";
 import { formatPhoneNumber } from "@/lib/integrations/housecallpro-write";
 import { normalizePhone as toE164 } from "@/lib/phone";

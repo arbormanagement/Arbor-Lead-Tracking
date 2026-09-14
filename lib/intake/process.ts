@@ -12,7 +12,7 @@
 import { and, desc, eq, gte, isNull } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { automationIntakes, contacts, conversations, hcpCustomers, hcpEstimates, leads } from "@/lib/db/schema";
-import { sendEmail, sendFailureAlert, escapeHtml } from "@/lib/email/sendgrid";
+import { sendEmail, sendFailureAlert, escapeHtml } from "@/lib/email";
 import { createCustomer, createEstimate, findCustomerByPhone } from "@/lib/integrations/housecallpro-write";
 import { resolveContact } from "@/lib/contacts/resolve";
 import { normalizePhone as toE164 } from "@/lib/phone";

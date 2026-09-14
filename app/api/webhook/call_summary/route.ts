@@ -1,7 +1,7 @@
 import { db } from "@/lib/db/client";
 import { retellCallSummaries } from "@/lib/db/schema";
 import { eq } from "drizzle-orm";
-import { escapeHtml, sendEmail, sendFailureAlert } from "@/lib/email/sendgrid";
+import { escapeHtml, sendEmail, sendFailureAlert } from "@/lib/email";
 import { webhookAuthorized } from "@/lib/intake/webhook-auth";
 
 export const runtime = "nodejs";
