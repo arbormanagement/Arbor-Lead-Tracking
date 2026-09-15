@@ -3,21 +3,34 @@
  * workflow and the intake pipeline import `sendEmail` / `sendFailureAlert` from
  * here and know nothing about who carries the message.
  *
- * TRANSPORT ORDER (2026-09-14, Justin): Google Workspace first, SendGrid second.
- * Workspace is already paid for, the domain already authorizes it in SPF, and
- * ~95% of this traffic is internal mail to info@ on that same Workspace. SendGrid
- * stays configured behind it as a fallback and continues to carry the newsletter
- * — which is a different SendGrid product (Marketing Campaigns, billed by stored
- * contact) and never passed through this module.
+ * TRANSPORT ORDER (Justin, 2026-09-14 and 2026-09-15): Google Workspace first,
+ * SendGrid last. Workspace is already paid for, the domain already authorizes it
+ * in SPF, and ~95% of this traffic is internal mail to info@ on that same
+ * Workspace.
  *
- * `EMAIL_TRANSPORT` pins the primary explicitly ("gmail" | "sendgrid"); unset
- * means "Workspace if it is configured, otherwise SendGrid". A transport that is
- * not configured is skipped rather than attempted, so a half-set credential
- * cannot silently become the thing that fails.
+ * Workspace has TWO implementations and `smtp` is the one in use: an app password
+ * is three clicks where the Gmail API's service account needs a GCP key plus
+ * domain-wide delegation. `gmail` stays built and tested behind it, so tightening
+ * the credential later is a variable change, not a rewrite.
+ *
+ * ⚠️ SENDGRID IS A DEAD FALLBACK, NOT A LIVE ONE (2026-09-15). Its Email API trial
+ * lapsed on 09-14, and a Marketing Campaigns Single Send scheduled as a control on
+ * 09-15 reported `triggered` and then never sent — 20 minutes, zero requests in
+ * SendGrid's own stats, nothing delivered. So the block is ACCOUNT-WIDE, not just
+ * the API product, and an earlier note here claiming the newsletter was unaffected
+ * was wrong. Until that account is sorted out, falling through to SendGrid means
+ * failing; it is kept in the chain because a dead last resort costs nothing and
+ * the account may come back.
+ *
+ * `EMAIL_TRANSPORT` pins the primary explicitly ("smtp" | "gmail" | "sendgrid");
+ * unset means the order above, skipping any transport that is not fully
+ * configured — so a half-set credential cannot silently become the thing that
+ * fails.
  */
 import { env } from "@/lib/env";
 import { escapeHtml } from "@/lib/email/html";
 import { gmailTransport } from "@/lib/email/gmail";
+import { smtpTransport } from "@/lib/email/smtp";
 import { sendgridTransport } from "@/lib/email/sendgrid";
 import type { EmailTransport, SendResult } from "@/lib/email/types";
 
@@ -35,7 +48,7 @@ const FAILURE_ALERT_TO = () => env.ALERT_EMAIL_TO || "jhays@arbor-mgmt.com";
  * where one accepted it and we send again.
  */
 function transportChain(): EmailTransport[] {
-  const all = [gmailTransport, sendgridTransport].filter((t) => t.configured());
+  const all = [smtpTransport, gmailTransport, sendgridTransport].filter((t) => t.configured());
   const pinned = env.EMAIL_TRANSPORT;
   if (!pinned) return all;
   const primary = all.filter((t) => t.name === pinned);
@@ -51,7 +64,7 @@ export async function sendEmail(
   const chain = transportChain();
   if (chain.length === 0) {
     throw new Error(
-      "Email not configured - no transport available (set GOOGLE_WORKSPACE_SENDER plus a Workspace credential, or SENDGRID_API_KEY)",
+      "Email not configured - no transport available (set GOOGLE_WORKSPACE_SMTP_USER + GOOGLE_WORKSPACE_SMTP_APP_PASSWORD, or a service-account pair, or SENDGRID_API_KEY)",
     );
   }
 

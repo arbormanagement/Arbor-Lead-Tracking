@@ -149,15 +149,33 @@ console.log("\nTransport selection");
     const primary = cfg.filter((t) => t.name === pinned);
     return [...primary, ...cfg.filter((t) => t.name !== pinned)].map((t) => t.name);
   };
+  const smtp = (ok: boolean): T => ({ name: "smtp", configured: () => ok });
   const gmail = (ok: boolean): T => ({ name: "gmail", configured: () => ok });
   const sg = (ok: boolean): T => ({ name: "sendgrid", configured: () => ok });
+  const order = (all: T[], pinned?: string) => JSON.stringify(chain(all, pinned));
 
-  check("both configured, unpinned → gmail first", JSON.stringify(chain([gmail(true), sg(true)])) === '["gmail","sendgrid"]');
-  check("pinned sendgrid → sendgrid first, gmail still a fallback", JSON.stringify(chain([gmail(true), sg(true)], "sendgrid")) === '["sendgrid","gmail"]');
-  check("gmail unconfigured → sendgrid alone", JSON.stringify(chain([gmail(false), sg(true)])) === '["sendgrid"]');
-  check("sendgrid unconfigured → gmail alone", JSON.stringify(chain([gmail(true), sg(false)])) === '["gmail"]');
-  check("neither configured → empty chain (caller throws)", JSON.stringify(chain([gmail(false), sg(false)])) === "[]");
-  check("pinning a transport that is not configured does not resurrect it", JSON.stringify(chain([gmail(false), sg(true)], "gmail")) === '["sendgrid"]');
+  check("all three configured, unpinned -> smtp, gmail, sendgrid", order([smtp(true), gmail(true), sg(true)]) === '["smtp","gmail","sendgrid"]');
+  check("smtp only -> smtp alone", order([smtp(true), gmail(false), sg(false)]) === '["smtp"]');
+  check("smtp unconfigured -> gmail leads", order([smtp(false), gmail(true), sg(true)]) === '["gmail","sendgrid"]');
+  check("pinning gmail promotes it, smtp stays as fallback", order([smtp(true), gmail(true), sg(true)], "gmail") === '["gmail","smtp","sendgrid"]');
+  check("pinning sendgrid promotes it without dropping the others", order([smtp(true), gmail(true), sg(true)], "sendgrid") === '["sendgrid","smtp","gmail"]');
+  check("pinning a transport that is not configured does not resurrect it", order([smtp(false), gmail(false), sg(true)], "smtp") === '["sendgrid"]');
+  check("nothing configured -> empty chain (caller throws)", order([smtp(false), gmail(false), sg(false)]) === "[]");
+  // The 2026-09-15 reality: SendGrid is blocked account-wide, so a chain that
+  // reaches it is a chain that fails. Pin that a working transport always leads.
+  check("sendgrid is never first while another transport is configured", order([smtp(true), gmail(true), sg(true)]).indexOf("sendgrid") > order([smtp(true), gmail(true), sg(true)]).indexOf("smtp"));
+}
+
+console.log("\nApp password normalization");
+{
+  const normalize = (v: string) => v.replace(/\s+/g, "");
+  // Google displays app passwords as four space-separated groups; SMTP AUTH
+  // rejects the spaced form with a 535 that reads like a wrong password, which
+  // is a confusing way to lose an afternoon. Fixtures here are dummy values.
+  check("spaced app password is stripped", normalize("abcd efgh ijkl mnop") === "abcdefghijklmnop");
+  check("already-stripped password is unchanged", normalize("abcdefghijklmnop") === "abcdefghijklmnop");
+  check("stray tabs and newlines are stripped", normalize(" abcd\tefgh\nijkl mnop ") === "abcdefghijklmnop");
+  check("a normalized app password is 16 chars", normalize("abcd efgh ijkl mnop").length === 16);
 }
 
 async function live(to: string) {

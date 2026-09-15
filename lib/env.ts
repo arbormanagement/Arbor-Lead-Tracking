@@ -100,6 +100,15 @@ export const env = createEnv({
     // arbor-mgmt.com already lists include:_spf.google.com, so no DNS work.
     // The mailbox to send as, and to impersonate in service-account mode.
     GOOGLE_WORKSPACE_SENDER: z.string().optional(),
+    // Mode 0 (SIMPLEST, and the one in use since 2026-09-15): an app password on a
+    // Workspace mailbox, over plain authenticated SMTP to smtp.gmail.com. Three
+    // clicks at myaccount.google.com/apppasswords — no GCP, no domain-wide
+    // delegation. ⚠️ Note smtp.gmail.com is NOT smtp-relay.gmail.com: the relay is
+    // the one that needs IP allowlisting, which Railway's dynamic egress rules out.
+    // The trade is that an app password grants full send rights on that mailbox and
+    // never expires, where the service account below can only ever send.
+    GOOGLE_WORKSPACE_SMTP_USER: z.string().optional(),
+    GOOGLE_WORKSPACE_SMTP_APP_PASSWORD: z.string().optional(),
     // Mode 1 (preferred): service account + domain-wide delegation. One credential
     // sends as ANY mailbox in the domain, which the app needs — call summaries go
     // out as info@ and review follow-ups as justin@. The private key is a PEM; a
@@ -113,9 +122,9 @@ export const env = createEnv({
     GOOGLE_WORKSPACE_OAUTH_CLIENT_ID: z.string().optional(),
     GOOGLE_WORKSPACE_OAUTH_CLIENT_SECRET: z.string().optional(),
     GOOGLE_WORKSPACE_OAUTH_REFRESH_TOKEN: z.string().optional(),
-    // Pins the primary transport ("gmail" | "sendgrid"). Unset = Workspace when
-    // configured, else SendGrid; the other stays on as fallback either way.
-    EMAIL_TRANSPORT: z.enum(["gmail", "sendgrid"]).optional(),
+    // Pins the primary transport. Unset = smtp, then gmail, then sendgrid,
+    // skipping any that is not fully configured.
+    EMAIL_TRANSPORT: z.enum(["smtp", "gmail", "sendgrid"]).optional(),
     // Display name on outbound mail, transport-independent. Falls back to
     // SENDGRID_FROM_NAME so an existing deployment keeps its identity.
     EMAIL_FROM_NAME: z.string().optional(),
@@ -221,6 +230,8 @@ export const env = createEnv({
     SENDGRID_FROM_EMAIL: process.env.SENDGRID_FROM_EMAIL,
     SENDGRID_FROM_NAME: process.env.SENDGRID_FROM_NAME,
     GOOGLE_WORKSPACE_SENDER: process.env.GOOGLE_WORKSPACE_SENDER,
+    GOOGLE_WORKSPACE_SMTP_USER: process.env.GOOGLE_WORKSPACE_SMTP_USER,
+    GOOGLE_WORKSPACE_SMTP_APP_PASSWORD: process.env.GOOGLE_WORKSPACE_SMTP_APP_PASSWORD,
     GOOGLE_WORKSPACE_SA_EMAIL: process.env.GOOGLE_WORKSPACE_SA_EMAIL,
     GOOGLE_WORKSPACE_SA_PRIVATE_KEY: process.env.GOOGLE_WORKSPACE_SA_PRIVATE_KEY,
     GOOGLE_WORKSPACE_OAUTH_CLIENT_ID: process.env.GOOGLE_WORKSPACE_OAUTH_CLIENT_ID,

@@ -41,6 +41,7 @@
     "drizzle-orm": "^0.38.3",
     "mcp-handler": "^1.1.0",
     "next": "^15.2.3",
+    "nodemailer": "^6.10.1",
     "pg": "^8.22.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
@@ -51,6 +52,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.10.7",
+    "@types/nodemailer": "^8.0.1",
     "@types/pg": "^8.20.3",
     "@types/react": "^19.0.7",
     "@types/react-dom": "^19.0.3",

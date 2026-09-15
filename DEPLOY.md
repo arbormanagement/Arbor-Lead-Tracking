@@ -422,7 +422,35 @@ through `lib/email` and is unaffected by any of this.
 passing DMARC on its DKIM signature alone, via the `em5670` CNAMEs — SPF never covered
 it, and DMARC is `p=none`.)
 
-### Mode 1 — service account + domain-wide delegation (preferred)
+### Mode 0 — app password over SMTP (in use)
+
+What is actually running. Justin's call on 2026-09-15, after the service-account
+route proved to be two consoles too many.
+
+1. **myaccount.google.com/apppasswords**, signed in as the sending mailbox. Name it
+   anything; Google shows 16 characters in four groups.
+2. Set on the `web` service:
+   - `GOOGLE_WORKSPACE_SMTP_USER` — that mailbox
+   - `GOOGLE_WORKSPACE_SMTP_APP_PASSWORD` — the 16 characters (spaces are stripped
+     in code, so either form works)
+
+That is the whole setup. No GCP project, no service account, no delegation.
+
+⚠️ **`smtp.gmail.com` is not `smtp-relay.gmail.com`.** The relay authorizes by IP and
+needs admin configuration; Railway's egress is not static so it was never available.
+Plain authenticated SMTP needs neither, which an earlier version of this runbook got
+wrong and used to rule SMTP out entirely.
+
+⚠️ **SMTP cannot be tested from a Claude sandbox** — ports 25/465/587 are blocked
+there, only HTTPS leaves. Verification happens on Railway: after deploy, watch for
+`[email] sent to … via smtp` in the logs on the next inbound call. A wrong mailbox or
+a disabled app password shows as a 535 in the same place.
+
+The trade, stated plainly: an app password is a long-lived credential with full send
+rights on that mailbox. The service account below can only ever send. Switching is a
+variable change — `lib/email/gmail.ts` stays built and tested.
+
+### Mode 1 — service account + domain-wide delegation (preferred, not in use)
 
 One credential sends as any mailbox in the domain. The app needs that: call summaries
 go out as `info@` and review follow-ups as `justin@`. Nothing to re-consent later.

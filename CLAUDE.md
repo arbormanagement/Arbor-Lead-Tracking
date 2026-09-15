@@ -615,8 +615,19 @@ re-argued rather than assumed.
     `job_type_name` undefined, the `!== "tree service"` filter passed *everything*, so fixing
     only the visible half would have started enrolling Stump Service and maintenance jobs.
     When a field reads undefined, check every predicate that reads it before shipping the fix.
-- **⚠️ ALL transactional email goes through `lib/email`, and it is TWO transports now —
-  Google Workspace first, SendGrid second (2026-09-14, Justin).** SendGrid's Email API
+- **⚠️ SENDGRID IS BLOCKED ACCOUNT-WIDE, NOT JUST ITS EMAIL API (established 2026-09-15,
+  and this corrects the entry below).** The Email API trial lapsed on 09-14; the working
+  assumption afterwards was that Marketing Campaigns — a separate product, paid, invoices
+  current — was unaffected and the newsletter was safe. **It is not.** A Single Send
+  scheduled as a control to a one-address list reported `triggered` and then never sent:
+  20 minutes, zero requests in SendGrid's own stats, nothing delivered, nothing in the
+  recipient's inbox. So the newsletter will NOT go out as things stand, and restoring the
+  ~$20 Email API tier would not fix it — that is a different product. This needs SendGrid
+  support, not a config change. Reputation reads 96% and invoices read paid, so nothing in
+  the account's own UI explains it. **The test artifacts (`ZZ transport test - safe to
+  delete`, a list and a Single Send) are left in place deliberately as evidence for a ticket.**
+- **⚠️ ALL transactional email goes through `lib/email`, and it is THREE transports —
+  SMTP first, Gmail API second, SendGrid last (2026-09-14/15, Justin).** SendGrid's Email API
   sat on a **trial** that lapsed at 08:48 CT that day and hard-blocked every send for
   seven hours with `401 Maximum credits exceeded`: 30 of Chloe's call summaries, the
   review queue, the Facebook intake notices, and all 40+ failure alerts *about* the
@@ -635,11 +646,28 @@ re-argued rather than assumed.
     tightens that. Gmail API over HTTPS rather than SMTP relay because Railway's egress
     addresses are not static, so relay's IP allowlist is unavailable and the alternative is
     an app password on a human's account.
-  - **Two auth modes, because the app sends as TWO mailboxes** — summaries as `info@`,
-    review follow-ups as `justin@`. A service account with domain-wide delegation
-    impersonates either; an OAuth refresh token authenticates one and needs a verified
-    *send mail as* alias for the other. ⚠️ If you take the OAuth route, use a SEPARATE
-    client from `GOOGLE_ADS_CLIENT_ID` — that one is shared with the Arbor MCP server.
+  - **What actually runs is an APP PASSWORD over `smtp.gmail.com`** (`lib/email/smtp.ts`),
+    chosen 2026-09-15 after the service-account route proved to be two consoles too many:
+    three clicks at myaccount.google.com/apppasswords against a GCP key plus domain-wide
+    delegation. The honest trade is that an app password grants FULL SEND RIGHTS on that
+    mailbox and never expires, where a `gmail.send` service account can only ever send.
+    `lib/email/gmail.ts` stays built and tested, so tightening later is a variable change.
+  - **⚠️ `smtp.gmail.com` is NOT `smtp-relay.gmail.com`.** The relay authorizes senders by
+    IP (unusable — Railway egress is not static) and needs admin configuration; plain
+    authenticated SMTP needs neither. Conflating the two is what wrongly ruled SMTP out on
+    2026-09-14 and sent this down the service-account path in the first place.
+  - **⚠️ SMTP cannot be tested from a Claude sandbox** — ports 25/465/587 are all blocked
+    there, only HTTPS leaves through the proxy. So the SMTP transport ships verified only
+    at the unit level (`npm run verify:email`, 39 offline checks); the credential itself is
+    confirmed on Railway by watching for `[email] sent to … via smtp` after deploy. Do not
+    claim it is verified end to end until that line appears.
+  - The Gmail API path (unused) has two auth modes because the app sends as TWO mailboxes —
+    summaries as `info@`, review follow-ups as `justin@`. A service account with domain-wide
+    delegation impersonates either; an OAuth refresh token authenticates one and needs a
+    verified *send mail as* alias for the other. ⚠️ If you take the OAuth route, use a
+    SEPARATE client from `GOOGLE_ADS_CLIENT_ID` — that one is shared with the Arbor MCP
+    server. A service account `arbor-lead-tracking-mail@sinuous-mind-487619-r3` exists with
+    no key and no delegation; it is inert until someone finishes that setup.
   - **⚠️ Gmail takes the RAW message, so header injection is live where it was not before.**
     SendGrid took JSON and assembled the message itself; a CR/LF in a header value now ends
     that header. `app/api/webhook/call_summary` builds its subject as
