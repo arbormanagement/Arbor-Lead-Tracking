@@ -59,20 +59,43 @@ export function campaignNotExcluded(col: AnyPgColumn, excludedIds: string[]): SQ
 export const SPEND_REPULL_DAYS = 35;
 
 /**
- * The campaign id a platform stamped into its own landing-page URL.
+ * Every campaign id a platform stamped into its own landing-page URL, ordered by how
+ * far each one is to be trusted.
  *
  * `gad_campaignid` is added by Google's auto-tagging at click time; `campaign_id`
- * comes from the account's tracking template. Either one names the campaign that
- * actually served the ad, and neither can be ambiguous the way a name can.
- * Auto-tagging is preferred because it is not ours to mis-configure.
+ * comes from the account's tracking template. Auto-tagging still comes first, because
+ * it is not ours to mis-configure — but it is NOT always a campaign id, so it can no
+ * longer be the only thing consulted.
+ *
+ * ⚠️ **Performance Max auto-tags a per-channel SUB-campaign id, not the campaign's
+ * own.** Measured 2026-09-15 on `PMax | Tree Services Test 2026-09` (24219583371):
+ * its leads carried `gad_campaignid` of 24234346063, 24229032452 and 24225229418 —
+ * three different ids for one campaign, and not one of them a campaign in the account
+ * at all. The tracking template's `campaign_id` held the real 24219583371 every time.
+ * A Search campaign emits the same value in both params, which is why reading only the
+ * first was enough until a PMax campaign ran: five days of PMax spend resolved to no
+ * campaign, because the id that was read matched nothing and the id that would have
+ * matched was never read.
  *
  * Digits only: these are platform ids, and anything else is a tag someone hand-wrote.
  */
+export function campaignIdsFromUrl(url: string | null | undefined): string[] {
+  if (!url) return [];
+  const ids = [
+    /[?&]gad_campaignid=(\d+)(?:&|$)/.exec(url)?.[1],
+    /[?&]campaign_id=(\d+)(?:&|$)/.exec(url)?.[1],
+  ].filter((v): v is string => v !== undefined);
+  // A Search campaign emits the same id in both params; one candidate is enough.
+  return [...new Set(ids)];
+}
+
+/**
+ * The single most-trusted campaign id on the URL — the first of `campaignIdsFromUrl`.
+ * Kept because a caller that only wants to know "did Google name a campaign here"
+ * should not have to reason about the fallback order.
+ */
 export function campaignIdFromUrl(url: string | null | undefined): string | null {
-  if (!url) return null;
-  const m =
-    /[?&]gad_campaignid=(\d+)(?:&|$)/.exec(url) ?? /[?&]campaign_id=(\d+)(?:&|$)/.exec(url);
-  return m?.[1] ?? null;
+  return campaignIdsFromUrl(url)[0] ?? null;
 }
 
 /**
@@ -94,6 +117,13 @@ export function campaignIdFromUrl(url: string | null | undefined): string | null
  * campaigns present in the spend pull, and a campaign that has stopped spending
  * produces no rows to be renamed by.
  *
+ * EVERY id on the URL is tried, not just the most-trusted one, and that matters as
+ * much as the id-over-name ordering: a Performance Max click carries an auto-tagged
+ * id matching no campaign ALONGSIDE a template `campaign_id` that matches the right
+ * one, so stopping at the first id read is indistinguishable from having no id at all
+ * (see `campaignIdsFromUrl`). An id that matches nothing costs one term in an OR and
+ * then falls through to the next candidate.
+ *
  * Still an exact match against EXISTING rows, never a create: minting campaigns from
  * query-string text is what this function exists to prevent.
  */
@@ -103,32 +133,36 @@ export async function resolveCampaignId(touch: {
   /** The landing page, whose query string may name the campaign outright. */
   url?: string | null;
 }): Promise<string | null> {
-  const urlId = campaignIdFromUrl(touch.url);
+  const urlIds = campaignIdsFromUrl(touch.url);
   const name = touch.name ?? null;
-  if (!urlId && !name) return null;
+  if (urlIds.length === 0 && !name) return null;
 
   // One round trip: this runs on the /voice hot path, which has a sub-3s budget and
   // where a MISS is the common case, so a second query would cost every call.
   const candidates: SQL[] = [];
-  if (urlId) candidates.push(eq(campaigns.externalCampaignId, urlId));
+  for (const id of urlIds) candidates.push(eq(campaigns.externalCampaignId, id));
   if (name) candidates.push(eq(campaigns.name, name), eq(campaigns.externalCampaignId, name));
+
+  // Ranked rather than left to the planner, so the answer cannot depend on physical
+  // row order — which is exactly how the dead campaign came to win. A campaign that
+  // stops spending stops being UPDATEd by the spend sync, so its row stops moving
+  // later in the heap, and it drifts to the front of a sequential scan: dying made
+  // it MORE attractive to the matcher.
+  //
+  // Url ids rank in the order `campaignIdsFromUrl` returned them, then the name. The
+  // rank literals are loop indices, never caller input, so `sql.raw` is safe here —
+  // and a bound parameter in a CASE result would leave Postgres unable to infer its
+  // type.
+  const rankWhens: SQL[] = urlIds.map(
+    (id, i) => sql`when ${campaigns.externalCampaignId} = ${id} then ${sql.raw(String(i))}`,
+  );
+  if (name) rankWhens.push(sql`when ${campaigns.name} = ${name} then ${sql.raw(String(urlIds.length))}`);
 
   const [c] = await db
     .select({ id: campaigns.id })
     .from(campaigns)
     .where(or(...candidates))
-    // Ranked rather than left to the planner, so the answer cannot depend on physical
-    // row order — which is exactly how the dead campaign came to win. A campaign that
-    // stops spending stops being UPDATEd by the spend sync, so its row stops moving
-    // later in the heap, and it drifts to the front of a sequential scan: dying made
-    // it MORE attractive to the matcher.
-    .orderBy(
-      sql`case
-            when ${urlId ?? null}::text is not null and ${campaigns.externalCampaignId} = ${urlId ?? null} then 0
-            when ${name ?? null}::text is not null and ${campaigns.name} = ${name ?? null} then 1
-            else 2
-          end`,
-    )
+    .orderBy(sql`case ${sql.join(rankWhens, sql` `)} else ${sql.raw(String(urlIds.length + 1))} end`)
     .limit(1);
   return c?.id ?? null;
 }

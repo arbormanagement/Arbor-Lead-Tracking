@@ -25,7 +25,7 @@ import { eq, inArray } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { adSpend, attributions, calls, campaigns, leads, numberAssignments, roiDaily, sources, trackingNumbers, visitors, webSessions } from "@/lib/db/schema";
 import { seedDefaults } from "@/lib/db/seed-data";
-import { campaignIdFromUrl, resolveCampaignId, SPEND_REPULL_DAYS } from "@/lib/campaigns";
+import { campaignIdFromUrl, campaignIdsFromUrl, resolveCampaignId, SPEND_REPULL_DAYS } from "@/lib/campaigns";
 import { classifySource } from "@/lib/attribution/classify";
 import { CANARY_SESSION_ID, CANARY_TERM, CANARY_VISITOR_ID } from "@/lib/dni/canary";
 import { reclassifyUnmappedSources } from "@/lib/sources/reclassify";
@@ -356,6 +356,38 @@ async function main() {
   ok(
     (await resolveCampaignId({ name: DUP_NAME, url: "https://arbor-mgmt.com/?gad_campaignid=99999999" })) !== null,
     "an unknown URL id falls back to the name rather than dropping the campaign",
+  );
+
+  // Performance Max: Google auto-tags a per-channel SUB-campaign id that is not a
+  // campaign in the account, while the tracking template's `campaign_id` carries the
+  // real one. Reading only the first id found made these leads resolve to NOTHING —
+  // `PMax | Tree Services Test 2026-09` took $797 of spend over five days and showed
+  // 0 contacts, because its auto-tagged id matched no row and its `utm_campaign` was
+  // the literal `{campaignname}` (a ValueTrack token Performance Max never expands).
+  // Ids below are verbatim from production leads on 2026-09-15.
+  const PMAX_SUB = "24234346063";
+  const pmaxUrl =
+    `https://arbor-mgmt.com/?utm_source=google&utm_medium=cpc&utm_campaign=%7Bcampaignname%7D` +
+    `&campaign_id=${DUP_LIVE}&gad_source=5&gad_campaignid=${PMAX_SUB}&gclid=x`;
+  ok(
+    JSON.stringify(campaignIdsFromUrl(pmaxUrl)) === JSON.stringify([PMAX_SUB, DUP_LIVE]),
+    "a PMax URL yields BOTH ids, the auto-tagged sub-campaign first",
+  );
+  ok(
+    JSON.stringify(campaignIdsFromUrl(`https://arbor-mgmt.com/?campaign_id=${DUP_LIVE}&gad_campaignid=${DUP_LIVE}`)) ===
+      JSON.stringify([DUP_LIVE]),
+    "…while a Search URL repeating one id yields a single candidate",
+  );
+  ok(
+    (await resolveCampaignId({ name: "{campaignname}", url: pmaxUrl })) === live.id,
+    "a PMax lead resolves via campaign_id when the auto-tagged id matches nothing and the name is an unexpanded token",
+  );
+  ok(
+    (await resolveCampaignId({
+      name: DUP_NAME,
+      url: `https://arbor-mgmt.com/?campaign_id=${DUP_DEAD}&gad_campaignid=${DUP_LIVE}`,
+    })) === live.id,
+    "…and auto-tagging still outranks campaign_id when BOTH name a real campaign",
   );
 
   // The repair: a lead filed under the dead campaign whose own URL names the live one.

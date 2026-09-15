@@ -6,6 +6,7 @@ import { credentialStatus } from "@/lib/credentials";
 import { CREDENTIAL_SPECS } from "@/lib/credentials/spec";
 import { db } from "@/lib/db/client";
 import {
+  adSpend,
   calls,
   campaigns,
   conversionExports,
@@ -800,7 +801,63 @@ export async function diagnosticsReport(): Promise<{ httpStatus: number; report:
     .groupBy(campaigns.name)
     .having(sql`count(*) > 1`);
 
+  /**
+   * Campaigns that are BUYING traffic and producing no contacts at all.
+   *
+   * Every attribution break this app has had looks the same from the outside — real
+   * money going out, nothing arriving — and nothing here could see it. The duplicate
+   * name of 2026-08-30 showed $7,446 against 0 contacts; `PMax | Tree Services Test
+   * 2026-09` showed $797 over five days against 0 contacts because Performance Max
+   * auto-tags a sub-campaign id that matches no row. Both were found by a person
+   * happening to ask, weeks and days late respectively.
+   *
+   * Deliberately blind to CAUSE: it asks only "did we pay for this and hear nothing",
+   * so it catches the next break without anyone having predicted it. A campaign that
+   * genuinely converts badly still produces contacts; zero is a plumbing number, not
+   * a performance one.
+   *
+   * Two queries rather than one join: summing spend across a join to leads multiplies
+   * it by the lead count, and the sum is only trustworthy on rows where that count is
+   * zero — correct by accident is not worth the cleverness on a diagnostic.
+   */
+  const SILENT_SPEND_WINDOW_DAYS = 7;
+  /** Below roughly a day of one campaign's budget, a zero is a quiet week, not a fault. */
+  const SILENT_SPEND_MIN_CENTS = 20_000;
+  const silentSince = new Date(now.getTime() - SILENT_SPEND_WINDOW_DAYS * 86_400_000);
+  const silentSinceDate = businessDate(silentSince);
+
+  const spendByCampaign = await db
+    .select({
+      id: campaigns.id,
+      name: campaigns.name,
+      externalId: campaigns.externalCampaignId,
+      spendCents: sql<number>`coalesce(sum(${adSpend.spendCents}), 0)::int`,
+    })
+    .from(campaigns)
+    .innerJoin(adSpend, and(eq(adSpend.campaignId, campaigns.id), gte(adSpend.date, silentSinceDate)))
+    .where(eq(campaigns.excluded, false))
+    .groupBy(campaigns.id, campaigns.name, campaigns.externalCampaignId);
+
+  const contactsByCampaign = await db
+    .select({ campaignId: leads.campaignId, contacts: sql<number>`count(*)::int` })
+    .from(leads)
+    .where(and(isNotNull(leads.campaignId), gte(leads.occurredAt, silentSince)))
+    .groupBy(leads.campaignId);
+  const contactCount = new Map(contactsByCampaign.map((r) => [r.campaignId, r.contacts]));
+
+  const silentSpendCampaigns = spendByCampaign
+    .filter((c) => c.spendCents >= SILENT_SPEND_MIN_CENTS && (contactCount.get(c.id) ?? 0) === 0)
+    .map((c) => ({ name: c.name, externalId: c.externalId, spendCents: c.spendCents }));
+
   const warnings: string[] = [];
+  for (const c of silentSpendCampaigns) {
+    warnings.push(
+      `campaign "${c.name ?? c.externalId}" (id ${c.externalId}) spent ` +
+        `$${(c.spendCents / 100).toFixed(2)} in the last ${SILENT_SPEND_WINDOW_DAYS}d and produced ZERO ` +
+        `attributed contacts — spend without contacts is an attribution break until proven otherwise. ` +
+        `Check that its landing-page URLs carry an id matching campaigns.external_campaign_id`,
+    );
+  }
   for (const d of duplicateCampaignNames) {
     warnings.push(
       `${d.count} campaigns share the name "${d.name}" (ids ${d.ids.join(", ")}) and ALL of them ` +
