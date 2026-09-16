@@ -86,6 +86,26 @@ async function runStep(row: ReviewRow, step: ReviewStep): Promise<void> {
   const attemptCol = reviewRequests[attemptKey];
   const attempts = row[attemptKey];
   if (attempts >= MAX_RETRIES) {
+    if (step === "email") {
+      // Give up on the EMAIL, not on the customer. Marking the row `failed` here
+      // used to end the whole sequence: the customer had received sms1 and would
+      // now never get sms2 — the step that actually converts — and nothing
+      // retried. `emailSent: "failed"` counts as done in `nextDueStep`, so the
+      // final text still fires on schedule. The alert still goes out so a human
+      // sees the transport problem; it just no longer costs the ask.
+      await set(row, { emailSent: "failed" });
+      await sendFailureAlert("Google Review Workflow", `email failed after ${MAX_RETRIES} attempts — continuing to final SMS`, {
+        reviewRequestId: row.id,
+        step,
+        customer: row.customerName,
+        phone: row.customerPhoneE164,
+        email: row.customerEmail ?? "(none)",
+        invoiceId: row.invoiceId,
+        county: row.county,
+      });
+      console.log(`[reviews] email exhausted for ${row.customerName}; sequence continues to sms2`);
+      return;
+    }
     await failStep(row, step, `${step} failed after ${MAX_RETRIES} attempts`);
     return;
   }
@@ -145,6 +165,25 @@ export async function processReviewWorkflows(): Promise<{
   if (env.REVIEW_WORKFLOW_ENABLED !== "true") {
     return { enabled: false, pending: 0, stepsRun: 0, held: 0, heldReason: null };
   }
+
+  // Repair rows stranded by the pre-2026-09-16 behaviour, where an exhausted
+  // email marked the whole row `failed`. Flip them back to pending with the email
+  // recorded as failed, so the same tick picks them up and sends the final text
+  // they were owed. Idempotent and self-limiting: a flipped row no longer matches.
+  // Scoped to the exact error string the old code wrote, so a row that failed at
+  // sms1 or sms2 — where "failed" still means unreachable — is left alone.
+  const repaired = await db
+    .update(reviewRequests)
+    .set({ status: "pending", emailSent: "failed", errorMessage: null, updatedAt: new Date() })
+    .where(
+      and(
+        eq(reviewRequests.status, "failed"),
+        eq(reviewRequests.emailSent, "pending"),
+        sql`${reviewRequests.errorMessage} like 'email failed after%'`,
+      ),
+    )
+    .returning({ id: reviewRequests.id, customer: reviewRequests.customerName });
+  for (const r of repaired) console.log(`[reviews] un-stranded ${r.customer} (${r.id}): email had failed, sequence resumes at sms2`);
 
   const pending = await db
     .select()

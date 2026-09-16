@@ -39,7 +39,13 @@ export function nextDueStep(
     return row.customerEmail ? "email" : "email_skip";
   }
 
-  const emailDone = row.emailSent === "sent" || row.emailSent === "skipped";
+  // "failed" counts as done: an email that exhausted its retries must not hold the
+  // final text hostage. Until 2026-09-16 it did — the exhausted step marked the
+  // whole row `failed`, so the customer got sms1 and then silence, and nothing
+  // ever retried. Two customers (invoices paid 09-11 and 09-13) were stranded that
+  // way. The text is the step that converts anyway (72% click-through, measured);
+  // losing the email is a nuisance, losing sms2 is losing the ask.
+  const emailDone = row.emailSent === "sent" || row.emailSent === "skipped" || row.emailSent === "failed";
   if (emailDone && !row.finalSmsSent && elapsed >= FINAL_SMS_DELAY_MS) {
     // The carrier already told us this number cannot receive our texts. Sending
     // the follow-up anyway buys nothing and bills for it, so the step is
