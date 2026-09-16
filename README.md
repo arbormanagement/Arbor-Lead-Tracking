@@ -41,7 +41,7 @@ app/
   login/                login page
 lib/
   db/schema.ts          full Postgres schema (the backbone)
-  db/client.ts          drizzle client (node-postgres; legacy neon-http branch)
+  db/client.ts          drizzle client (node-postgres)
   mcp/client.ts         Arbor MCP execute_tools wrapper (ad spend / HCP reads)
   twilio/               client · signature validation · TwiML builders
   attribution/classify.ts   source classification (click-id/utm/referrer → source + pool)
