@@ -11,7 +11,7 @@ system that answers *"what lead sources produce what leads, and what's the ROI o
   credentials live in this app).
 
 ## Stack
-Next.js (App Router) · Postgres (Neon or Railway) · Drizzle ORM · Twilio · Deepgram ·
+Next.js (App Router) · Postgres (Railway) · Drizzle ORM · Twilio · Deepgram ·
 Railway. See the full design in the plan and `CLAUDE.md`, and `DEPLOY.md` for the runbook.
 
 Deployed as two Railway services off this repo: `web` (`npm run start`) and `cron`
@@ -41,7 +41,7 @@ app/
   login/                login page
 lib/
   db/schema.ts          full Postgres schema (the backbone)
-  db/client.ts          Neon HTTP drizzle client
+  db/client.ts          drizzle client (node-postgres; legacy neon-http branch)
   mcp/client.ts         Arbor MCP execute_tools wrapper (ad spend / HCP reads)
   twilio/               client · signature validation · TwiML builders
   attribution/classify.ts   source classification (click-id/utm/referrer → source + pool)
@@ -72,6 +72,6 @@ to any form you want skipped). Web-form submissions become `web_form` leads.
 
 ## Prerequisites to go live (Phase 1)
 - Twilio account + at least one purchased number (webhook → `/api/twilio/voice`).
-- Neon database URL(s).
+- `DATABASE_URL` for a Postgres database (Railway in production).
 - `ARBOR_MCP_TOKEN` for the MCP server (Phase 2+).
 - App subdomain (e.g. `app.arbor-mgmt.com`) and approval to add `track.js` to the site (Phase 3+).
