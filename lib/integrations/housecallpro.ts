@@ -261,36 +261,71 @@ class HousecallProProvider implements RevenueProvider {
     // a schedule bound, but a wide one — that stays bounded no matter what the
     // payload looks like, while covering late completions by a margin that
     // weather-delayed tree work comfortably fits inside.
+    //
+    // ⚠️ That bound has a blind spot the size of the whole unscheduled backlog. A
+    // job with no scheduled_start can never satisfy `scheduled_start_min`, so every
+    // "needs scheduling" job is invisible to this pull and only ever arrives via the
+    // slow rolling crawler — up to a full lap late (~19h measured 2026-09-15, when
+    // four jobs created that day were missing while the one SCHEDULED job from the
+    // same day had synced). The scheduling skill builds the crew board from exactly
+    // that backlog, so it was planning from a list missing the day's new work.
+    //
+    // Hence the SECOND pull below: the entire unscheduled set, by work_status. It
+    // needs no date window to stay bounded — the business bounds it (88 jobs on
+    // 2026-09-16, one page) — and a backlog that ever outgrew `maxPages` would make
+    // `paginate` throw rather than truncate, which is the right failure. Note the
+    // filter vocabulary: `unscheduled` is what the API TAKES; `needs scheduling` is
+    // what it REPORTS, and copying the reported value into the filter matches
+    // nothing (housecallpro-api skill).
     const windowDays = Math.max(sinceDays, JOBS_MIN_WINDOW_DAYS);
     const min = new Date(Date.now() - windowDays * 86_400_000).toISOString();
-    const rows = await this.paginate(cfg, "/jobs", "jobs", {
-      sort_by: "updated_at",
-      sort_direction: "desc",
-      scheduled_start_min: min,
-      expand: EXPAND_JOB,
-    }, cutoff, undefined, pageCeilingFor(windowDays));
+    const [scheduledRows, unscheduledRows] = await Promise.all([
+      this.paginate(cfg, "/jobs", "jobs", {
+        sort_by: "updated_at",
+        sort_direction: "desc",
+        scheduled_start_min: min,
+        expand: EXPAND_JOB,
+      }, cutoff, undefined, pageCeilingFor(windowDays)),
+      this.paginate(cfg, "/jobs", "jobs", {
+        work_status: ["unscheduled"],
+        sort_by: "updated_at",
+        sort_direction: "desc",
+        expand: EXPAND_JOB,
+      }),
+    ]);
 
     // One-time shape probe. The field names above are assumptions about HCP's
     // payload, and the cost of a wrong assumption here is a silently unbounded
     // sync — so say what actually came back rather than leaving it to be inferred
-    // from a row count months later.
-    if (rows.length > 0 && !parseDate(rows[0]!.updated_at ?? rows[0]!.updated_at_iso)) {
+    // from a row count months later. (As of 2026-09-16 every /jobs row DOES carry a
+    // parseable updated_at, so this has stopped firing — the 2026-08-10 premise for
+    // the scheduled_start bound no longer holds, but the bound is kept because the
+    // last time it was dropped on that basis the pull went unbounded.)
+    if (scheduledRows.length > 0 && !parseDate(scheduledRows[0]!.updated_at ?? scheduledRows[0]!.updated_at_iso)) {
       console.warn(
         `[hcp] /jobs rows have no parseable updated_at — windowing falls back to the ` +
-          `${windowDays}d scheduled_start bound. Available keys: ${Object.keys(rows[0]!).join(", ")}`,
+          `${windowDays}d scheduled_start bound. Available keys: ${Object.keys(scheduledRows[0]!).join(", ")}`,
       );
     }
-    // Narrow further to the incremental window where the row can be dated, but do
-    // NOT rely on that for boundedness — the server-side window above is what
-    // guarantees it. An undateable row is kept rather than dropped: losing a job
-    // outright is worse than syncing it more often than needed, and the pull is
+    // Narrow the SCHEDULED pull to the incremental window where the row can be
+    // dated, but do NOT rely on that for boundedness — the server-side window above
+    // is what guarantees it. An undateable row is kept rather than dropped: losing a
+    // job outright is worse than syncing it more often than needed, and the pull is
     // already bounded either way.
-    return rows
-      .filter((j) => {
-        const when = parseDate(j.updated_at ?? j.updated_at_iso) ?? parseDate(j.created_at);
-        return !when || when.getTime() >= cutoff;
-      })
-      .map(mapJob);
+    //
+    // The UNSCHEDULED pull is deliberately NOT narrowed: it is one request for the
+    // whole backlog, the upsert is idempotent, and re-syncing all of it every run is
+    // what makes an unscheduled job that was edited days ago still land — the exact
+    // rows the scheduling skill needs current.
+    const inWindow = scheduledRows.filter((j) => {
+      const when = parseDate(j.updated_at ?? j.updated_at_iso) ?? parseDate(j.created_at);
+      return !when || when.getTime() >= cutoff;
+    });
+    // The two pulls cannot overlap (a null scheduled_start fails the first filter),
+    // but dedupe by id anyway so a future change to either bound cannot double a row.
+    const byId = new Map<string, Record<string, unknown>>();
+    for (const j of [...inWindow, ...unscheduledRows]) byId.set(String(j.id), j);
+    return [...byId.values()].map(mapJob);
   }
 
   /**
