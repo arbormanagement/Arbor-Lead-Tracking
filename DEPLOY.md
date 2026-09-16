@@ -396,14 +396,10 @@ Notes:
   route files are inert now; long syncs no longer need to fit in 300s.
 
 ## Database driver
-`DB_DRIVER` selects the transport (see `lib/db/client.ts`):
-- **`pg`** (default, in use) — node-postgres over a long-lived pool. Right for Railway: the
-  connection is reused instead of paying an HTTPS round-trip per query, and it supports the
-  interactive transactions the DNI lease needs.
-- **`neon-http`** — Neon's stateless HTTPS driver, kept from the Vercel era. Inert unless set,
-  and **Neon only**: it derives an HTTPS endpoint from the connection string's hostname, so it
-  cannot reach a non-Neon Postgres. Nothing on Railway should set it. Dropping the branch and
-  `@neondatabase/serverless` is open housekeeping, not urgent.
+node-postgres over a long-lived pool (see `lib/db/client.ts`): the connection is reused
+instead of paying a round-trip per query, and it supports the interactive transactions the
+DNI lease needs. `DB_DRIVER` is still read because Railway sets it, but `pg` is its only
+value — the Neon-only `neon-http` transport was removed 2026-09-16 with the Neon project.
 
 Every path that touches the schema — the pre-deploy step, `npm run db:seed`, and
 `/api/admin/migrate` — resolves the driver through `lib/db/connect.ts`, so they all work

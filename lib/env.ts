@@ -16,10 +16,9 @@ export const env = createEnv({
 
     DATABASE_URL: z.string().url(),
     DATABASE_URL_UNPOOLED: z.string().url().optional(),
-    // `pg` = long-lived node-postgres pool (default; right for a persistent
-    // server). `neon-http` = Neon's stateless HTTPS driver, for serverless/edge
-    // or networks that block raw Postgres TCP. See lib/db/client.ts.
-    DB_DRIVER: z.enum(["pg", "neon-http"]).default("pg"),
+    // `pg` is the only driver (node-postgres pool). Still read because Railway
+    // sets it; the Neon-only `neon-http` value was removed 2026-09-16.
+    DB_DRIVER: z.enum(["pg"]).default("pg"),
     DATABASE_POOL_MAX: z.coerce.number().int().positive().default(5),
 
     // Vestigial: auth is HMAC session cookie + scrypt (lib/auth.ts), which uses

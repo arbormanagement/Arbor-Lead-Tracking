@@ -226,7 +226,7 @@ function isActiveLeaseConflict(err: unknown): boolean {
   if (typeof err !== "object" || err === null) return false;
   const e = err as { code?: string; message?: string; cause?: unknown };
   if (e.code === "23505") return true;
-  // Some drivers (neon-http) wrap the driver error; fall back to the constraint name.
+  // Some drivers wrap the driver error; fall back to the constraint name.
   if (typeof e.message === "string" && e.message.includes("number_assignments_active_idx")) return true;
   return e.cause ? isActiveLeaseConflict(e.cause) : false;
 }
