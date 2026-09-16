@@ -2,6 +2,7 @@ import { and, desc, eq, gt, isNull, lt, sql } from "drizzle-orm";
 import { ulid } from "ulid";
 import { db } from "@/lib/db/client";
 import { numberAssignments, sources, trackingNumbers } from "@/lib/db/schema";
+import { CANARY_SESSION_ID } from "@/lib/dni/canary";
 
 /**
  * How long a number stays out AFTER a visitor's last pageview — `getActiveAssignmentForSession`
@@ -282,6 +283,83 @@ async function leaseOnce(snap: AttributionSnapshot, sid: string, vid: string): P
   const row = rows[0] as { assignment_id: string; phone_number: string } | undefined;
   if (!row) return null;
   return { phoneNumber: row.phone_number, assignmentId: row.assignment_id, reused: false };
+}
+
+/**
+ * A lease counts as IDLE once its holder has missed a heartbeat. The snippet renews every
+ * 10 minutes while the tab is visible and each renewal pushes `expires_at` 15 minutes out,
+ * so a live tab's lease always has more than 5 minutes left. Under 4 minutes left means no
+ * renewal for 11+ minutes: the tab is hidden, closed, or navigated away. The one-minute
+ * margin keeps a visible tab renewing exactly on schedule from ever qualifying.
+ */
+const TAKEOVER_IDLE_THRESHOLD_MINUTES = 4;
+const TAKEOVER_ATTEMPTS = 2;
+
+/**
+ * Pool exhausted: bump the stalest IDLE lease and hand its number to this visitor.
+ *
+ * This is what CallRail does when its pool runs dry — hand out the number that has gone
+ * longest without activity — and it is the difference between attribution going slightly
+ * coarse and attribution being lost. Before this, an exhausted pool sent the visitor to
+ * the static published number, so their call read as `direct`: 110 visitors in the 7 days
+ * to 2026-09-16, one of the exhaustions at 4:23am when GA4 saw under two sessions an hour,
+ * i.e. a crawler holding every number. A crawler never heartbeats, so its leases are the
+ * first ones this bumps.
+ *
+ * Only IDLE leases are candidates (see TAKEOVER_IDLE_THRESHOLD_MINUTES). Six live,
+ * visible tabs at peak are genuine concurrency; bumping one of them would just move the
+ * problem to whoever it bumped, and their next heartbeat would bump someone else. In that
+ * case this returns null and the caller falls back to the static number as before.
+ *
+ * Preference order: leases with NO click id first (a gclid identifies one paid click, and
+ * the bumped holder's later call would credit the new holder), then the one idle longest.
+ * The canary's own lease is never a candidate; it releases itself in a `finally` anyway.
+ *
+ * What the bumped visitor loses: if they come back and dial the number still on their
+ * screen before their heartbeat adopts the new one, the call credits the new holder. That
+ * is the same boundary that already exists at 15 minutes of inactivity, moved to 11 — and
+ * only while the pool is full.
+ *
+ * Two steps, not one CTE: releasing and re-leasing in a single statement would race the
+ * unique active-lease index (CTE writes are not visible to each other). Release, then run
+ * the normal lease path, which picks the number just freed unless a concurrent visitor got
+ * there first — in which case the loop bumps the next idle lease, bounded.
+ */
+export async function leaseByTakeover(snap: AttributionSnapshot, sid: string, vid: string): Promise<LeaseResult | null> {
+  for (let attempt = 0; attempt < TAKEOVER_ATTEMPTS; attempt++) {
+    const bumped = await releaseStalestIdleLease();
+    if (!bumped) return null;
+    const leased = await leaseNumber(snap, sid, vid);
+    if (leased) return leased;
+  }
+  return null;
+}
+
+async function releaseStalestIdleLease(): Promise<{ id: string } | null> {
+  const q = sql`
+    WITH victim AS (
+      SELECT na.id
+      FROM number_assignments na
+      JOIN tracking_numbers tn ON tn.id = na.tracking_number_id
+      JOIN pools p ON p.key = tn.pool AND p.is_dni = true
+      WHERE na.released_at IS NULL
+        AND na.expires_at > now()
+        AND na.expires_at < now() + make_interval(mins => ${TAKEOVER_IDLE_THRESHOLD_MINUTES})
+        AND na.web_session_id IS DISTINCT FROM ${CANARY_SESSION_ID}
+      ORDER BY
+        (na.gclid IS NOT NULL OR na.gbraid IS NOT NULL OR na.wbraid IS NOT NULL OR na.fbclid IS NOT NULL) ASC,
+        na.expires_at ASC
+      LIMIT 1
+      FOR UPDATE SKIP LOCKED
+    )
+    UPDATE number_assignments SET released_at = now()
+    WHERE id = (SELECT id FROM victim)
+    RETURNING id
+  `;
+  const res = await db.execute(q);
+  const rows = (res as unknown as { rows?: Array<Record<string, unknown>> }).rows ?? [];
+  const row = rows[0] as { id: string } | undefined;
+  return row ? { id: row.id } : null;
 }
 
 /**

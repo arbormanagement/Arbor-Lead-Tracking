@@ -263,9 +263,13 @@ const SNIPPET = String.raw`(function () {
       // pool lease for a visitor whose displayed number CallRail still controls.
       if (SHADOW) return;
       var ASSIGN = new URL('/api/dni/assign', script ? script.src : location.origin).toString();
+      // wd: navigator.webdriver is true when an automation framework is driving this
+      // browser. The server refuses those a lease — a stock user-agent gets them past the
+      // UA gate, and each page they load would otherwise hold a pool number for 15 minutes.
       var body = JSON.stringify({
         vid: vid, sid: sid, url: location.href, referrer: document.referrer || undefined,
-        utm: base.utm, click: base.click
+        utm: base.utm, click: base.click,
+        wd: navigator.webdriver === true
       });
       fetch(ASSIGN, { method: 'POST', body: body, headers: { 'Content-Type': 'text/plain' } })
         .then(function (r) { return r.json(); })
@@ -317,7 +321,18 @@ const SNIPPET = String.raw`(function () {
       document.addEventListener('visibilitychange', function () {
         if (document.hidden || Date.now() - lastRenewAt < MIN_GAP_MS) return;
         lastRenewAt = Date.now();
+        // Adopt a changed number here too. A tab hidden long enough to miss a heartbeat
+        // may have had its lease bumped to another visitor while the pool was full; the
+        // moment it comes back is exactly when the stale number on screen must go.
         fetch(url, { method: 'POST', body: payload, headers: { 'Content-Type': 'text/plain' } })
+          .then(function (r) { return r.json(); })
+          .then(function (d) {
+            if (!d || !d.number || !assigned) return;
+            if (d.number !== assigned.e164) {
+              assigned = { e164: d.number, display: d.display || d.number };
+              applySwap();
+            }
+          })
           .catch(function () {});
       });
     }

@@ -1000,7 +1000,18 @@ export async function diagnosticsReport(): Promise<{ httpStatus: number; report:
   if ((swapCoverage.byOutcome.static_fallback ?? 0) > 0) {
     warnings.push(
       `${swapCoverage.byOutcome.static_fallback} visitor(s) were handed the static fallback in the last ` +
-        `${swapCoverage.windowDays}d — the pool ran dry at least once`,
+        `${swapCoverage.windowDays}d — the pool ran dry with every number held by a LIVE tab, so there ` +
+        `was no idle lease to bump. That is real concurrency, and the one case more numbers fixes.`,
+    );
+  }
+  // Not a warning: a bumped idle lease keeps the visitor on a pool number. It is the
+  // pool-size gauge, though — each one is a visitor who could not be seated without
+  // evicting someone — so surface it once it is more than occasional.
+  if ((swapCoverage.byOutcome.reassigned ?? 0) >= 50) {
+    warnings.push(
+      `${swapCoverage.byOutcome.reassigned} visitor(s) in the last ${swapCoverage.windowDays}d were seated by ` +
+        `bumping an idle lease (swapCoverage.byOutcome.reassigned). Attribution held, but the pool is running ` +
+        `at capacity — consider adding numbers.`,
     );
   }
   for (const j of jobs) {
