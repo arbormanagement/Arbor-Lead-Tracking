@@ -14,6 +14,7 @@ import {
   getActiveAssignmentForSession,
   getFallbackNumber,
   getNewestAssignmentAtVisitorCap,
+  leaseByTakeover,
   leaseNumber,
   releaseExpired,
 } from "@/lib/dni/assign";
@@ -27,8 +28,8 @@ export const runtime = "nodejs";
  *
  * Order: reap expired leases → reuse this session's existing number → seed
  * visitor/session rows (the pageview beacon races us and may be ad-blocked) →
- * per-visitor lease cap → lease from the single shared website pool → static
- * fallback. The visitor's source is frozen
+ * per-visitor lease cap → lease from the single shared website pool → bump the
+ * stalest idle lease → static fallback. The visitor's source is frozen
  * onto the lease, so the number itself is channel-agnostic. Never throws to the
  * page; on any failure it returns `{ number: null }` and the page keeps its number.
  */
@@ -55,6 +56,13 @@ const Body = z.object({
     })
     .partial()
     .optional(),
+  /**
+   * `navigator.webdriver` as the page saw it. True means an automation framework is
+   * driving this browser (Puppeteer, Playwright, Selenium, and the headless scanners
+   * built on them). A stock Chrome user-agent gets such a client past `isLikelyBot`,
+   * and each page it loads would lease a number it will never dial.
+   */
+  wd: z.boolean().optional(),
 });
 
 /** Comfortably above the largest payload the schema above can accept (~7KB). */
@@ -89,7 +97,7 @@ export async function POST(req: Request) {
   // Public-endpoint hygiene: browser posts must come from our own sites, and
   // each IP gets a budget — leases are a finite pool worth protecting.
   //
-  // `requireOrigin` matters here specifically. The pool is 5 numbers and the
+  // `requireOrigin` matters here specifically. The pool is six numbers and the
   // per-visitor cap keys on the client-supplied `vid`, so five requests with five
   // fabricated vids lease the whole pool; repeated, that keeps every real visitor
   // on the static fallback and silently ends paid-click attribution. Browsers
@@ -172,6 +180,15 @@ export async function POST(req: Request) {
       { error: "rate limited" },
       { status: 429, headers: { ...CORS, "Retry-After": String(vidRl.retryAfterSec) } },
     );
+  }
+
+  // Second bot gate, on the body rather than the headers: the user-agent regex above
+  // cannot see a driven browser wearing a stock UA, but the browser itself reports it.
+  // Same cost model as the UA gate — a false positive costs one visitor their
+  // attribution, a false negative costs the pool a number for the whole window.
+  if (!canary && b.wd === true) {
+    await record("bot");
+    return Response.json({ number: null }, { headers: CORS });
   }
 
   try {
@@ -269,7 +286,21 @@ export async function POST(req: Request) {
       return numberResponse(leased.phoneNumber);
     }
 
-    // Website pool exhausted — fall back to a static number (still tracked) and flag it.
+    // Website pool exhausted. First choice: bump the stalest IDLE lease (a holder who
+    // has missed a heartbeat — closed tab, or a crawler that never sent one) and hand
+    // its number over, the way CallRail does. The canary is exempt on purpose: it
+    // exists to detect exhaustion, and bumping a real visitor to pass its own check
+    // would hide exactly what it is there to see.
+    if (!canary) {
+      const reassigned = await leaseByTakeover(snapshot, sid, vid);
+      if (reassigned) {
+        await record("reassigned");
+        return numberResponse(reassigned.phoneNumber);
+      }
+    }
+
+    // No idle lease to bump either: every number is held by a live tab. Fall back to a
+    // static number (still tracked) and flag it.
     console.warn(`[dni] website pool exhausted — using static fallback`);
     const fallback = await getFallbackNumber();
     if (fallback) {

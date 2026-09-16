@@ -29,8 +29,14 @@ export type AssignOutcome =
   | "visitor_capped"
   /** Shared an existing lease with a visitor of identical attribution. */
   | "shared"
+  /**
+   * Pool was empty, so the stalest IDLE lease was bumped and its number handed over
+   * (`leaseByTakeover`). Covered — but each one is a visitor the pool could not seat
+   * without evicting someone, so a rising count is the pool-size signal.
+   */
+  | "reassigned"
   // did NOT get a pool number
-  /** Pool empty — handed the STATIC number, which is what makes a visitor look `direct`. */
+  /** Pool empty AND no idle lease to bump — handed the STATIC number, which is what makes a visitor look `direct`. */
   | "static_fallback"
   /** Refused as a crawler (`lib/bot.ts`). An absent user-agent lands here too. */
   | "bot"
@@ -67,6 +73,7 @@ const COVERED: ReadonlySet<AssignOutcome> = new Set<AssignOutcome>([
   "session_reuse",
   "visitor_capped",
   "shared",
+  "reassigned",
 ]);
 
 /** Excluded from the rate entirely — our own monitoring, not a visitor. */
