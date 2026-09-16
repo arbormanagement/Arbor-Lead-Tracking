@@ -65,6 +65,10 @@ const emailDone = { ...smsDone, emailSent: "sent" };
 check("nothing due between email and final", nextDueStep(emailDone, at(EMAIL_DELAY_MS + 3600_000)), null);
 check("final sms due at +3d1m", nextDueStep(emailDone, at(FINAL_SMS_DELAY_MS)), "sms2");
 check("skipped email still reaches final sms", nextDueStep({ ...smsDone, emailSent: "skipped" }, at(FINAL_SMS_DELAY_MS)), "sms2");
+// An email that exhausted its retries must not strand the customer: until 2026-09-16
+// it marked the whole row failed and sms2 never fired.
+check("FAILED email still reaches final sms", nextDueStep({ ...smsDone, emailSent: "failed" }, at(FINAL_SMS_DELAY_MS)), "sms2");
+check("failed email is not re-attempted", nextDueStep({ ...smsDone, emailSent: "failed" }, at(EMAIL_DELAY_MS + 3600_000)), null);
 check("all sent -> nothing due", nextDueStep({ ...emailDone, finalSmsSent: true }, at(FINAL_SMS_DELAY_MS * 2)), null);
 // The email step cannot be skipped past: a row whose sms never sent stays on sms1.
 check("email never fires before sms1", nextDueStep(fresh, at(FINAL_SMS_DELAY_MS * 2)), "sms1");

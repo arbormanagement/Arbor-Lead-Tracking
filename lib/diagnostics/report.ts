@@ -969,7 +969,9 @@ export async function diagnosticsReport(): Promise<{ httpStatus: number; report:
   if (reviews.failed > 0) {
     warnings.push(
       `${reviews.failed} review request(s) in the last ${reviews.windowDays}d failed after every ` +
-        `retry — those customers were never asked. See reviews.sample`,
+        `retry and the sequence halted there — see reviews.sample for which step. A halt at sms1 means ` +
+        `the customer was never asked; a halt at a later step means they got the earlier texts only. ` +
+        `(Since 2026-09-16 an exhausted EMAIL no longer halts the row — only sms failures do.)`,
     );
   }
   if (!reviews.enabled && reviews.pending > 0) {
