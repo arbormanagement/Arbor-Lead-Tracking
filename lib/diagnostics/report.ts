@@ -238,6 +238,60 @@ export async function diagnosticsReport(): Promise<{ httpStatus: number; report:
     .orderBy(desc(sql`count(*)`))
     .limit(10);
 
+  // ── What the AD PLATFORM actually said back ─────────────────────────────────
+  // Every export stores the platform's own reply in `conversion_exports.response`
+  // (markExport writes `r.raw`), and until now nothing read it. That was a real
+  // blind spot rather than a cosmetic one: `abandonedExports` filters on
+  // `attempts >= cap` and `failingExports` on `status = 'error'`, so a row that
+  // the platform ACCEPTED is invisible to both — and "accepted" is not the same
+  // as "attributed". Meta in particular returns 200 with `events_received` set
+  // while saying, in `messages`, that it could not match the event to anything.
+  // Diagnosing that from the ads API is guesswork; the answer was in this column
+  // the whole time.
+  const exportsByStatus = await db
+    .select({
+      platform: conversionExports.platform,
+      event: conversionExports.event,
+      status: conversionExports.status,
+      n: sql<number>`count(*)::int`,
+      lastSentAt: sql<string | null>`max(${conversionExports.sentAt})`,
+    })
+    .from(conversionExports)
+    .groupBy(conversionExports.platform, conversionExports.event, conversionExports.status)
+    .orderBy(conversionExports.platform, conversionExports.event, conversionExports.status);
+
+  // The most recent replies, newest first. Deliberately NOT joined to the lead and
+  // NOT carrying `identifier`: a click id or Meta lead id is the one PII-adjacent
+  // field on this table, and nothing here needs it. Bounded because a reply is
+  // free-form platform JSON and this endpoint is read on every diagnostics check.
+  const recentExportResponses = await db
+    .select({
+      platform: conversionExports.platform,
+      event: conversionExports.event,
+      status: conversionExports.status,
+      identifierType: conversionExports.identifierType,
+      sentAt: conversionExports.sentAt,
+      response: conversionExports.response,
+    })
+    .from(conversionExports)
+    .where(isNotNull(conversionExports.response))
+    .orderBy(desc(conversionExports.updatedAt))
+    .limit(10);
+
+  const exportResponses = {
+    byStatus: exportsByStatus,
+    recent: recentExportResponses,
+    note:
+      "The platform's OWN reply to each export, which no other check reads. " +
+      "abandonedExports needs attempts >= cap and failingExports needs status = 'error', " +
+      "so an ACCEPTED export shows up in neither — and accepted is not attributed. " +
+      "For Meta read `response.messages`: an empty array means the event was taken " +
+      "cleanly, entries there are Meta telling you why it could not be matched. " +
+      "`events_received` counts what Meta INGESTED, never what it attributed to an ad. " +
+      "identifier is deliberately omitted (click ids / Meta lead ids); identifierType " +
+      "is kept because leadgen_id vs fbclid changes how Meta matches the event.",
+  };
+
   // ── Crawler share of web sessions ───────────────────────────────────────────
   // The DNI pool kept exhausting and bot traffic was the leading suspect, but nothing
   // recorded WHAT was asking for a number, so the theory could be neither confirmed nor
@@ -1063,6 +1117,7 @@ export async function diagnosticsReport(): Promise<{ httpStatus: number; report:
       jobs,
       abandonedExports,
       failingExports,
+      exportResponses,
       traffic,
       swapCoverage,
       sourceHealth,
