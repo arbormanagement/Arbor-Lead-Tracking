@@ -63,7 +63,7 @@ export const env = createEnv({
     GOOGLE_ADS_LOGIN_CUSTOMER_ID: z.string().optional(),
     // Facebook Marketing API — long-lived access token.
     FACEBOOK_ACCESS_TOKEN: z.string().optional(),
-    FACEBOOK_API_VERSION: z.string().default("v21.0"),
+    FACEBOOK_API_VERSION: z.string().default("v26.0"),
     // App secret — verifies X-Hub-Signature-256 on the lead-gen webhook.
     FACEBOOK_APP_SECRET: z.string().optional(),
 

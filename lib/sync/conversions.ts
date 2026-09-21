@@ -316,6 +316,15 @@ export async function syncConversions({ sinceDays = 90, limit = 500 }: { sinceDa
         (l.fbLeadgenId ? { identifier: l.fbLeadgenId, identifierType: "leadgen_id" } : null);
       if (facebookOn && fbId) {
         for (const e of events) {
+          // Skip a stage Meta has no standard event for (today: `qualified`) BEFORE
+          // reserving a row, mirroring the Google branch above. Reserving first and
+          // filtering later — which is what `fbTasks` does — left the row `pending`
+          // with attempts = 0 forever: never sent, never errored, never past the
+          // abandonment cap, and so invisible to both /api/diagnostics export checks.
+          // It also re-entered `todo` on every run, pinning the job's stats at
+          // `sent: 0, google: 0, facebook: 0` — indistinguishable from a dead
+          // exporter, which is exactly how a working pipe got misread as broken.
+          if (!META_EVENT[e.event]) continue;
           push({ ...base, platform: "facebook", ...e, ...fbId });
         }
       }
