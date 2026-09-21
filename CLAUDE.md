@@ -593,6 +593,41 @@ four were switched off, so the campaign was never left with zero biddable goals.
 point Estimate Won becomes a candidate for value-based bidding and this ranking should be
 re-argued rather than assumed.
 
+## Conversion export → Meta CAPI (state as of 2026-09-21)
+
+Added 2026-08-24, after the Google section above was written. `lib/integrations/facebook.ts`
+`sendConversions()` POSTs to `/{pixel_id}/events`. Dataset `1746145606430089`, **owned by the
+ad account, not the Business Manager** — `list_business_datasets` on business
+`1277421654304965` returns empty for both `owned_pixels` and `client_pixels`.
+
+- **Sending is confirmed working, and `last_fired_time` is how you confirm it — but read it
+  correctly.** Meta stamps it with the `event_time` WE send, not receipt time, and for a fresh
+  lead `eventTime` resolves to the lead's own `occurredAt`. So it will NOT line up with the
+  `:37` cron, and that mismatch is not evidence of a problem. It was briefly misread as a
+  website-pixel event on 2026-09-21.
+- **⚠️ Nothing has ever attributed.** Across 90 days and $13,474 of spend there is not one
+  `offsite_conversion.fb_pixel_*` action type on the ad account, and `action_values`,
+  `purchase_roas` and `website_purchase_roas` are null at account AND ad level. Every action
+  type present is onsite-form or engagement. Sent ≠ accepted ≠ attributed — check all three
+  separately, and note that the insights `actions` array is the WRONG place to look for
+  lead-ad CRM events in the first place.
+- **The missing step is UI-only: the lead-ads CRM integration in Events Manager.** Meta
+  documents CRM lead-stage integration as a *separate* integration from web CAPI ("the
+  required parameters are different"). Until it is configured, `lead_id`-keyed events are
+  accepted and stored with no attribution path. Ruled out as causes: pixel id mismatch (it
+  matches the attached dataset exactly), missing credentials (`conversions_pixel_id` and
+  `access_token` both set), and `lead_id` precision loss (live ids are 16 digits, inside
+  `Number.MAX_SAFE_INTEGER`; the string fallback only triggers above it).
+- **`qualified` is deliberately never sent** — an internal milestone, not a customer action.
+  Meta's funnel is Lead → Schedule → Purchase. Filter unsendable stages BEFORE reserving a
+  `conversion_exports` row, not after: reserving first leaves the row `pending` with
+  attempts = 0 forever, invisible to both `/api/diagnostics` export checks (one needs
+  `attempts >= cap`, the other `status = 'error'`), and it pins the job's stats at `sent: 0`.
+  ~70 such orphan rows predate this fix; they are inert and need no migration.
+- **Conversion Leads optimization is NOT available regardless** — it fails both of Meta's
+  published gates (79 leads/30d against 200 required; 64.6% estimate rate against the
+  1–40% band). This pipe is for measurement only. Do not switch `optimization_goal`.
+
 ## Defaults (Justin can change)
 - v1 channels: calls + web forms + FB leadgen (SMS deferred).
 - Call routing: office +16188368004 first (configurable).
