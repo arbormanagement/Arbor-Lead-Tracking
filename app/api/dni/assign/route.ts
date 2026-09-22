@@ -92,7 +92,8 @@ export async function POST(req: Request) {
   const canary = isCanary(req);
   // Counting is fire-and-forget by contract: `recordAssignOutcome` swallows its own
   // errors, so nothing here can cost a visitor their number.
-  const record = (outcome: AssignOutcome) => recordAssignOutcome(canary ? "canary" : outcome);
+  const record = (outcome: AssignOutcome, detail?: string) =>
+    canary ? recordAssignOutcome("canary") : recordAssignOutcome(outcome, detail);
 
   // Public-endpoint hygiene: browser posts must come from our own sites, and
   // each IP gets a budget — leases are a finite pool worth protecting.
@@ -103,7 +104,9 @@ export async function POST(req: Request) {
   // on the static fallback and silently ends paid-click attribution. Browsers
   // always send Origin on a POST, so requiring it costs real visitors nothing.
   if (!(await isAllowedOrigin(req, { requireOrigin: true }))) {
-    await record("origin_rejected");
+    // Which site it was: a preview deploy, a translation proxy and a scraper all land
+    // here, and only the first two are worth allowing. `(none)` is a missing header.
+    await record("origin_rejected", req.headers.get("origin") ?? "(none)");
     return Response.json({ error: "origin not allowed" }, { status: 403, headers: CORS });
   }
   // A crawler will never dial the number it is handed, but it holds one for the full lease
@@ -162,6 +165,19 @@ export async function POST(req: Request) {
     return Response.json({ error: "invalid payload" }, { status: 400, headers: CORS });
   }
 
+  // Second bot gate, on the body rather than the headers — and AHEAD of the per-visitor
+  // budget below. A driven browser reloading on a stable cookie trips that budget within
+  // a minute, and when this check sat after it those requests were counted as
+  // `rate_limited_visitor`: a crawler reported as a customer losing attribution.
+  // The user-agent regex above cannot see a driven browser wearing a stock UA, but the
+  // browser itself reports it.
+  // Same cost model as the UA gate — a false positive costs one visitor their
+  // attribution, a false negative costs the pool a number for the whole window.
+  if (!canary && b.wd === true) {
+    await record("bot");
+    return Response.json({ number: null }, { headers: CORS });
+  }
+
   // The REAL budget: per visitor, which is the unit the old per-IP limit was trying
   // to approximate. A page needs one lease per session, so ten a minute is already
   // far above anything a browser does.
@@ -175,20 +191,13 @@ export async function POST(req: Request) {
   // neighbours' traffic.
   const vidRl = rateLimit(`dni:vid:${b.vid}`, 10, 60_000);
   if (!vidRl.ok) {
-    await record("rate_limited_visitor");
+    // The visitor id, which joins to `web_sessions` for a user agent — the one way to
+    // tell a single runaway client from many real visitors each tripping it once.
+    await record("rate_limited_visitor", b.vid);
     return Response.json(
       { error: "rate limited" },
       { status: 429, headers: { ...CORS, "Retry-After": String(vidRl.retryAfterSec) } },
     );
-  }
-
-  // Second bot gate, on the body rather than the headers: the user-agent regex above
-  // cannot see a driven browser wearing a stock UA, but the browser itself reports it.
-  // Same cost model as the UA gate — a false positive costs one visitor their
-  // attribution, a false negative costs the pool a number for the whole window.
-  if (!canary && b.wd === true) {
-    await record("bot");
-    return Response.json({ number: null }, { headers: CORS });
   }
 
   try {

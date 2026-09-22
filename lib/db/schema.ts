@@ -1286,6 +1286,28 @@ export const dniOutcomes = pgTable(
   (t) => [unique("dni_outcomes_date_outcome_uq").on(t.date, t.outcome)],
 );
 
+/**
+ * WHO was refused, for the two refusal exits whose cause `dni_outcomes` cannot show:
+ * `origin_rejected` (detail = the Origin header) and `rate_limited_visitor` (detail =
+ * the visitor id, which joins to `web_sessions` for a user agent). 108 visitor
+ * refusals and 52 origin refusals in the week to 2026-09-22 could not be told apart
+ * as one scraper or a hundred customers, and the two need opposite fixes.
+ * Same buffered upsert as `dni_outcomes`; `lib/dni/outcomes.ts` caps distinct
+ * details per day so a stranger cannot grow this table at will.
+ */
+export const dniRefusals = pgTable(
+  "dni_refusals",
+  {
+    id: id(),
+    date: date("date").notNull(),
+    outcome: text("outcome").notNull(),
+    detail: text("detail").notNull(),
+    count: integer("count").notNull().default(0),
+    updatedAt: updatedAt(),
+  },
+  (t) => [unique("dni_refusals_date_outcome_detail_uq").on(t.date, t.outcome, t.detail)],
+);
+
 export const syncRuns = pgTable(
   "sync_runs",
   {

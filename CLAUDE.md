@@ -1298,6 +1298,20 @@ ad account, not the Business Manager** — `list_business_datasets` on business
     — a `visibilitychange` renewal on every tab switch — is now throttled in `track.js` to
     one renewal a minute, so a visitor comparing quotes across tabs cannot rate-limit
     themselves out of attribution. Read `byOutcome` after a week to see which one it was.
+  - **Who was refused is RECORDED since 2026-09-22** (`dni_refusals`, `swapCoverage.refusals`):
+    the Origin for `origin_rejected`, the `vid` for `rate_limited_visitor` (joined to
+    `web_sessions` for a user agent). The week to 2026-09-22 had 108 visitor-budget and 52
+    origin refusals that could not be told apart as one client or a hundred customers. The
+    `wd` (driven browser) check now runs BEFORE the visitor budget, so a headless client on
+    a stable cookie reads as `bot` rather than as a customer being rate-limited.
+    `swapCoverage.byDay` gives the same rate per business day — read the days either side
+    of a fix, not a 7-day total that straddles it.
+  - **An untouched tab stops renewing its lease** (`track.js`, `IDLE_MS` = 30 min, since
+    2026-09-22). "Not hidden" was the old gate, and a desktop tab behind other windows is
+    never hidden — it held a pool number all day, so the pool ran dry with every number on
+    a "live" tab and the idle-lease takeover found nothing to bump (33 static fallbacks
+    against 5 reassigned that week). Read `static_fallback` vs `reassigned` in `byDay` a
+    week after deploy before buying numbers.
   - **`coveredPct` in `swapCoverage` EXCLUDES crawlers since 2026-09-05** — they are refused on
     purpose and never dial, so counting them as uncovered visitors made the rate read 62%
     against a real 90% and kept the `< 80%` warning permanently red. They are reported under
