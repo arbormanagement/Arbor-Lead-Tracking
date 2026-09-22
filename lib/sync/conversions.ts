@@ -1,7 +1,7 @@
 import { and, desc, eq, gte, inArray, isNull, ne, or, sql } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { leadEstimateRollup } from "@/lib/leads/stage";
-import { calls, conversionExports, facebookLeads, hcpEstimates, leads, numberAssignments, sources } from "@/lib/db/schema";
+import { calls, conversionExports, facebookLeads, hcpEstimates, leads, numberAssignments, sources, webSessions } from "@/lib/db/schema";
 import { getPlatformCreds } from "@/lib/credentials";
 import { ingestEvents, type EventSource, type IngestEvent } from "@/lib/integrations/data-manager";
 import { facebook, type CapiEvent } from "@/lib/integrations/facebook";
@@ -92,6 +92,8 @@ interface Task {
   platform: "google" | "facebook";
   event: EventKind;
   valueCents: number;
+  /** Browser UA of the session this lead came from; null for calls and lead-form leads. */
+  userAgent?: string | null;
   /** null only for `user_data`, where the hashed email/phone below IS the match key. */
   identifier: string | null;
   identifierType: "gclid" | "gbraid" | "wbraid" | "fbclid" | "leadgen_id" | "user_data";
@@ -151,6 +153,13 @@ export async function syncConversions({ sinceDays = 90, limit = 500 }: { sinceDa
         emailLc: leads.emailLc,
         // Gates the no-click-id fallback: only genuinely-paid sources qualify.
         sourceKey: sources.key,
+        // Joined on the lead's OWN web session, never on the contact's visitor
+        // record. Meta wants the user agent of the browser that performed THIS
+        // action; a lead-form lead that happens to have browsed the site later
+        // would otherwise carry an unrelated session's UA, which is a mismatched
+        // signal rather than a missing one. A lead with no session yields null
+        // and is pruned.
+        userAgent: webSessions.userAgent,
         occurredAt: leads.occurredAt,
         // The linked estimates are the stage AND the money: only `won` reports a
         // value, and it is the approved amount summed over every won estimate this
@@ -169,6 +178,7 @@ export async function syncConversions({ sinceDays = 90, limit = 500 }: { sinceDa
       .leftJoin(calls, eq(calls.leadId, leads.id))
       .leftJoin(numberAssignments, eq(numberAssignments.id, calls.numberAssignmentId))
       .leftJoin(sources, eq(sources.id, leads.sourceId))
+      .leftJoin(webSessions, eq(webSessions.id, leads.webSessionId))
       .where(
         and(
           // No estimate yet is in scope, so the lead-stage event can fire on the
@@ -275,6 +285,7 @@ export async function syncConversions({ sinceDays = 90, limit = 500 }: { sinceDa
         leadType: l.type,
         phoneE164: l.phoneE164,
         emailLc: l.emailLc,
+        userAgent: l.userAgent,
       };
       const push = (t: Task) => {
         const k = key(t.leadId, t.platform, t.event);
@@ -501,6 +512,7 @@ export async function syncConversions({ sinceDays = 90, limit = 500 }: { sinceDa
             fbc: t.identifierType === "fbclid" && t.identifier ? `fb.1.${t.occurredAt.getTime()}.${t.identifier}` : undefined,
             leadgenId: t.identifierType === "leadgen_id" ? (t.identifier ?? undefined) : undefined,
             valueDollars: t.valueCents / 100,
+            clientUserAgent: t.userAgent ?? undefined,
           };
         });
         const res = await facebook.sendConversions(events);

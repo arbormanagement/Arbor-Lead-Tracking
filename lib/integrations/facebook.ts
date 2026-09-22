@@ -126,6 +126,12 @@ class FacebookProvider implements SpendProvider {
         em: e.emailHash ? [e.emailHash] : undefined,
         ph: e.phoneHash ? [e.phoneHash] : undefined,
         fbc: e.fbc,
+        // Not hashed, deliberately — see CapiEvent.clientUserAgent. Meta's own
+        // dataset-quality read put user_agent coverage at 0% while email and
+        // phone sat at 100%, so this is a measured gap rather than a guess.
+        // Absent for calls and lead-form leads, which never touched a browser
+        // here; pruneEmpty drops it rather than sending an empty string.
+        client_user_agent: e.clientUserAgent,
         // Lead-gen form submissions match by Meta's own lead id (Conversion Leads
         // / CRM integration) — they have no click id. Integer per the CAPI spec;
         // fall back to the raw string if it would overflow a JS safe integer.
@@ -325,6 +331,11 @@ function pruneEmpty<T extends Record<string, unknown>>(o: T): T {
 export interface CapiEvent {
   /** Meta standard events. "Schedule" = the estimate visit got a date. */
   eventName: "Lead" | "Schedule" | "Purchase";
+  /**
+   * Browser user agent, PLAIN TEXT. Meta is explicit that client_user_agent and
+   * client_ip_address must never be hashed, unlike every other user_data field.
+   */
+  clientUserAgent?: string;
   eventTime: number; // unix seconds
   actionSource: "phone_call" | "website" | "system_generated";
   eventId: string; // dedup key
