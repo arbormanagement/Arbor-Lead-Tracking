@@ -650,17 +650,29 @@ ad account, not the Business Manager** — `list_business_datasets` on business
     `job_type_name` undefined, the `!== "tree service"` filter passed *everything*, so fixing
     only the visible half would have started enrolling Stump Service and maintenance jobs.
     When a field reads undefined, check every predicate that reads it before shipping the fix.
-- **⚠️ SENDGRID IS BLOCKED ACCOUNT-WIDE, NOT JUST ITS EMAIL API (established 2026-09-15,
-  and this corrects the entry below).** The Email API trial lapsed on 09-14; the working
-  assumption afterwards was that Marketing Campaigns — a separate product, paid, invoices
-  current — was unaffected and the newsletter was safe. **It is not.** A Single Send
-  scheduled as a control to a one-address list reported `triggered` and then never sent:
-  20 minutes, zero requests in SendGrid's own stats, nothing delivered, nothing in the
-  recipient's inbox. So the newsletter will NOT go out as things stand, and restoring the
-  ~$20 Email API tier would not fix it — that is a different product. This needs SendGrid
-  support, not a config change. Reputation reads 96% and invoices read paid, so nothing in
-  the account's own UI explains it. **The test artifacts (`ZZ transport test - safe to
-  delete`, a list and a Single Send) are left in place deliberately as evidence for a ticket.**
+- **⚠️ SENDGRID'S EMAIL API LAPSED; MARKETING CAMPAIGNS IS FINE. An entry here previously
+  claimed the whole account was blocked — that was WRONG and is corrected (2026-09-22,
+  measured against `/v3/stats`).** What actually happened: SendGrid no longer has a
+  perpetual free tier — what it calls free is a **60-day trial, 100 emails/day**, and
+  Arbor's lapsed on 09-14 with `401 Maximum credits exceeded`. Transactional volume in the
+  stats series shows it plainly: ~35/day through 09-11, then 7, 3, 3, then nothing.
+  - **The newsletter was never affected.** On **2026-09-17 SendGrid delivered 8,025 of
+    8,553 requests** (25 bounces, 79 blocks) — the September Single Send, out and fine.
+    Marketing Campaigns is a separate, paid product and kept working throughout.
+  - **The wrong conclusion came from one control send and a habit of generalising.** A
+    Single Send to a one-address list reported `triggered` and did not arrive, and that was
+    written up as an account-wide block needing a support ticket. One message not arriving
+    is not an account being blocked; the 09-17 send settles it. **Read `/v3/stats` per
+    product before concluding anything about this account** — the series reports both
+    products in one line, which is what made an 8,099-email day look like Email API traffic
+    in the first place.
+  - Zero SendGrid requests since 09-15 is NOT evidence of a block: `lib/email` deliberately
+    stopped sending through it that day. The Email API's current state is simply **untested**.
+  - Restoring it would cost **$19.95/mo** (Essentials, 50k–100k/month) against this app's
+    ~35 emails/day, which Workspace carries for nothing. That is why the transports below
+    are the answer and a SendGrid tier is not.
+  - The `ZZ transport test` artifacts raised as evidence for a ticket are gone from the
+    account; no ticket is needed.
 - **⚠️ ALL transactional email goes through `lib/email`, and it is THREE transports —
   SMTP first, Gmail API second, SendGrid last (2026-09-14/15, Justin).** SendGrid's Email API
   sat on a **trial** that lapsed at 08:48 CT that day and hard-blocked every send for
@@ -687,6 +699,14 @@ ad account, not the Business Manager** — `list_business_datasets` on business
     delegation. The honest trade is that an app password grants FULL SEND RIGHTS on that
     mailbox and never expires, where a `gmail.send` service account can only ever send.
     `lib/email/gmail.ts` stays built and tested, so tightening later is a variable change.
+  - **⚠️ The SAME app password now also sends the WEBSITE's lead alerts** (2026-09-22).
+    `Arbor-Website` had been left on SendGrid, so every alert it raised after the trial
+    lapsed — lost leads, bot rejections, identity mismatches — was caught, logged and
+    dropped while the form still returned success. It now carries its own copy of
+    `server/email.ts` with the same transport order, and `GOOGLE_WORKSPACE_SMTP_USER` +
+    `GOOGLE_WORKSPACE_SMTP_APP_PASSWORD` are set on its Vercel project. So **revoking or
+    rotating that password breaks BOTH systems** — update Railway and Vercel together, or
+    mint a second app password for the website first.
   - **⚠️ `smtp.gmail.com` is NOT `smtp-relay.gmail.com`.** The relay authorizes senders by
     IP (unusable — Railway egress is not static) and needs admin configuration; plain
     authenticated SMTP needs neither. Conflating the two is what wrongly ruled SMTP out on
@@ -715,8 +735,9 @@ ad account, not the Business Manager** — `list_business_datasets` on business
   - **The failure alert still shares a channel with what it reports on.** Two transports make
     a total email outage much less likely, but an alert about email that travels BY email
     cannot report the one failure that silences it. A second channel (a text, or a
-    `/api/diagnostics` warning) is the real fix and is NOT built. Note also `ALERT_EMAIL_TO`
-    is unset, so alerts default to jhays@, not Justin.
+    `/api/diagnostics` warning) is the real fix and is NOT built. (An earlier note here said
+    `ALERT_EMAIL_TO` was unset and alerts went to jhays@ — it is set to `justin@arbor-mgmt.com`
+    on the Railway `web` service, verified 2026-09-22.)
 - **Review sends are held, not skipped, outside Mon–Fri 9am–7pm CT AND on the office's holidays**
   (`isWithinSendWindow`, `lib/reviews/sequence.ts`, added 2026-09-03 at Justin's request; holidays
   2026-09-09). A held step is retried when the window reopens, so nothing is lost — `workflow.ts`
