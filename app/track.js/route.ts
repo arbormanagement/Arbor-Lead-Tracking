@@ -300,40 +300,64 @@ const SNIPPET = String.raw`(function () {
       // than spent: someone flicking between tabs (comparing quotes is exactly that)
       // must not be able to rate-limit themselves out of attribution.
       var MIN_GAP_MS = 60 * 1000;
+      // Renew only while someone is actually USING the page. "Not hidden" is not the
+      // same thing: a desktop tab left open behind other windows is never hidden, so it
+      // renewed every 10 minutes for as long as the machine stayed on and held a pool
+      // number all day. The pool ran dry with every number held by such a "live" tab
+      // (33 static fallbacks in the week to 2026-09-22) while an idle-lease takeover
+      // found nothing to bump. With this, a tab nobody has touched for IDLE_MS stops
+      // renewing, its lease lapses to idle, and the takeover in lib/dni/assign.ts can
+      // reclaim it. 30 minutes is well past anyone reading a page without scrolling.
+      var IDLE_MS = 30 * 60 * 1000;
       var lastRenewAt = Date.now();
-      setInterval(function () {
-        // Don't renew for a backgrounded tab — if they come back, visibilitychange
-        // renews immediately.
-        if (document.hidden) return;
+      var lastActiveAt = Date.now();
+
+      function renew() {
         lastRenewAt = Date.now();
-        fetch(url, { method: 'POST', body: payload, headers: { 'Content-Type': 'text/plain' } })
-          .then(function (r) { return r.json(); })
-          .then(function (d) {
-            if (!d || !d.number) return;
-            // A different number means the old lease was already gone; adopt it.
-            if (d.number !== assigned.e164) {
-              assigned = { e164: d.number, display: d.display || d.number };
-              applySwap();
-            }
-          })
-          .catch(function () {});
-      }, EVERY_MS);
-      document.addEventListener('visibilitychange', function () {
-        if (document.hidden || Date.now() - lastRenewAt < MIN_GAP_MS) return;
-        lastRenewAt = Date.now();
-        // Adopt a changed number here too. A tab hidden long enough to miss a heartbeat
-        // may have had its lease bumped to another visitor while the pool was full; the
-        // moment it comes back is exactly when the stale number on screen must go.
         fetch(url, { method: 'POST', body: payload, headers: { 'Content-Type': 'text/plain' } })
           .then(function (r) { return r.json(); })
           .then(function (d) {
             if (!d || !d.number || !assigned) return;
+            // A different number means the old lease was already gone (expired, or
+            // bumped to another visitor while the pool was full); adopt it, so the
+            // stale number on screen goes the moment they are back.
             if (d.number !== assigned.e164) {
               assigned = { e164: d.number, display: d.display || d.number };
               applySwap();
             }
           })
           .catch(function () {});
+      }
+
+      // Renew immediately on return, subject to the same one-a-minute gap.
+      function renewIfStale() {
+        if (document.hidden || Date.now() - lastRenewAt < MIN_GAP_MS) return;
+        renew();
+      }
+
+      function onActivity() {
+        var wasIdle = Date.now() - lastActiveAt > IDLE_MS;
+        lastActiveAt = Date.now();
+        // Back after the heartbeat stopped: the lease may be gone, so re-assert it now
+        // rather than on the next tick, which could be ten minutes away.
+        if (wasIdle) renewIfStale();
+      }
+      // Passive and capture-phase: pure timestamp writes that can never delay the page.
+      // A tel: tap is a pointerdown, so dialing always counts as activity.
+      ['pointerdown', 'pointermove', 'keydown', 'scroll', 'touchstart', 'wheel'].forEach(function (ev) {
+        window.addEventListener(ev, onActivity, { passive: true, capture: true });
+      });
+
+      setInterval(function () {
+        // Don't renew for a backgrounded tab — if they come back, visibilitychange
+        // renews immediately. Nor for an untouched one — onActivity renews on return.
+        if (document.hidden || Date.now() - lastActiveAt > IDLE_MS) return;
+        renew();
+      }, EVERY_MS);
+      document.addEventListener('visibilitychange', function () {
+        // Coming back to a tab is itself activity.
+        if (!document.hidden) lastActiveAt = Date.now();
+        renewIfStale();
       });
     }
 

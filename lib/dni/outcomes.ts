@@ -1,6 +1,6 @@
 import { sql } from "drizzle-orm";
 import { db } from "@/lib/db/client";
-import { dniOutcomes } from "@/lib/db/schema";
+import { dniOutcomes, dniRefusals, webSessions } from "@/lib/db/schema";
 import { businessDate } from "@/lib/tz";
 
 /**
@@ -109,14 +109,55 @@ let inFlight: Promise<void> | null = null;
 const bufferKey = (date: string, outcome: string) => `${date} ${outcome}`;
 
 /**
+ * The second half of the buffer: WHO was refused (`dni_refusals`), for the exits whose
+ * cause the outcome count alone cannot show. Keyed date / outcome / detail, separated by
+ * a tab, which neither a business date, an outcome name nor a sanitised detail contains.
+ */
+const detailBuffer = new Map<string, number>();
+
+/**
+ * Distinct details kept per business day, per process. The detail is caller-supplied
+ * (an Origin header, a visitor id), and this endpoint is public — without a cap anyone
+ * could mint a row per request. Past the cap a new detail is counted as `(other)`, so
+ * the total still adds up to the outcome count and nothing is silently dropped.
+ */
+const MAX_DETAILS_PER_DAY = 100;
+const OVERFLOW_DETAIL = "(other)";
+const MAX_DETAIL_CHARS = 200;
+let detailsDay = "";
+const detailsSeen = new Set<string>();
+
+function boundedDetail(date: string, outcome: string, detail: string): string {
+  if (date !== detailsDay) {
+    detailsDay = date;
+    detailsSeen.clear();
+  }
+  // Control characters (tab included) are stripped so a detail can never break the key.
+  const clean = detail.replace(/[\u0000-\u001f\u007f]/g, "").slice(0, MAX_DETAIL_CHARS) || "(empty)";
+  const seenKey = `${outcome}\t${clean}`;
+  if (detailsSeen.has(seenKey)) return clean;
+  if (detailsSeen.size >= MAX_DETAILS_PER_DAY) return OVERFLOW_DETAIL;
+  detailsSeen.add(seenKey);
+  return clean;
+}
+
+/**
  * Count one decision. Never throws, and only touches the database on a flush tick —
  * the visitor's number matters, this number does not.
+ *
+ * `detail` is recorded only for refusals, and only where it says something the outcome
+ * does not: the rejected Origin, or the visitor id that hit its budget.
  */
-export async function recordAssignOutcome(outcome: AssignOutcome): Promise<void> {
+export async function recordAssignOutcome(outcome: AssignOutcome, detail?: string): Promise<void> {
   try {
-    const k = bufferKey(businessDate(new Date()), outcome);
+    const date = businessDate(new Date());
+    const k = bufferKey(date, outcome);
     buffer.set(k, (buffer.get(k) ?? 0) + 1);
     buffered += 1;
+    if (detail !== undefined) {
+      const dk = `${date}\t${outcome}\t${boundedDetail(date, outcome, detail)}`;
+      detailBuffer.set(dk, (detailBuffer.get(dk) ?? 0) + 1);
+    }
     if (buffered >= FLUSH_AT_COUNT || Date.now() - lastFlushAt >= FLUSH_EVERY_MS) {
       await flushAssignOutcomes();
     }
@@ -135,7 +176,7 @@ export async function flushAssignOutcomes(): Promise<number> {
     await inFlight;
     return 0;
   }
-  if (buffer.size === 0) {
+  if (buffer.size === 0 && detailBuffer.size === 0) {
     lastFlushAt = Date.now();
     return 0;
   }
@@ -143,12 +184,16 @@ export async function flushAssignOutcomes(): Promise<number> {
   // Take the pending set BEFORE the first await, so increments arriving during the
   // write land in a fresh buffer instead of being cleared unwritten.
   const pending = [...buffer.entries()];
+  const pendingDetails = [...detailBuffer.entries()];
   buffer.clear();
+  detailBuffer.clear();
   buffered = 0;
   lastFlushAt = Date.now();
 
+  const written = pending.length + pendingDetails.length;
   const work = (async () => {
-    for (const [k, n] of pending) {
+    while (pending.length) {
+      const [k, n] = pending[0]!;
       const sep = k.indexOf(" ");
       const date = k.slice(0, sep);
       const outcome = k.slice(sep + 1);
@@ -161,16 +206,32 @@ export async function flushAssignOutcomes(): Promise<number> {
           // this instance's earlier flushes.
           set: { count: sql`${dniOutcomes.count} + ${n}`, updatedAt: new Date() },
         });
+      // Written as it goes, so a failure part-way re-buffers only what is left —
+      // re-buffering a row already written would count it twice.
+      pending.shift();
+    }
+    while (pendingDetails.length) {
+      const [k, n] = pendingDetails[0]!;
+      const [date, outcome, detail] = k.split("\t") as [string, string, string];
+      await db
+        .insert(dniRefusals)
+        .values({ date, outcome, detail, count: n })
+        .onConflictDoUpdate({
+          target: [dniRefusals.date, dniRefusals.outcome, dniRefusals.detail],
+          set: { count: sql`${dniRefusals.count} + ${n}`, updatedAt: new Date() },
+        });
+      pendingDetails.shift();
     }
   })();
 
   inFlight = work.then(
     () => undefined,
     (err) => {
-      // Put the counts back rather than dropping them — the next flush retries.
-      // Losing a refusal is the direction that makes coverage look BETTER than it
-      // is, which is the one lie this whole thing exists to avoid.
+      // Put the unwritten counts back rather than dropping them — the next flush
+      // retries. Losing a refusal is the direction that makes coverage look BETTER
+      // than it is, which is the one lie this whole thing exists to avoid.
       for (const [k, n] of pending) buffer.set(k, (buffer.get(k) ?? 0) + n);
+      for (const [k, n] of pendingDetails) detailBuffer.set(k, (detailBuffer.get(k) ?? 0) + n);
       buffered += pending.reduce((acc, [, n]) => acc + n, 0);
       console.error("[dni/outcomes] flush failed; counts re-buffered", err);
     },
@@ -180,7 +241,29 @@ export async function flushAssignOutcomes(): Promise<number> {
   } finally {
     inFlight = null;
   }
-  return pending.length;
+  return written;
+}
+
+export interface SwapCoverageDay {
+  date: string;
+  visitors: number;
+  covered: number;
+  coveredPct: number | null;
+  byOutcome: Record<string, number>;
+}
+
+export interface RefusalDetail {
+  detail: string;
+  count: number;
+  /** For a visitor id: the user agent its most recent session recorded, if any. */
+  userAgent?: string | null;
+}
+
+export interface RefusalBreakdown {
+  /** Distinct details recorded (an `(other)` overflow row counts once). */
+  distinct: number;
+  total: number;
+  top: RefusalDetail[];
 }
 
 export interface SwapCoverage {
@@ -194,7 +277,61 @@ export interface SwapCoverage {
   /** Percentage, or null when nothing has been recorded yet. */
   coveredPct: number | null;
   byOutcome: Record<string, number>;
+  /**
+   * The same rate per business day, oldest first. A 7-day total cannot say whether a
+   * fix worked — the window straddles the deploy — so read the days either side of it.
+   */
+  byDay: SwapCoverageDay[];
+  /** Who the two unexplained refusal exits turned away, over the same window. */
+  refusals: { origin_rejected: RefusalBreakdown; rate_limited_visitor: RefusalBreakdown };
   note: string;
+}
+
+const pct = (covered: number, visitors: number) =>
+  visitors ? Math.round((covered / visitors) * 1000) / 10 : null;
+
+/** Fold one outcome count into running visitor / covered / bot totals. */
+function tally(t: { visitors: number; covered: number; bots: number }, outcome: string, n: number) {
+  if (SYNTHETIC.has(outcome as AssignOutcome)) return;
+  if (CRAWLERS.has(outcome as AssignOutcome)) {
+    t.bots += n;
+    return;
+  }
+  t.visitors += n;
+  if (COVERED.has(outcome as AssignOutcome)) t.covered += n;
+}
+
+const REFUSAL_TOP_N = 10;
+
+async function readRefusals(since: string, outcome: string, withUserAgent: boolean): Promise<RefusalBreakdown> {
+  const rows = await db
+    .select({ detail: dniRefusals.detail, n: sql<number>`sum(${dniRefusals.count})::int` })
+    .from(dniRefusals)
+    .where(sql`${dniRefusals.date} >= ${since} AND ${dniRefusals.outcome} = ${outcome}`)
+    .groupBy(dniRefusals.detail)
+    .orderBy(sql`2 DESC`);
+
+  const top: RefusalDetail[] = rows.slice(0, REFUSAL_TOP_N).map((r) => ({ detail: r.detail, count: Number(r.n ?? 0) }));
+  if (withUserAgent && top.length) {
+    // A refused request is turned away before it seeds a session, so the agent comes
+    // from the visitor's earlier, accepted requests — null means none was ever accepted.
+    const uas = await db.execute(sql`
+      SELECT DISTINCT ON (${webSessions.visitorId}) ${webSessions.visitorId} AS vid, ${webSessions.userAgent} AS ua
+      FROM ${webSessions}
+      WHERE ${webSessions.visitorId} IN (${sql.join(top.map((t) => sql`${t.detail}`), sql`, `)})
+      ORDER BY ${webSessions.visitorId}, ${webSessions.createdAt} DESC
+    `);
+    const byVid = new Map<string, string | null>();
+    for (const r of ((uas as unknown as { rows?: Array<{ vid: string; ua: string | null }> }).rows ?? [])) {
+      byVid.set(r.vid, r.ua);
+    }
+    for (const t of top) t.userAgent = byVid.get(t.detail) ?? null;
+  }
+  return {
+    distinct: rows.length,
+    total: rows.reduce((acc, r) => acc + Number(r.n ?? 0), 0),
+    top,
+  };
 }
 
 /**
@@ -206,38 +343,52 @@ export async function readSwapCoverage(windowDays = 7): Promise<SwapCoverage> {
 
   const since = businessDate(new Date(Date.now() - windowDays * 86_400_000));
   const rows = await db
-    .select({ outcome: dniOutcomes.outcome, n: sql<number>`sum(${dniOutcomes.count})::int` })
+    .select({ date: dniOutcomes.date, outcome: dniOutcomes.outcome, n: sql<number>`sum(${dniOutcomes.count})::int` })
     .from(dniOutcomes)
     .where(sql`${dniOutcomes.date} >= ${since}`)
-    .groupBy(dniOutcomes.outcome);
+    .groupBy(dniOutcomes.date, dniOutcomes.outcome);
 
   const byOutcome: Record<string, number> = {};
-  let visitors = 0;
-  let covered = 0;
-  let bots = 0;
+  const total = { visitors: 0, covered: 0, bots: 0 };
+  const days = new Map<string, SwapCoverageDay & { bots: number }>();
   for (const r of rows) {
     const n = Number(r.n ?? 0);
-    byOutcome[r.outcome] = n;
-    if (SYNTHETIC.has(r.outcome as AssignOutcome)) continue;
-    if (CRAWLERS.has(r.outcome as AssignOutcome)) {
-      bots += n;
-      continue;
+    const date = String(r.date);
+    byOutcome[r.outcome] = (byOutcome[r.outcome] ?? 0) + n;
+    tally(total, r.outcome, n);
+
+    let day = days.get(date);
+    if (!day) {
+      day = { date, visitors: 0, covered: 0, bots: 0, coveredPct: null, byOutcome: {} };
+      days.set(date, day);
     }
-    visitors += n;
-    if (COVERED.has(r.outcome as AssignOutcome)) covered += n;
+    day.byOutcome[r.outcome] = n;
+    tally(day, r.outcome, n);
   }
+
+  const byDay = [...days.values()]
+    .sort((a, b) => a.date.localeCompare(b.date))
+    .map(({ bots: _bots, ...d }) => ({ ...d, coveredPct: pct(d.covered, d.visitors) }));
+
+  const [originRejected, rateLimitedVisitor] = await Promise.all([
+    readRefusals(since, "origin_rejected", false),
+    readRefusals(since, "rate_limited_visitor", true),
+  ]);
 
   return {
     windowDays,
-    visitors,
-    bots,
-    covered,
-    coveredPct: visitors ? Math.round((covered / visitors) * 1000) / 10 : null,
+    visitors: total.visitors,
+    bots: total.bots,
+    covered: total.covered,
+    coveredPct: pct(total.covered, total.visitors),
     byOutcome,
+    byDay,
+    refusals: { origin_rejected: originRejected, rate_limited_visitor: rateLimitedVisitor },
     note:
       "Server-side only: 'covered' means a pool number was handed out, not that it reached the " +
       "page. Treat it as an upper bound. A visit where track.js never ran is invisible here by " +
       "construction — the dni.canary job is what catches that. Crawlers are refused on purpose " +
-      "and reported under `bots`, outside the rate.",
+      "and reported under `bots`, outside the rate. `refusals` names who the origin and " +
+      "per-visitor limits turned away (recorded from 2026-09-22; `(other)` is the per-day cap).",
   };
 }
